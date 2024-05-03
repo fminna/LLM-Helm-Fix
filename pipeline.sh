@@ -95,10 +95,5 @@ python main.py --query-llm ${chart_name}
 
 ###############
 
-# Evaluate fixes
-echo -e "\n -------------------------- \n"
-python main.py --evaluate-fixes chatgpt
-checkov -f tmp_snippets/chatgpt_ns_snippet.yaml --quiet --compact --framework kubernetes
-
-python main.py --evaluate-fixes gemini
-checkov -f tmp_snippets/gemini_ns_snippet.yaml --quiet --compact --framework kubernetes
+# Evaluate fixes with Tools
+python main.py --evaluate-fixes

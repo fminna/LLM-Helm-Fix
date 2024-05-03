@@ -20,6 +20,7 @@ import sys
 from parse_tool_output import parse_output
 from query_llm import query_llm
 from evaluate_fixes import evaluate_fixes
+from chart_retrieval import scan_artifact_hub
 
 # Define the argument parser
 parser = argparse.ArgumentParser(description='Script to fix Helm Charts misconfigurations using LLMs.')
@@ -27,7 +28,7 @@ parser = argparse.ArgumentParser(description='Script to fix Helm Charts misconfi
 # Define a --parse-output argument that must be passed with two string values. For example, --parse-output chart_name tool.
 parser.add_argument('--parse-output', nargs=2, type=str, help='Parse the output of a chart analyzer tool.')
 parser.add_argument('--query-llm', nargs=1, type=str, help='Query a LLM for a fix.')
-parser.add_argument('--evaluate-fixes', nargs=1, type=str, help='Evaluate the LLM fixes.')
+parser.add_argument('--evaluate-fixes', action='store_true', help='Evaluate the LLM fixes.')
 parser.add_argument('--chart-retrieval', action='store_true', help='Retrieve a Helm Chart.')
 
 # Parse the arguments
@@ -48,11 +49,11 @@ def main():
 
     elif args.evaluate_fixes:
         print("Evaluating the LLM fixes...\n")
-        evaluate_fixes(args.evaluate_fixes[0])
+        evaluate_fixes()
 
     elif args.chart_retrieval:
         print("Retrieving all Helm Charts from Artifact Hub...\n")
-        # TODO
+        scan_artifact_hub()
 
     else:
         print("No arguments passed. Exiting...")

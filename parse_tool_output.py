@@ -20,64 +20,35 @@ import sys
 import json
 import re
 import pandas as pd
-from query_llm import parse_yaml_template
+from query_llm import parse_yaml_template, get_resource_snippet
 
 
-def save_to_csv(chart_name: str, tool_name: str, check_dict: dict):
+def save_to_csv(chart_name: str, checks_list: list):
     """ Save the results to a CSV file.
     """
 
     # Open csv file
-    df = pd.read_csv("results/rq1_full_results.csv")
+    df = pd.read_csv("results/rq1_results.csv")
     # print(df.head())
 
-    if chart_name in df["Charts"].values:
-        return
+    # if chart_name in df["Chart"].values:
+    #     return
 
-    for check_id in check_dict:
+    for check in checks_list:
 
         new_row = [
             chart_name, \
-            tool_name, \
-            check_id, \
-            check_dict[check_id]["std_check_id"], \
-            check_dict[check_id]["description"], \
-            check_dict[check_id]["count"], \
-            check_dict[check_id]["resources"]
+            check["tool"], \
+            check["check_id"], \
+            check["std_check_id"], \
+            check["description"], \
+            check["resource"], \
+            check["original_yaml"]
         ]
 
         df.loc[len(df)] = new_row
 
     # Save the CSV file
-    df.to_csv("results/rq1_full_results.csv", index=False)
-
-    ###
-
-    # Save "short" RQ1 results
-    df = pd.read_csv("results/rq1_results.csv")
-
-    # If chart_name is in the first column values, exit
-    if chart_name in df["Charts"].values:
-        return
-
-    # Append a row to the dataframe, with chart_name and 0s
-    new_row = [chart_name] + [0] * (len(df.columns) - 1)
-    df.loc[len(df)] = new_row
-
-    for check_id in check_dict:
-
-        if check_id not in df.columns:
-            df[check_id] = int(check_dict[check_id]["count"])
-        # Set the chart_name row and check_id column to the count
-        else:
-            df.loc[df["Charts"] == chart_name, check_id] = int(check_dict[check_id]["count"])
-
-    # Append a row with the sum of each column
-    # df.loc[:,'Total'] = df.sum(numeric_only=True, axis=1)
-
-    print("\n------\n")
-    print(check_dict)
-
     df.to_csv("results/rq1_results.csv", index=False)
 
 
@@ -183,42 +154,43 @@ def parse_checkov(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
     if "results" in results and "failed_checks" in results["results"]:
         for check in results["results"]["failed_checks"]:
             check_id = check['check_id']
-            print(f"{check_id}: {check['check_name']}")
+            descr = check['check_name']
+            print(f"{check_id}: {descr}")
 
             paths = get_ckv_resource_path(check, template)
-            resource = (paths["resource_path"], paths["obj_path"])
+            resource = [paths["resource_path"], paths["obj_path"]]
             std_check_id = CheckovLookup.get_value(check_id)
             if std_check_id is None:
                 print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                 exit(1)
 
-            if check_id not in check_dict:
-                check_dict[check_id] = {
-                    "description": check['check_name'],
-                    "count": 1,
-                    "resources": [resource],
-                    "std_check_id": std_check_id
-                }
+            yaml_snippet = get_resource_snippet(paths, template)
 
-            else:
-                check_dict[check_id]["count"] += 1
-                check_dict[check_id]["resources"].append(resource)
+            aux_dict = {
+                "tool": "checkov",
+                "check_id": check_id,
+                "std_check_id": std_check_id,
+                "description": descr,
+                "resource": resource,
+                "original_yaml": yaml_snippet
+            }
+            checks_list.append(aux_dict)
 
-    print("\n------\n")
-    print(check_dict)
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "checkov", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
-def get_datree_path(occurrence, template):
+def get_datree_path(occurrence):
     """ Get the path of the object that caused the failure.
     """
     resource_path = f"{occurrence['kind']}/{occurrence['metadataName']}"
@@ -262,7 +234,7 @@ def parse_datree(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
@@ -270,34 +242,33 @@ def parse_datree(chart_name: str):
         for check in results["policyValidationResults"][0]["ruleResults"]:
 
             for occurrence in check["occurrencesDetails"]:
-                
                 check_id = check['identifier']
-                print(f"{check_id}: {check['name']}")
+                descr = check['name']
+                print(f"{check_id}: {descr}")
 
-                paths = get_datree_path(occurrence, template)
-                resource = (paths["resource_path"], paths["obj_path"])
+                paths = get_datree_path(occurrence)
+                resource = [paths["resource_path"], paths["obj_path"]]
                 std_check_id = DatreeLookup.get_value(check_id)
                 if std_check_id is None:
                     print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                     exit(1)
 
-                if check_id not in check_dict:
-                    check_dict[check_id] = {
-                        "description": check['name'],
-                        "count": 1,
-                        "resources": [resource],
-                        "std_check_id": std_check_id
-                    }
+                yaml_snippet = get_resource_snippet(paths, template)
+                aux_dict = {
+                    "tool": "datree",
+                    "check_id": check_id,
+                    "std_check_id": std_check_id,
+                    "description": descr,
+                    "resource": resource,
+                    "original_yaml": yaml_snippet
+                }
+                checks_list.append(aux_dict)
 
-                else:
-                    check_dict[check_id]["count"] += 1
-                    check_dict[check_id]["resources"].append(resource)
-
-    print("\n------\n")
-    print(check_dict)
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "datree", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
 def get_kics_path(file, template, check_id):
@@ -338,6 +309,9 @@ def get_kics_path(file, template, check_id):
         obj_path = obj_path.replace("volumeClaimTemplates", "volumeClaimTemplates/0")
         # Delete the last part of obj_path after requests
         obj_path = "/".join(obj_path.split("/")[:-2])
+
+    if check_id == "check_32":
+        obj_path = ""
 
     paths = {
         "resource_path": resource_path,
@@ -404,7 +378,7 @@ def parse_kics(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
@@ -421,25 +395,24 @@ def parse_kics(chart_name: str):
                 print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                 exit(1)
             paths = get_kics_path(file, template, std_check_id)
-            resource = (paths["resource_path"], paths["obj_path"])
+            resource = [paths["resource_path"], paths["obj_path"]]
 
-            if check_id not in check_dict:
-                check_dict[check_id] = {
-                    "description": check['description'],
-                    "count": 1,
-                    "resources": [resource],
-                    "std_check_id": std_check_id
-                }
-
-            else:
-                check_dict[check_id]["count"] += 1
-                check_dict[check_id]["resources"].append(resource)
-
-    print("\n------\n")
-    print(check_dict)
+            yaml_snippet = get_resource_snippet(paths, template)
+            aux_dict = {
+                "tool": "kics",
+                "check_id": check_id,
+                "std_check_id": std_check_id,
+                "description": descr,
+                "resource": resource,
+                "original_yaml": yaml_snippet
+            }
+            checks_list.append(aux_dict)
+            
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "kics", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
 def get_kubel_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -522,7 +495,7 @@ def parse_kubelinter(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
@@ -533,11 +506,7 @@ def parse_kubelinter(chart_name: str):
         else:
             for check in results["Reports"]:
                 check_id = check['Check']
-
-                # Remove Refer to https://kubernetes.io/docs ...
-                aux = check['Remediation']
-                # TODO
-
+                aux = check['Remediation'].split(". Refer to https://kubernetes.io")[0]
                 descr = check['Diagnostic']['Message'] + ". " + aux
                 print(f"{check_id}: {descr}")
 
@@ -547,25 +516,24 @@ def parse_kubelinter(chart_name: str):
                     exit(1)
 
                 paths = get_kubelinter_path(check, template)
-                resource = (paths["resource_path"], paths["obj_path"])
+                resource = [paths["resource_path"], paths["obj_path"]]
 
-                if check_id not in check_dict:
-                    check_dict[check_id] = {
-                        "description": descr,
-                        "count": 1,
-                        "resources": [resource],
-                        "std_check_id": std_check_id
-                    }
+                yaml_snippet = get_resource_snippet(paths, template)
+                aux_dict = {
+                    "tool": "kubelinter",
+                    "check_id": check_id,
+                    "std_check_id": std_check_id,
+                    "description": descr,
+                    "resource": resource,
+                    "original_yaml": yaml_snippet
+                }
+                checks_list.append(aux_dict)
 
-                else:
-                    check_dict[check_id]["count"] += 1
-                    check_dict[check_id]["resources"].append(resource)
-
-            print("\n------\n")
-            print(check_dict)
+            # print("\n------\n")
+            # print(checks_list)
 
             # Save results to CSV
-            save_to_csv(chart_name, "kubelinter", check_dict)
+            save_to_csv(chart_name, checks_list)
 
 
 def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -628,7 +596,8 @@ def get_kubeaudit_path(check, template):
         obj_path = get_kubeaud_container_path(template, resource_path, check["Container"])
 
     if check["AuditResultName"] == "AppArmorAnnotationMissing":
-        obj_path = check["Container"]
+        # obj_path = check["Container"]
+        obj_path = ""
 
     elif check["AuditResultName"] == "AppArmorInvalidAnnotation":
         obj_path = ""
@@ -668,7 +637,7 @@ def parse_kubeaudit(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
@@ -683,25 +652,24 @@ def parse_kubeaudit(chart_name: str):
             exit(1)
 
         paths = get_kubeaudit_path(check, template)
-        resource = (paths["resource_path"], paths["obj_path"])
+        resource = [paths["resource_path"], paths["obj_path"]]
 
-        if check_id not in check_dict:
-            check_dict[check_id] = {
-                "description": descr,
-                "count": 1,
-                "resources": [resource],
-                "std_check_id": std_check_id
-            }
+        yaml_snippet = get_resource_snippet(paths, template)
+        aux_dict = {
+            "tool": "kubeaudit",
+            "check_id": check_id,
+            "std_check_id": std_check_id,
+            "description": descr,
+            "resource": resource,
+            "original_yaml": yaml_snippet
+        }
+        checks_list.append(aux_dict)
 
-        else:
-            check_dict[check_id]["count"] += 1
-            check_dict[check_id]["resources"].append(resource)
-
-    print("\n------\n")
-    print(check_dict)
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "kubeaudit", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
 def get_kubescape_path(rule, control, paths):
@@ -742,8 +710,8 @@ def parse_kubescape(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
-    # template = parse_yaml_template(chart_name)
+    checks_list = []
+    template = parse_yaml_template(chart_name)
 
     # Print the results
     for result in results["results"]:
@@ -797,25 +765,24 @@ def parse_kubescape(chart_name: str):
                         if "paths" in rule:
                             paths = get_kubescape_path(rule, control, paths)
 
-                        resource = (paths["resource_path"], paths["obj_path"])
+                        resource = [paths["resource_path"], paths["obj_path"]]
 
-                        if check_id not in check_dict:
-                            check_dict[check_id] = {
-                                "description": descr,
-                                "count": 1,
-                                "resources": [resource],
-                                "std_check_id": std_check_id
-                            }
+                        yaml_snippet = get_resource_snippet(paths, template)
+                        aux_dict = {
+                            "tool": "kubescape",
+                            "check_id": check_id,
+                            "std_check_id": std_check_id,
+                            "description": descr,
+                            "resource": resource,
+                            "original_yaml": yaml_snippet
+                        }
+                        checks_list.append(aux_dict)
 
-                        else:
-                            check_dict[check_id]["count"] += 1
-                            check_dict[check_id]["resources"].append(resource)
-
-    print("\n------\n")
-    print(check_dict)
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "kubescape", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
 def get_resource_namespace(template: dict, kind: str, name: str) -> str:
@@ -974,7 +941,7 @@ def parse_terrascan(chart_name: str):
     with open(json_path, 'r', encoding="utf-8") as file:
         results = json.load(file)
 
-    check_dict = {}
+    checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
@@ -990,25 +957,24 @@ def parse_terrascan(chart_name: str):
                 exit(1)
 
             paths = get_terrascan_path(check, template)
-            resource = (paths["resource_path"], paths["obj_path"])
+            resource = [paths["resource_path"], paths["obj_path"]]
 
-            if check_id not in check_dict:
-                check_dict[check_id] = {
-                    "description": descr,
-                    "count": 1,
-                    "resources": [resource],
-                    "std_check_id": std_check_id
-                }
+            yaml_snippet = get_resource_snippet(paths, template)
+            aux_dict = {
+                "tool": "terrascan",
+                "check_id": check_id,
+                "std_check_id": std_check_id,
+                "description": descr,
+                "resource": resource,
+                "original_yaml": yaml_snippet
+            }
+            checks_list.append(aux_dict)
 
-            else:
-                check_dict[check_id]["count"] += 1
-                check_dict[check_id]["resources"].append(resource)
-
-    print("\n------\n")
-    print(check_dict)
+    # print("\n------\n")
+    # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, "terrascan", check_dict)
+    save_to_csv(chart_name, checks_list)
 
 
 def parse_output(chart_name: str, tool_name: str):
