@@ -19,37 +19,70 @@ from typing import Callable
 import sys
 import json
 import re
+import ast
 import pandas as pd
 from query_llm import parse_yaml_template, get_resource_snippet
 
 
-def save_to_csv(chart_name: str, checks_list: list):
+def save_to_csv(chart_name: str, checks_list: list, stats=False):
     """ Save the results to a CSV file.
     """
 
     # Open csv file
-    df = pd.read_csv("results/rq1_results.csv")
+    # df = pd.read_csv("results/rq1_results.csv")
     # print(df.head())
 
     # if chart_name in df["Chart"].values:
     #     return
 
-    for check in checks_list:
+    # for check in checks_list:
 
-        new_row = [
-            chart_name, \
-            check["tool"], \
-            check["check_id"], \
-            check["std_check_id"], \
-            check["description"], \
-            check["resource"], \
-            check["original_yaml"]
-        ]
+    #     new_row = [
+    #         chart_name, \
+    #         check["tool"], \
+    #         check["check_id"], \
+    #         check["std_check_id"], \
+    #         check["description"], \
+    #         check["resource"], \
+    #         check["original_yaml"]
+    #     ]
 
-        df.loc[len(df)] = new_row
+    #     df.loc[len(df)] = new_row
 
-    # Save the CSV file
-    df.to_csv("results/rq1_results.csv", index=False)
+    # # Save the CSV file
+    # df.to_csv("results/rq1_results.csv", index=False)
+
+    #####################
+
+    added_checks = []
+
+    if stats:
+        df = pd.read_csv("results/rq1_stats.csv")
+        df["Occurrences"] = df["Occurrences"].astype(int)
+
+        for check in checks_list:
+            if check["tool"] in df["Tool"].values and check["check_id"] in df["Alert_ID"].values:
+                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Occurrences"] += 1
+
+                if check["check_id"] not in added_checks:
+                    df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Charts"] += f", {chart_name}"
+                    df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "#_Charts"] += 1
+                    added_checks.append(check["check_id"])
+
+            else:
+                new_row = [
+                    check["tool"], \
+                    check["check_id"], \
+                    check["std_check_id"], \
+                    check["description"], \
+                    chart_name, \
+                    1, \
+                    1
+                ]
+                added_checks.append(check["check_id"])
+                df.loc[len(df)] = new_row
+
+        df.to_csv("results/rq1_stats.csv", index=False)
 
 
 def get_ckv_container_objects(template: dict, resource_path: str, containers="containers") -> list:
@@ -144,15 +177,18 @@ def get_ckv_resource_path(check: str, template: dict) -> str:
     return paths
 
 
-def parse_checkov(chart_name: str):
+def parse_checkov(chart_name: str, stats: bool):
     """ Parse the output of the Checkov tool.
     """
 
     json_path = f"tools_output/checkov/{chart_name}_results.json"
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -162,14 +198,15 @@ def parse_checkov(chart_name: str):
         for check in results["results"]["failed_checks"]:
             check_id = check['check_id']
             descr = check['check_name']
-            print(f"{check_id}: {descr}")
+            # # print(f"{check_id}: {descr}")
 
             paths = get_ckv_resource_path(check, template)
             resource = [paths["resource_path"], paths["obj_path"]]
             std_check_id = CheckovLookup.get_value(check_id)
             if std_check_id is None:
-                print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                exit(1)
+                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                std_check_id = "NOT_MAPPED"
+                # exit(1)
 
             yaml_snippet = get_resource_snippet(paths, template)
 
@@ -184,10 +221,10 @@ def parse_checkov(chart_name: str):
             checks_list.append(aux_dict)
 
     # print("\n------\n")
-    # print(checks_list)
+    # print(checks_list.keys)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
 def get_datree_path(occurrence):
@@ -224,15 +261,18 @@ def get_datree_path(occurrence):
         return paths
 
 
-def parse_datree(chart_name: str):
+def parse_datree(chart_name: str, stats: bool):
     """ Parse the output of the Datree tool.
     """
 
     json_path = f"tools_output/datree/{chart_name}_results.json"
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -244,14 +284,15 @@ def parse_datree(chart_name: str):
             for occurrence in check["occurrencesDetails"]:
                 check_id = check['identifier']
                 descr = check['name']
-                print(f"{check_id}: {descr}")
+                # print(f"{check_id}: {descr}")
 
                 paths = get_datree_path(occurrence)
                 resource = [paths["resource_path"], paths["obj_path"]]
                 std_check_id = DatreeLookup.get_value(check_id)
                 if std_check_id is None:
-                    print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                    exit(1)
+                    # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                    std_check_id = "NOT_MAPPED"
+                    # exit(1)
 
                 yaml_snippet = get_resource_snippet(paths, template)
                 aux_dict = {
@@ -268,7 +309,7 @@ def parse_datree(chart_name: str):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
 def get_kics_path(file, template, check_id):
@@ -287,7 +328,10 @@ def get_kics_path(file, template, check_id):
         obj_path = matches[-1]
 
     else:
-        obj_path = obj_path.split("}}.")[1]
+        try:
+            obj_path = obj_path.split("}}.")[1]
+        except IndexError:
+            obj_path = ""
 
         obj_name = ""
         if ".name=" in obj_path:
@@ -368,15 +412,18 @@ def find_resource_idx(template: dict, resource_path: str, obj_path: str, obj_nam
     return ""
 
 
-def parse_kics(chart_name: str):
+def parse_kics(chart_name: str, stats: bool):
     """ Parse the output of the KICS tool.
     """
 
     json_path = f"tools_output/kics/{chart_name}_results.json"
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -388,12 +435,14 @@ def parse_kics(chart_name: str):
 
             check_id = check['query_id']
             descr = check['query_name']
-            print(f"{check_id}: {descr}")
+            # print(f"{check_id}: {descr}")
 
             std_check_id = KICSLookup.get_value(check_id)
             if std_check_id is None:
-                print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                exit(1)
+                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                std_check_id = "NOT_MAPPED"
+                # exit(1)
+
             paths = get_kics_path(file, template, std_check_id)
             resource = [paths["resource_path"], paths["obj_path"]]
 
@@ -412,7 +461,7 @@ def parse_kics(chart_name: str):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
 def get_kubel_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -485,15 +534,18 @@ def get_kubelinter_path(check, template):
     return paths
 
 
-def parse_kubelinter(chart_name: str):
+def parse_kubelinter(chart_name: str, stats: bool):
     """ Parse the output of the Kubelinter tool.
     """
 
     json_path = f"tools_output/kubelinter/{chart_name}_results.json"
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -508,12 +560,13 @@ def parse_kubelinter(chart_name: str):
                 check_id = check['Check']
                 aux = check['Remediation'].split(". Refer to https://kubernetes.io")[0]
                 descr = check['Diagnostic']['Message'] + ". " + aux
-                print(f"{check_id}: {descr}")
+                # print(f"{check_id}: {descr}")
 
                 std_check_id = KubelinterClass.get_value(check_id)
                 if std_check_id is None:
-                    print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                    exit(1)
+                    # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                    std_check_id = "NOT_MAPPED"
+                    # exit(1)
 
                 paths = get_kubelinter_path(check, template)
                 resource = [paths["resource_path"], paths["obj_path"]]
@@ -533,7 +586,7 @@ def parse_kubelinter(chart_name: str):
             # print(checks_list)
 
             # Save results to CSV
-            save_to_csv(chart_name, checks_list)
+            save_to_csv(chart_name, checks_list, stats)
 
 
 def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -610,7 +663,7 @@ def get_kubeaudit_path(check, template):
     return paths
 
 
-def parse_kubeaudit(chart_name: str):
+def parse_kubeaudit(chart_name: str, stats: bool):
     """ Parse the output of the Kubeaudit tool.
     """
 
@@ -633,9 +686,12 @@ def parse_kubeaudit(chart_name: str):
             with open(json_path, 'w', encoding="utf-8") as file:
                 file.write(data)
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -644,12 +700,13 @@ def parse_kubeaudit(chart_name: str):
     for check in results["checks"]:
         check_id = check['AuditResultName']
         descr = check['msg']
-        print(f"{check_id}: {descr}")
+        # print(f"{check_id}: {descr}")
 
         std_check_id = KubeauditClass.get_value(check_id)
         if std_check_id is None:
-            print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-            exit(1)
+            # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+            std_check_id = "NOT_MAPPED"
+            # exit(1)
 
         paths = get_kubeaudit_path(check, template)
         resource = [paths["resource_path"], paths["obj_path"]]
@@ -669,7 +726,7 @@ def parse_kubeaudit(chart_name: str):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
 def get_kubescape_path(rule, control, paths):
@@ -700,20 +757,26 @@ def get_kubescape_path(rule, control, paths):
     return paths
 
 
-def parse_kubescape(chart_name: str):
+def parse_kubescape(chart_name: str, stats: bool):
     """ Parse the output of the kubescape tool.
     """
 
     json_path = f"tools_output/kubescape/{chart_name}_results.json"
 
-    # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
 
     # Print the results
+    if "results" not in results:
+        return
+
     for result in results["results"]:
         resources_path = result["resourceID"]
         resource_list = []
@@ -750,12 +813,13 @@ def parse_kubescape(chart_name: str):
 
                     check_id = control['controlID']
                     descr = control['name']
-                    print(f"{check_id}: {descr}")
+                    # print(f"{check_id}: {descr}")
 
                     std_check_id = KubescapeClass.get_value(check_id)
                     if std_check_id is None:
-                        print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                        exit(1)
+                        # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                        std_check_id = "NOT_MAPPED"
+                        # exit(1)
 
                     for rule in control["rules"]:
                         paths = {
@@ -782,7 +846,7 @@ def parse_kubescape(chart_name: str):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
 def get_resource_namespace(template: dict, kind: str, name: str) -> str:
@@ -931,15 +995,19 @@ def get_terrascan_path(check, template):
     return paths
 
 
-def parse_terrascan(chart_name: str):
+def parse_terrascan(chart_name: str, stats: bool):
     """ Parse the output of the terrascan tool.
     """
 
     json_path = f"tools_output/terrascan/{chart_name}_results.json"
 
     # Load the JSON result file
-    with open(json_path, 'r', encoding="utf-8") as file:
-        results = json.load(file)
+    try:
+        with open(json_path, 'r', encoding="utf-8") as file:
+            results = json.load(file)
+    except json.decoder.JSONDecodeError:
+        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        return
 
     checks_list = []
     template = parse_yaml_template(chart_name)
@@ -949,12 +1017,13 @@ def parse_terrascan(chart_name: str):
         for check in run["results"]:
             check_id = check['ruleId']
             descr = check['message']['text']
-            print(f"{check_id}: {descr}")
+            # print(f"{check_id}: {descr}")
 
             std_check_id = TerrascanClass.get_value(check_id)
             if std_check_id is None:
-                print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
-                exit(1)
+                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
+                std_check_id = "NOT_MAPPED"
+                # exit(1)
 
             paths = get_terrascan_path(check, template)
             resource = [paths["resource_path"], paths["obj_path"]]
@@ -974,33 +1043,33 @@ def parse_terrascan(chart_name: str):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list)
+    save_to_csv(chart_name, checks_list, stats)
 
 
-def parse_output(chart_name: str, tool_name: str):
+def parse_output(chart_name: str, tool_name: str, stats=False):
     """ Parse the output of a chart analyzer tool.
     """
 
     if tool_name == "checkov":
-        parse_checkov(chart_name)
+        parse_checkov(chart_name, stats)
 
     elif tool_name == "datree":
-        parse_datree(chart_name)
+        parse_datree(chart_name, stats)
 
     elif tool_name == "kics":
-        parse_kics(chart_name)
+        parse_kics(chart_name, stats)
 
     elif tool_name == "kubelinter":
-        parse_kubelinter(chart_name)
+        parse_kubelinter(chart_name, stats)
 
     elif tool_name == "kubeaudit":
-        parse_kubeaudit(chart_name)
+        parse_kubeaudit(chart_name, stats)
 
     elif tool_name == "kubescape":
-        parse_kubescape(chart_name)
+        parse_kubescape(chart_name, stats)
 
     elif tool_name == "terrascan":
-        parse_terrascan(chart_name)
+        parse_terrascan(chart_name, stats)
 
     else:
         print("Tool not supported! Exiting...")
@@ -1193,9 +1262,7 @@ class KICSLookup:
         "249328b8-5f0f-409f-b1dd-029f07882e11": "check_65",
         "b23e9b98-0cb6-4fc9-b257-1f3270442678": "check_60",
         "c589f42c-7924-4871-aee2-1cede9bc7cbc": "check_54",
-        "85ab1c5b-014e-4352-b5f8-d7dea3bb4fd3": "",
         "a6f34658-fdfb-4154-9536-56d516f65828": "check_15",
-        "3ca03a61-3249-4c16-8427-6f8e47dda729": "",
     }
 
     @classmethod
@@ -1240,8 +1307,6 @@ class KubelinterClass:
         "non-existent-service-account": "check_58",
         "pdb-max-unavailable": "check_67",
         "ssh-port": "check_68",
-        "no-anti-affinity": "",
-        "mismatching-selector": "",
     }
 
     @classmethod
@@ -1343,16 +1408,7 @@ class KubescapeClass:
         "C-0031": "check_54", 
         "C-0065": "check_54",
         "C-0063": "check_54",
-        "C-0042": "check_68",
-        "C-0260": "",
-        "C-0270": "",
-        "C-0271": "",
-        "C-0035": "",
-        "C-0026": "", # Kubernetes CronJob
-        "C-0012": "", # Applications credentials in configuration file
-        "C-0036": "", # Malicious admission controller
-        "C-0039": "", # Malicious admission controller (mutating)
-        "C-0037": "", # CoreDNS poisoning
+        "C-0042": "check_68"
     }
 
     @classmethod
@@ -1399,8 +1455,6 @@ class TerrascanClass:
         "AC_K8S_0081": "check_55",
         "AC_K8S_0082": "check_10",
         "AC_K8S_0088": "check_15",
-        "AC_K8S_0021": "", # AlwaysPullImages plugin is not set https://docs.bridgecrew.io/docs/ensure-that-the-admission-control-plugin-alwayspullimages-is-set
-        "AC_K8S_0002": "", # TLS disabled can affect the confidentiality of the data in transit
     }
 
     @classmethod

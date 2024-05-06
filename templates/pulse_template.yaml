@@ -1,0 +1,147 @@
+---
+# Source: pulse/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-pulse
+  labels:
+    helm.sh/chart: pulse-0.3.1
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.17.3"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: pulse/templates/secret-api-access-token.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-pulse
+  labels:
+    helm.sh/chart: pulse-0.3.1
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.17.3"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  api-access-token: "TUlTU0lORw=="
+---
+# Source: pulse/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-pulse
+  labels:
+    helm.sh/chart: pulse-0.3.1
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.17.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  processor.yaml: |
+    provider:
+      type: http
+      url: ${MEZMO_API_SCHEME}://${MEZMO_API_HOST}/v3/pipeline/account/local-deploy/config
+      poll_interval_secs: 15
+      request:
+        headers:
+          authorization: "Token ${MEZMO_LOCAL_DEPLOY_AUTH_TOKEN}"
+---
+# Source: pulse/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pulse
+  labels:
+    helm.sh/chart: pulse-0.3.1
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.17.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: graphql-api 
+      port: 8686
+      targetPort: 8686
+      protocol: TCP
+---
+# Source: pulse/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pulse
+  labels:
+    helm.sh/chart: pulse-0.3.1
+    app.kubernetes.io/name: pulse
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.17.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pulse
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pulse
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-pulse
+      securityContext:
+        {}
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          projected:
+            sources:
+              - configMap:
+                  name: release-name-pulse
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: pulse
+          securityContext:
+            {}
+          image: "mezmohq/vector:1.17.3"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: MEZMO_API_HOST
+            value: api.mezmo.com
+          - name: MEZMO_API_SCHEME
+            value: https
+          - name: MEZMO_LOCAL_DEPLOY_AUTH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pulse
+                key: api-access-token
+          - name: MEZMO_METRICS_ENDPOINT_URL
+            value: "https://api.mezmo.com/v3/pipeline/account/local-deploy/metric/usage"
+          - name: MEZMO_TASKS_FETCH_ENDPOINT_URL
+            value: "https://api.mezmo.com/v3/pipeline/account/local-deploy/tasks"
+          - name: MEZMO_TASKS_POST_ENDPOINT_URL
+            value: "https://api.mezmo.com/v3/pipeline/account/local-deploy/tasks/:task_id/results?pipeline_id=:pipeline_id"
+          - name: VECTOR_LOG
+            value: info
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: MEZMO_RESHAPE_MESSAGE
+            value: "1"
+          args:
+            - --config-dir
+            - /etc/vector/
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: "/vector-data-dir"
+            - name: config
+              mountPath: "/etc/vector/"
+              readOnly: true

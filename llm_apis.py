@@ -22,7 +22,7 @@ import yaml
 def query_chatgpt(rq2_rows: list):
     """Query the ChatGPT model to generate fixes.
     """
-    client = OpenAI()
+    # client = OpenAI()
 
     # for row in rq2_rows:
         # completion = client.chat.completions.create(

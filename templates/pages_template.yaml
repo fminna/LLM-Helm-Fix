@@ -1,0 +1,343 @@
+---
+# Source: pages/charts/mysql/templates/secret.yaml
+apiVersion: v1
+data:
+  password: cGFzc3dvcmQ=
+kind: Secret
+metadata:
+  name: release-name-mysql
+---
+# Source: pages/charts/pages-api/templates/secret.yaml
+apiVersion: v1
+data:
+  password: cGFzc3dvcmQ=
+kind: Secret
+metadata:
+  name: release-name-pages-api
+---
+# Source: pages/charts/mysql/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mysql
+data:
+  spring.datasource.username: root
+  V1__inital_schema.sql: |
+    USE pages;
+    create table pages(
+    id bigint(20) not null auto_increment,
+    business_name VARCHAR(50),
+    address VARCHAR(50),
+    category_id bigint(20),
+    contact_number VARCHAR(50),
+    primary key (id)
+    )
+    engine = innodb
+    default charset = utf8;
+---
+# Source: pages/charts/pages-api/templates/config.yaml
+apiVersion: v1
+data:
+  PAGE_CONTENT: Green-Pages coming from Yellow-World!
+kind: ConfigMap
+metadata:
+  name: pages-api
+---
+# Source: pages/charts/mysql/templates/storage-class.yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: release-name-mysql-default
+  labels:
+    addonmanager.kubernetes.io/mode: EnsureExists
+provisioner: k8s.io/minikube-hostpath
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+---
+# Source: pages/charts/mysql/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: release-name-mysql-default
+  labels:
+    type: local
+spec:
+  storageClassName: release-name-mysql-default
+  capacity:
+    storage: 3Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: /var/lib/mysql/camden
+---
+# Source: pages/charts/mysql/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-mysql
+spec:
+  storageClassName: release-name-mysql-default
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: pages/charts/mysql/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pages-mysql
+  labels:
+    app: release-name-mysql
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: release-name-mysql
+  type: ClusterIP
+---
+# Source: pages/charts/pages-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: release-name-pages-api
+    access: external
+  name: release-name-pages-api
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: release-name-pages-api
+  type: NodePort
+---
+# Source: pages/charts/mysql/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mysql
+  labels:
+    app: release-name-mysql
+spec:
+  selector:
+    matchLabels:
+      app: release-name-mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: release-name-mysql
+    spec:
+      containers:
+        - image: mysql:8.0
+          name: mysql
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mysql
+                  key: password
+            - name: MYSQL_SERVICE_HOST
+              value: "mysql"
+            - name: MYSQL_SERVICE_PORT
+              value: "3306"
+            - name: MYSQL_DATABASE
+              value: "pages"
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mysql-persistent-storage
+          persistentVolumeClaim:
+            claimName: release-name-mysql
+---
+# Source: pages/charts/pages-api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: release-name-pages-api
+  name: release-name-pages-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-pages-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: release-name-pages-api
+    spec:
+      containers:
+        - image: dellcloud/pages:monitor
+          name: pages-api
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PAGE_CONTENT
+              valueFrom:
+                configMapKeyRef:
+                  name: pages-api
+                  key: PAGE_CONTENT
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://pages-mysql/pages"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "root"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-pages-api
+                  key: password
+            - name: DEBUG
+              value: "true"
+            - name: LOGGING_FILE_NAME
+              value: "camden/logs/app.log"
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB
+              value: debug
+            - name: LOGGING_LEVEL_ROOT
+              value: debug
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "*"
+          volumeMounts:
+            - name: node-dir
+              mountPath: /default
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: node-dir
+          hostPath:
+            path: /default
+---
+# Source: pages/charts/pages-api/templates/test-api-contracts.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: contracts-pages-api
+    helm: test
+  name: contract-test
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: postman-test
+      image: dellcloud/newman:latest #derived from postman/newman
+      command: ["newman","run", "https://cloud-native-labs.s3.ap-south-1.amazonaws.com/J21/labguide/pages-testsuite.json" ]
+      args:
+        - --env-var
+        - BASE_URL=release-name-pages-api.default.svc.cluster.local:8080
+  restartPolicy: Never
+---
+# Source: pages/charts/pages-api/templates/test-dbconnect-positive.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: dbconnect-pages-api
+    helm: test
+  name: pages-test-dbconnect-passtest
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - image: mysql:8.0
+      name: pages-test-pass
+      imagePullPolicy: Always
+      command: ["/bin/bash"]
+      args: ["-c", "while true; do (mysql -u root -h pages-mysql pages -ppassword  -e 'show tables;' > logs.txt);count=$(cat logs.txt | grep '[p]ages' | wc -l);if [[ $count -gt 0 ]]; then echo 'Found'; exit 0;else echo 'Not Found';exit 1;fi;done"]
+  restartPolicy: Never
+---
+# Source: pages/charts/pages-api/templates/test-message-get.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: message-pages-api
+    helm: test
+  name: pages-api-test-getmessage
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - image: curlimages/curl
+      name: pages-api-test
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh","-c"]
+      args:
+        - curl  http://release-name-pages-api.default.svc.cluster.local:8080
+  restartPolicy: Never
+---
+# Source: pages/charts/mysql/templates/flyway-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-mysql
+  labels:
+    app: release-name-mysql
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 16
+  template:
+    spec:
+      containers:
+        - name: mysql
+          image: flyway/flyway:6.4.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - info
+            - migrate
+            - info
+          env:
+            - name: FLYWAY_URL
+              value: "jdbc:mysql://pages-mysql/pages"
+            - name: FLYWAY_USER
+              value: root
+            - name: FLYWAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mysql
+                  key: password
+            - name: FLYWAY_PLACEHOLDER_REPLACEMENT
+              value: "true"
+            - name: FLYWAY_PLACEHOLDERS_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-mysql
+                  key: spring.datasource.username
+            - name: FLYWAY_PLACEHOLDERS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mysql
+                  key: password
+          volumeMounts:
+            - mountPath: /flyway/sql
+              name: sql
+      volumes:
+        - name: sql
+          configMap:
+            name: release-name-mysql
+      restartPolicy: Never

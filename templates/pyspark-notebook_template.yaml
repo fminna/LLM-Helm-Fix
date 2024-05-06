@@ -1,0 +1,236 @@
+---
+# Source: pyspark-notebook/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-pyspark-notebook
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: pyspark-notebook/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "release-name-pyspark-notebook"
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    verbs:
+    - create
+    - get
+    - delete
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - services
+    verbs:
+    - get
+    - create
+  - apiGroups:
+    - ""
+    resources:
+    - pods/log
+    verbs:
+    - get
+    - list
+  - apiGroups:
+    - ""
+    resources:
+    - pods/exec
+    verbs:
+    - create
+    - get
+  - apiGroups:
+    - ""
+    resources:
+    - configmaps
+    verbs:
+    - get
+    - create
+    - list
+    - watch
+    - delete
+---
+# Source: pyspark-notebook/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "release-name-pyspark-notebook"
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: release-name-pyspark-notebook
+    namespace: "default"
+roleRef:
+  kind: Role
+  name: "release-name-pyspark-notebook"
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: pyspark-notebook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pyspark-notebook
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8888
+      targetPort: http
+    - name: blockmanager
+      protocol: TCP
+      port: 7777
+      targetPort: blockmanager
+    - name: driver
+      protocol: TCP
+      port: 2222
+      targetPort: driver
+---
+# Source: pyspark-notebook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pyspark-notebook-headless
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None # This is needed for statefulset hostnames like pyspark-0 to resolve
+  # Create endpoints also if the related pod isn't ready
+  publishNotReadyAddresses: true 
+  selector:
+    app: "release-name-pyspark-notebook"
+  ports:
+  - name: http
+    port: 8888
+  - name: blockmanager
+    port: 7777
+  - name: driver
+    port: 2222
+---
+# Source: pyspark-notebook/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-pyspark-notebook
+  labels:
+    helm.sh/chart: pyspark-notebook-0.2.2
+    app.kubernetes.io/name: pyspark-notebook
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-pyspark-notebook-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pyspark-notebook
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - metadata:
+      name: release-name-pyspark-notebook-notebooks
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: null
+      volumeMode: Filesystem
+  template:
+    metadata:
+      # name: "release-name-pyspark-notebook"
+      labels:
+        app.kubernetes.io/name: pyspark-notebook
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: release-name-pyspark-notebook
+      securityContext:
+        fsGroup: 100
+        runAsUser: 1000
+      volumes:
+      containers:
+        - name: pyspark-notebook
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+          image: "jupyter/pyspark-notebook:spark-3.1.2"
+          imagePullPolicy: IfNotPresent
+          command: ["start.sh"]
+          args:
+            - "jupyter"
+            - "lab"
+          ports:
+            - name: http
+              containerPort: 8888
+              protocol: TCP
+            - name: blockmanager
+              containerPort: 7777
+              protocol: TCP
+            - name: driver
+              containerPort: 2222
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 16Gi
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+          volumeMounts:
+            - name: release-name-pyspark-notebook-notebooks
+              mountPath: /home/jovyan/work/
+          env:          
+            # Dynamically created environment variables
+            # Dynamically created secret envs

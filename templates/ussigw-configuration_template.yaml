@@ -1,0 +1,200 @@
+---
+# Source: ussigw-configuration/templates/configuration-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "ussigw-configuration-service"
+spec:
+  type: NodePort
+  selector:
+    app: "configuration"
+  ports:
+    - name: "configuration"
+      protocol: TCP
+      port: 8880
+      targetPort: 8880
+      nodePort: 30180
+---
+# Source: ussigw-configuration/templates/configuration-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "configuration"
+  labels:
+    app: "configuration"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: "configuration"
+  template:
+    metadata:
+      labels:
+        app: "configuration"
+    spec:
+      containers:
+      - name: "configuration"
+        image: docker.io/gurolakman/ussigw-configuration:1.0.4
+        envFrom:
+        - configMapRef:
+            name: ussigw-conf-configmap
+        ports:
+        - containerPort: 8880
+        volumeMounts:
+          - name: ussigw-conf-properties
+            mountPath: /space/ussigw/properties/configuration
+            readOnly: true
+          - name: ussigw-conf-data
+            mountPath: /space/ussigw
+            readOnly: true
+          - name: ussigw-log
+            mountPath: /space/ussigw/log
+            readOnly: false
+          - name: ussigw-alarm
+            mountPath: /space/ussigw/alarm
+            readOnly: false
+      volumes:
+        - name: ussigw-conf-properties
+          configMap:
+            name: ussigw-conf-properties-configmap
+        - name: ussigw-conf-data
+          configMap:
+            name: ussigw-conf-data-configmap
+        - name: ussigw-log
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-configuration-log
+        - name: ussigw-alarm
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-alarm
+---
+# Source: ussigw-configuration/templates/ussigw-conf-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-conf-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  # Configuration values can be set as key-value properties
+  SPRING_PROFILES_ACTIVE: "local,jdbc"
+  SPRING_CONFIG_LOCATION: "/space/ussigw/properties/configuration/"
+  SPRING_CONFIG_NAME: ussigw-configuration-spring
+---
+# Source: ussigw-configuration/templates/ussigw-conf-data-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-conf-data-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  trace.conf: |-
+    set filter product=ussigw:ALL:DEBUG
+    set dispatcher file=/space/ussigw/log/ussigw_trace
+---
+# Source: ussigw-configuration/templates/ussigw-conf-properties-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-conf-properties-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  ussigw-configuration-spring.properties: |
+    logging.config = /space/ussigw/properties/configuration/ussigw-configuration-logback.xml
+  
+    server.port = 8880
+  
+    spring.datasource.platform = mysql
+    spring.datasource.driver-class-name = com.mysql.cj.jdbc.Driver
+    spring.datasource.url = jdbc:mysql://ussigw-mysql:3306/ussigw_config
+    spring.datasource.username = root
+    spring.datasource.password = tneu34
+  
+    spring.datasource.hikari.connection-timeout=5000
+    spring.datasource.hikari.maximum-pool-size=10
+  
+    spring.cloud.config.server.default-profile=local
+    spring.cloud.config.server.default-label=master
+    spring.cloud.config.server.jdbc.sql=SELECT `key`, `value` FROM `PROPERTIES` WHERE (`application`=? OR `application`='common') AND `profile`=? AND `label`=?;
+    spring.cloud.config.server.jdbc.order=0
+  
+    config.table.name=PROPERTIES
+    config.sql.regex=
+    config.sql.replacement=
+  
+    ussigw.actuator.refresh.url=http://ussigw-core-service:8098/actuator/refresh
+  
+    canvas.flexStat.mongoDbRef=10.35.36.231:27017,10.35.36.234:27017
+    canvas.flexStat.mongoDbUser=admin
+    canvas.flexStat.mongoDbPassword=
+    canvas.flexStat.mongoDbName=USSIGW
+    canvas.flexStat.mongoCollection=statistics
+  
+    spring.security.user.name=admin
+    spring.security.user.password=tneu34
+  ussigw-configuration-logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+  
+        <property name="HOME_LOG" value="/space/ussigw/log"/>
+  
+        <appender name="CONF-ROLLING" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <!-- path and name of active log file -->
+            <file>${HOME_LOG}/configuration.log</file>
+  
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <!-- path and name pattern of archived log files -->
+                <fileNamePattern>${HOME_LOG}/configuration-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+  
+                <!-- each archived file, size max 50MB -->
+                <maxFileSize>50MB</maxFileSize>
+  
+                <!-- total size of all archived files, if total size > 1GB, it will delete old archived file -->
+                <totalSizeCap>1GB</totalSizeCap>
+  
+                <!-- 60 days to keep archived files -->
+                <maxHistory>60</maxHistory>
+            </rollingPolicy>
+  
+            <encoder>
+                <pattern>%msg%n</pattern>
+            </encoder>
+        </appender>
+  
+        <logger name="com.telenity.ussigw.configuration" level="info" additivity="false">
+            <appender-ref ref="CONF-ROLLING"/>
+        </logger>
+  
+        <root level="info">
+            <appender-ref ref="CONF-ROLLING"/>
+        </root>
+  
+    </configuration>
+---
+# Source: ussigw-configuration/templates/tests/dummy-chart-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "dummy-test" 
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: echo
+      image: docker.io/gurolakman/ussigw-configuration:1.0.4
+      command: ['sleep']
+      args: ['30']
+  restartPolicy: Never

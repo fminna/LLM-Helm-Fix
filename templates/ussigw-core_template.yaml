@@ -1,0 +1,219 @@
+---
+# Source: ussigw-core/templates/core-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "ussigw-core-service"
+spec:
+  type: NodePort
+  selector:
+    app: "core"
+  ports:
+    - name: "core"
+      protocol: TCP
+      port: 8098
+      targetPort: 8098
+    - name: "rmiport"
+      protocol: TCP
+      port: 32005
+      targetPort: 32005
+      nodePort: 32005
+    - name: "sip"
+      protocol: UDP
+      port: 5060
+      targetPort: 5060
+---
+# Source: ussigw-core/templates/core-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "core"
+  labels:
+    app: "core"
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: "core"
+  template:
+    metadata:
+      labels:
+        app: "core"
+    spec:
+      containers:
+      - name: "core"
+        image: docker.io/gurolakman/ussigw-core:1.0.4
+        envFrom:
+        - configMapRef:
+            name: ussigw-core-configmap
+        ports:
+        - containerPort: 8098
+        volumeMounts:
+          - name: ussigw-core-properties
+            mountPath: /space/ussigw/properties/core
+            readOnly: true
+          - name: ussigw-cdr
+            mountPath: /space/ussigw/cdr
+            readOnly: false
+          - name: ussigw-es-cdr
+            mountPath: /space/edr/ussigw/logstash-main/spill
+            readOnly: false
+          - name: ussigw-log
+            mountPath: /space/ussigw/log
+            readOnly: false
+          - name: ussigw-core-data
+            mountPath: /space/ussigw
+            readOnly: true
+          - name: ussigw-alarm
+            mountPath: /space/ussigw/alarm
+            readOnly: false
+      volumes:
+        - name: ussigw-core-properties
+          configMap:
+            name:
+              ussigw-core-properties-configmap
+        - name: ussigw-cdr
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-core-cdr
+        - name: ussigw-es-cdr
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-core-es-cdr
+        - name: ussigw-log
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-core-log
+        - name: ussigw-core-data
+          configMap:
+            name: ussigw-core-data-configmap
+        - name: ussigw-alarm
+          persistentVolumeClaim:
+            claimName: pvc-ussigw-alarm
+---
+# Source: ussigw-core/templates/ussigw-core-configmap.yaml
+# core configs
+  
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-core-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  # Configuration values can be set as key-value properties
+  SPRING_PROFILES_ACTIVE: "local"
+  SPRING_CONFIG_LOCATION: "/space/ussigw/properties/core/"
+  SPRING_CONFIG_NAME: ussigw-core-spring
+---
+# Source: ussigw-core/templates/ussigw-core-data-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-core-data-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  trace.conf: |-
+    set filter product=ussigw:ALL:DEBUG
+    set dispatcher file=/space/ussigw/log/ussigw_trace
+  sgw_client_config.json: |-
+    {
+      "ssn" : 8,
+      "spc" : {
+        "zone" : 1,
+        "cluster" : 2,
+        "member" : 3
+      },
+      "serverType" : "MOBICENTS",
+      "servers" : [ "server1:0", "server2:1" ],
+      "rmiRegistryUrl" : "//localhost:2001",
+      "rmiHost" : "127.0.0.1",
+      "applicationName" : "ussi",
+      "clientId" : 1,
+      "mapVersion" : 9
+    }
+---
+# Source: ussigw-core/templates/ussigw-core-properties-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ussigw-core-properties-configmap
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-300"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  ussigw-core-spring.properties: |
+    spring.config.import = optional:configserver:http://ussigw-configuration-service:8880
+  
+    management.endpoints.web.exposure.include = *
+    spring.profiles.active = local
+    spring.application.name = core
+    spring.cloud.config.label = master
+    spring.cloud.config.fail-fast = false
+    spring.cloud.config.request-read-timeout = 20000
+    spring.cloud.config.username=admin
+    spring.cloud.config.password=tneu34
+  
+    logging.config = /space/ussigw/properties/core/ussigw-core-logback.xml
+  ussigw-core-logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+  
+        <property name="HOME_LOG" value="/space/ussigw/log"/>
+  
+        <appender name="CORE-ROLLING" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <!-- path and name of active log file -->
+            <file>${HOME_LOG}/core.log</file>
+  
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <!-- path and name pattern of archived log files -->
+                <fileNamePattern>${HOME_LOG}/core-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+  
+                <!-- each archived file, size max 50MB -->
+                <maxFileSize>50MB</maxFileSize>
+  
+                <!-- total size of all archived files, if total size > 1GB, it will delete old archived file -->
+                <totalSizeCap>1GB</totalSizeCap>
+  
+                <!-- 60 days to keep archived files -->
+                <maxHistory>60</maxHistory>
+            </rollingPolicy>
+  
+            <encoder>
+                <pattern>%msg%n</pattern>
+            </encoder>
+        </appender>
+  
+        <logger name="com.telenity.ussigw.core" level="info" additivity="false">
+            <appender-ref ref="CORE-ROLLING"/>
+        </logger>
+  
+        <root level="info">
+            <appender-ref ref="CORE-ROLLING"/>
+        </root>
+  
+    </configuration>
+---
+# Source: ussigw-core/templates/tests/dummy-chart-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "dummy-test" 
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: echo
+      image: docker.io/gurolakman/ussigw-core:1.0.4
+      command: ['sleep']
+      args: ['30']
+  restartPolicy: Never

@@ -21,6 +21,8 @@ import pandas as pd
 import ast
 import math
 from llm_apis import query_chatgpt
+from difflib import Differ
+from pprint import pprint
 
 
 def save_to_csv(rq2_rows):
@@ -198,6 +200,8 @@ def validate_syntax():
     """Validate the syntax of the YAML snippet.
     """
 
+    return 0
+
     # Run kubeconfom on the snippet to validate the syntax
     os.system("kubeconform -summary -output json tmp_snippets/original_snippet.yaml > tmp_snippets/syntax.json")
 
@@ -212,134 +216,35 @@ def validate_syntax():
     with open("tmp_snippets/syntax.json", "r", encoding="utf-8") as file:
         refactored_syntax_error = yaml.safe_load(file)
 
-    return math.abs(original_syntax_error["summary"]["invalid"] - refactored_syntax_error["summary"]["invalid"])
+    return math.fabs(original_syntax_error["summary"]["invalid"] - refactored_syntax_error["summary"]["invalid"])
 
 
 def compare_files(original_snippet, refactored_snippet):
-    """Compare the original and refactored snippets and returns 
-    the number of added, removed, and changed lines.
+    """Compare the original and refactored snippets using the difflib.Differ library.
+    https://docs.python.org/3/library/difflib.html#differ-example
+
+    Each line of a Differ delta begins with a two-letter code:
+    Code  | Meaning
+    ---------------------------------------
+    '- '  | line unique to sequence 1
+    '+ '  | line unique to sequence 2
+    '  '  | line common to both sequences
+    '? '  | line not present in either input sequence
     """
 
-    added = 0
-    removed = 0
+    added = len(refactored_snippet) - len(original_snippet) if len(refactored_snippet) > len(original_snippet) else 0
+    removed = len(original_snippet) - len(refactored_snippet) if len(original_snippet) > len(refactored_snippet) else 0
     changed = 0
 
-    if len(refactored_snippet) > len(original_snippet):
-        added = len(refactored_snippet) - len(original_snippet)
+    d = Differ()
+    d.ignore_prefixes = ["#"]
 
-        ref_idx = 0
-        ori_idx = 0
+    result = list(d.compare(original_snippet, refactored_snippet))
+    # pprint(result)
 
-        while ref_idx < len(refactored_snippet) and ori_idx < len(original_snippet):
-
-            if "#" in refactored_snippet[ref_idx]:
-                print(refactored_snippet[ref_idx])
-                print(refactored_snippet[ref_idx].startswith("#"))
-
-            if refactored_snippet[ref_idx].startswith("#"):
-                ref_idx += 1
-
-            if original_snippet[ori_idx].startswith("#"):
-                ori_idx += 1
-
-            if ref_idx < len(refactored_snippet) and ori_idx < len(original_snippet):
-                if refactored_snippet[ref_idx] != original_snippet[ori_idx]:
-                    # Transform the snippet to a dict
-                    try:
-                        original_snippet_dict = yaml.safe_load(original_snippet[ori_idx])
-                    except yaml.parser.ParserError:
-                        ori_idx += 1
-                        continue
-
-                    try:
-                        refactored_snippet_dict = yaml.safe_load(refactored_snippet[ref_idx])
-                    except yaml.parser.ParserError:
-                        ref_idx += 1
-                        continue
-
-                    # If are both of dictionary type
-                    if isinstance(original_snippet_dict, dict) and isinstance(refactored_snippet_dict, dict):
-                        if list(refactored_snippet_dict.keys())[0] == list(original_snippet_dict.keys())[0]:
-                            changed += 1
-                            ref_idx += 1
-                            ori_idx += 1
-                        else:
-                            ref_idx += 1
-
-                    elif isinstance(original_snippet_dict, list) and isinstance(refactored_snippet_dict, list):
-                        if set(refactored_snippet_dict) != set(original_snippet_dict):
-                            changed += 1
-                            ref_idx += 1
-                            ori_idx += 1
-                        else:
-                            ref_idx += 1
-
-                    else:
-                        ref_idx += 1
-
-                else:
-                    ref_idx += 1
-                    ori_idx += 1
-
-    elif len(refactored_snippet) < len(original_snippet):
-        removed = len(original_snippet) - len(refactored_snippet)
-
-        ref_idx = 0
-        ori_idx = 0
-
-        while ref_idx < len(refactored_snippet) and ori_idx < len(original_snippet):
-            if refactored_snippet[ref_idx].startswith("#"):
-                ref_idx += 1
-
-            if original_snippet[ori_idx].startswith("#"):
-                ori_idx += 1
-
-            if ref_idx < len(refactored_snippet) and ori_idx < len(original_snippet):
-                if original_snippet[ori_idx] != refactored_snippet[ref_idx]:
-
-                    # Transform the snippet to a dict
-                    try:
-                        original_snippet_dict = yaml.safe_load(original_snippet[ori_idx])
-                    except yaml.parser.ParserError:
-                        ori_idx += 1
-                        continue
-
-                    try:
-                        refactored_snippet_dict = yaml.safe_load(refactored_snippet[ref_idx])
-                    except yaml.parser.ParserError:
-                        ref_idx += 1
-                        continue
-
-                    # If are both of dictionary type
-                    if isinstance(original_snippet_dict, dict) and isinstance(refactored_snippet_dict, dict):
-                        if list(original_snippet_dict.keys())[0] == list(refactored_snippet_dict.keys())[0]:
-                            changed += 1
-                            ref_idx += 1
-                            ori_idx += 1
-                        else:
-                            ori_idx += 1
-
-                    elif isinstance(original_snippet_dict, list) and isinstance(refactored_snippet_dict, list):
-                        if set(refactored_snippet_dict) != set(original_snippet_dict):
-                            changed += 1
-                            ref_idx += 1
-                            ori_idx += 1
-                        else:
-                            ori_idx += 1
-
-                    else:
-                        ori_idx += 1
-
-                else:
-                    ref_idx += 1
-                    ori_idx += 1
-
-    else:
-        for original_row, refactored_row in zip(original_snippet, refactored_snippet):
-
-            if original_row.startswith("#") or refactored_row.startswith("#"):
-                continue
-            if original_row != refactored_row:
+    for idx, line in enumerate(result):
+        if line.startswith("-"):
+            if idx+1 < len(result) and result[idx + 1].startswith("+"):
                 changed += 1
 
     return added, removed, changed
