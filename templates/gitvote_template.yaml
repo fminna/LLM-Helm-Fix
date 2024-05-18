@@ -1,0 +1,405 @@
+---
+# Source: gitvote/templates/gitvote_serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitvote
+---
+# Source: gitvote/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.2.1
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  postgresql-password: "cG9zdGdyZXM="
+---
+# Source: gitvote/templates/dbmigrator_secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dbmigrator-config
+type: Opaque
+stringData:
+  tern.conf: |-
+    [database]
+    host = release-name-postgresql.default
+    port = 5432
+    database = gitvote
+    user = postgres
+    password = postgres
+---
+# Source: gitvote/templates/gitvote_secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitvote-config
+type: Opaque
+stringData:
+  gitvote.yml: |-
+    addr: 0.0.0.0:9000
+    db:
+      host: release-name-postgresql.default
+      port: 5432
+      dbname: gitvote
+      user: postgres
+      password: postgres
+    log:
+      format: json
+    github:
+      appID: 
+      appPrivateKey: 
+      webhookSecret:
+---
+# Source: gitvote/templates/gitvote_serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-reader
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: gitvote/templates/gitvote_serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitvote-job-reader
+subjects:
+  - kind: ServiceAccount
+    name: gitvote
+roleRef:
+  kind: Role
+  name: job-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: gitvote/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app: postgresql
+    chart: postgresql-8.2.1
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+---
+# Source: gitvote/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.2.1
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+    role: master
+---
+# Source: gitvote/templates/gitvote_service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitvote
+  labels:
+    app.kubernetes.io/component: gitvote
+    helm.sh/chart: gitvote-1.1.1
+    app.kubernetes.io/name: gitvote
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: gitvote
+    app.kubernetes.io/name: gitvote
+    app.kubernetes.io/instance: release-name
+---
+# Source: gitvote/templates/gitvote_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitvote
+  labels:
+    app.kubernetes.io/component: gitvote
+    helm.sh/chart: gitvote-1.1.1
+    app.kubernetes.io/name: gitvote
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: gitvote
+      app.kubernetes.io/name: gitvote
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: gitvote
+        app.kubernetes.io/name: gitvote
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: gitvote
+      initContainers:
+        -
+          name: check-db-ready
+          image: artifacthub/postgres:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGHOST
+              value: release-name-postgresql.default
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "postgres"
+          command: ['sh', '-c', 'until pg_isready; do echo waiting for database; sleep 2; done;']
+        - name: check-dbmigrator-run
+          image: "bitnami/kubectl:1.28"
+          imagePullPolicy: IfNotPresent
+          command: ['kubectl', 'wait', '--namespace=default', '--for=condition=complete', 'job/dbmigrator-install', '--timeout=60s']
+      containers:
+        - name: gitvote
+          image: public.ecr.aws/g6m3a0y9/gitvote:v1.1.1
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: gitvote-config
+              mountPath: "/home/gitvote/.config/gitvote"
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          resources:
+            {}
+          command: ['gitvote', '-c', '/home/gitvote/.config/gitvote/gitvote.yml']
+      volumes:
+        - name: gitvote-config
+          secret:
+            secretName: gitvote-config
+---
+# Source: gitvote/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.2.1
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: postgresql
+      release: "release-name"
+      role: master
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app: postgresql
+        chart: postgresql-8.2.1
+        release: "release-name"
+        heritage: "Helm"
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+        - name: init-chmod-data
+          image: docker.io/bitnami/minideb:stretch
+          imagePullPolicy: "Always"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mkdir -p /data/data
+              chmod 700 /data/data
+              find /data -mindepth 0 -maxdepth 1 -not -name ".snapshot" -not -name "lost+found" | \
+                xargs chown -R 1001:1001
+              chmod -R 777 /dev/shm
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              subPath: 
+            - name: dshm
+              mountPath: /dev/shm
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/artifacthub/postgres:latest
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/data"
+            - name: PGDATA
+              value: "/data/pgdata"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "gitvote"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -d "gitvote" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -d "gitvote" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /data
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: gitvote/templates/dbmigrator_job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dbmigrator-install
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        -
+          name: check-db-ready
+          image: artifacthub/postgres:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGHOST
+              value: release-name-postgresql.default
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "postgres"
+          command: ['sh', '-c', 'until pg_isready; do echo waiting for database; sleep 2; done;']
+      containers:
+        - name: dbmigrator
+          image: public.ecr.aws/g6m3a0y9/gitvote-dbmigrator:v1.1.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TERN_CONF
+              value: /home/gitvote/.config/gitvote/tern.conf
+          volumeMounts:
+            - name: dbmigrator-config
+              mountPath: /home/gitvote/.config/gitvote
+              readOnly: true
+          command: ["./migrate.sh"]
+      volumes:
+        - name: dbmigrator-config
+          secret:
+            secretName: dbmigrator-config
+---
+# Source: gitvote/templates/gitvote_ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitvote
+  labels:
+    app.kubernetes.io/component: gitvote
+    helm.sh/chart: gitvote-1.1.1
+    app.kubernetes.io/name: gitvote
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  defaultBackend:
+    service:
+      name: gitvote
+      port:
+        number: 80

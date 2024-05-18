@@ -1,0 +1,297 @@
+---
+# Source: daemon/templates/daemon.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: helm-example-seed-1
+spec:
+  type: ClusterIP
+  # We want all pods to have their addresses published for the sake of the
+  # other testnet pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  selector:
+    app: helm-example-seed-1
+  ports:
+  - name: tcp-p2p
+    port: 10000
+    targetPort: external-port
+---
+# Source: daemon/templates/daemon.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: helm-example-block-producer-1
+spec:
+  type: ClusterIP
+  # We want all pods to have their addresses published for the sake of the
+  # other testnet pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  selector:
+    app: helm-example-block-producer-1
+  ports:
+  - name: tcp-p2p
+    port: 10001
+    targetPort: external-port
+---
+# Source: daemon/templates/daemon.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helm-example-seed-1
+  labels:
+    app: helm-example-seed-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: helm-example-seed-1
+  template:
+    metadata:
+      labels:
+        app: helm-example-seed-1
+        testnet: mainnet
+        role: helm-example
+        class: seed
+        version: 1.3.1.2
+        syncStatus: INIT
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: "9100"
+        prometheus.io/path: '/metrics'
+    spec:
+      initContainers:
+      - name: fix-libp2p-perms
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - cp /libp2p-keys/* /root/libp2p-keys && chmod -R 0700 /root/libp2p-keys/
+        volumeMounts:
+        - name: mounted-libp2p-keys
+          mountPath: /libp2p-keys
+        - name: fixed-libp2p-keys
+          mountPath: /root/libp2p-keys
+      
+      containers:
+      - name: mina
+        resources:
+          limits:
+          requests:
+            memory: 20.0Gi
+            cpu: 8
+        image: gcr.io/o1labs-192920/mina-daemon:1.3.1.2-25388a0-bullseye-mainnet
+        
+        args: [ "daemon",
+          "--file-log-level", "Error",
+          "--log-level", "Info","--client-port", "$(DAEMON_CLIENT_PORT)",
+          "--rest-port", "$(DAEMON_REST_PORT)",
+          "--external-port", "$(DAEMON_EXTERNAL_PORT)",
+          "--metrics-port", "$(DAEMON_METRICS_PORT)",
+          "--max-connections", "75",
+          "--peer-list-url", "https://storage.googleapis.com/mina-seed-lists/mainnet_seeds.txt",
+          "--discovery-keypair", "/root/libp2p-keys/seed-1-libp2p",
+          "--peer", "/dns4/seed-1.mainnet.o1test.net/tcp/10000/p2p/12D3KooWCa1d7G3SkRxy846qTvdAFX69NnoYZ32orWVLqJcDVGHW",
+          "--peer", "/dns4/seed-2.mainnet.o1test.net/tcp/10001/p2p/12D3KooWK4NfthViCTyLgVQa1WvqDC1NccVxGruCXCZUt3GqvFvn",
+          "--peer", "/dns4/seed-3.mainnet.o1test.net/tcp/10002/p2p/12D3KooWNofeYVAJXA3WGg2qCDhs3GEe71kTmKpFQXRbZmCz1Vr7",
+          "--peer", "/dns4/seed-4.mainnet.o1test.net/tcp/10003/p2p/12D3KooWEdBiTUQqxp3jeuWaZkwiSNcFxC6d6Tdq7u2Lf2ZD2Q6X",
+          "--peer", "/dns4/seed-5.mainnet.o1test.net/tcp/10004/p2p/12D3KooWL1DJTigSwuKQRfQE3p7puFUqfbHjXbZJ9YBWtMNpr3GU",
+          "--peer", "/dns4/seed-6.mainnet.o1test.net/tcp/10005/p2p/12D3KooWHGx4u32n42ub7dJNxAcAhwiA1WDq1Zsjn3k7RsS11pE8",
+          "-enable-peer-exchange", "true", "-seed",
+          "--log-json"
+        ]
+        env:
+        - name: NETWORK_NAME
+          value: mainnet
+        - name: DAEMON_REST_PORT
+          value: "3085"
+        - name: DAEMON_CLIENT_PORT
+          value: "8301"
+        - name: DAEMON_METRICS_PORT
+          value: "9100"
+        - name: MINA_CLIENT_TRUSTLIST
+          value: "10.0.0.0/8"
+        - name: DAEMON_EXTERNAL_PORT
+          value: "10000"
+        - name: MINA_LIBP2P_PASS
+          valueFrom:
+            secretKeyRef:
+              name: seed-1
+              key: "libp2p-password"
+        ports:
+        - name: client-port
+          protocol: TCP
+          containerPort: 8301
+        - name: graphql-port
+          protocol: TCP
+          containerPort: 3085
+        - name: metrics-port
+          protocol: TCP
+          containerPort: 9100
+        - name: external-port
+          protocol: TCP
+          containerPort: 10000
+          hostPort: 
+        
+        livenessProbe:
+          tcpSocket:
+            port: external-port  
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command: [
+              "/bin/bash",
+              "-c",
+              "source /healthcheck/utilities.sh && isDaemonSynced && peerCountGreaterThan 0 && updateSyncStatusLabel seed-1"
+            ]
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: fixed-libp2p-keys
+          mountPath: /root/libp2p-keys
+      volumes:
+      - name: mounted-libp2p-keys
+        secret:
+          secretName: seed-1
+          defaultMode: 0600
+          items:
+          - key: seed-1-libp2p
+            path: seed-1-libp2p
+          - key: seed-1-libp2p.peerid
+            path: seed-1-libp2p.peerid
+      - name: fixed-libp2p-keys
+        emptyDir: {}
+---
+# Source: daemon/templates/daemon.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helm-example-block-producer-1
+  labels:
+    app: helm-example-block-producer-1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: helm-example-block-producer-1
+  template:
+    metadata:
+      labels:
+        app: helm-example-block-producer-1
+        testnet: mainnet
+        role: helm-example
+        class: block-producer
+        version: 1.3.1.2
+        syncStatus: INIT
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: "9100"
+        prometheus.io/path: '/metrics'
+    spec:
+      initContainers:
+      
+      - name: fix-mina-perms
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - cp /mina-keys/* /root/mina-keys/ && chmod -R 0700 /root/mina-keys/
+        volumeMounts:
+        - name: mounted-mina-keys
+          mountPath: /mina-keys
+        - name: fixed-mina-keys
+          mountPath: /root/mina-keys
+      containers:
+      - name: mina
+        resources:
+          limits:
+          requests:
+            memory: 20.0Gi
+            cpu: 8
+        image: gcr.io/o1labs-192920/mina-daemon:1.3.1.2-25388a0-bullseye-mainnet
+        
+        args: [ "daemon",
+          "--file-log-level", "Error",
+          "--log-level", "Debug","--client-port", "$(DAEMON_CLIENT_PORT)",
+          "--rest-port", "$(DAEMON_REST_PORT)",
+          "--external-port", "$(DAEMON_EXTERNAL_PORT)",
+          "--metrics-port", "$(DAEMON_METRICS_PORT)",
+          "--max-connections", "25",
+          "--peer-list-url", "https://storage.googleapis.com/mina-seed-lists/mainnet_seeds.txt",
+          "--block-producer-key", "/root/mina-keys/block-producer-1-key",
+          "--peer", "/dns4/seed-1.mainnet.o1test.net/tcp/10000/p2p/12D3KooWCa1d7G3SkRxy846qTvdAFX69NnoYZ32orWVLqJcDVGHW",
+          "--peer", "/dns4/seed-2.mainnet.o1test.net/tcp/10001/p2p/12D3KooWK4NfthViCTyLgVQa1WvqDC1NccVxGruCXCZUt3GqvFvn",
+          "--peer", "/dns4/seed-3.mainnet.o1test.net/tcp/10002/p2p/12D3KooWNofeYVAJXA3WGg2qCDhs3GEe71kTmKpFQXRbZmCz1Vr7",
+          "--peer", "/dns4/seed-4.mainnet.o1test.net/tcp/10003/p2p/12D3KooWEdBiTUQqxp3jeuWaZkwiSNcFxC6d6Tdq7u2Lf2ZD2Q6X",
+          "--peer", "/dns4/seed-5.mainnet.o1test.net/tcp/10004/p2p/12D3KooWL1DJTigSwuKQRfQE3p7puFUqfbHjXbZJ9YBWtMNpr3GU",
+          "--peer", "/dns4/seed-6.mainnet.o1test.net/tcp/10005/p2p/12D3KooWHGx4u32n42ub7dJNxAcAhwiA1WDq1Zsjn3k7RsS11pE8",
+          "--log-json"
+        ]
+        env:
+        - name: NETWORK_NAME
+          value: mainnet
+        - name: DAEMON_REST_PORT
+          value: "3085"
+        - name: DAEMON_CLIENT_PORT
+          value: "8301"
+        - name: DAEMON_METRICS_PORT
+          value: "9100"
+        - name: MINA_CLIENT_TRUSTLIST
+          value: "10.0.0.0/8"
+        - name: DAEMON_EXTERNAL_PORT
+          value: "10001"
+        - name: MINA_PRIVKEY_PASS
+          valueFrom:
+            secretKeyRef:
+              name: block-producer-1
+              key: "key-password"
+        ports:
+        - name: client-port
+          protocol: TCP
+          containerPort: 8301
+        - name: graphql-port
+          protocol: TCP
+          containerPort: 3085
+        - name: metrics-port
+          protocol: TCP
+          containerPort: 9100
+        - name: external-port
+          protocol: TCP
+          containerPort: 10001
+          hostPort: 
+        
+        livenessProbe:
+          tcpSocket:
+            port: external-port  
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command: [
+              "/bin/bash",
+              "-c",
+              "source /healthcheck/utilities.sh && isDaemonSynced && peerCountGreaterThan 0 && updateSyncStatusLabel block-producer-1"
+            ]
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: fixed-mina-keys
+          mountPath: /root/mina-keys
+      volumes:
+      - name: mounted-mina-keys
+        secret:
+          secretName: block-producer-1
+          defaultMode: 0600
+          items:
+          - key: block-producer-1-key
+            path: block-producer-1-key
+          - key: block-producer-1-key.pub
+            path: block-producer-1-key.pub
+      - name: fixed-mina-keys
+        emptyDir: {}
+---
+# Source: daemon/templates/daemon.yaml
+---

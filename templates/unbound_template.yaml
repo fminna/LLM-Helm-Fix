@@ -1,0 +1,147 @@
+---
+# Source: unbound/templates/disruption_budget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-unbound
+  labels:
+    app: unbound
+    chart: unbound-1.0.0
+    release: release-name
+    heritage: Helm
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: unbound
+      release: release-name
+---
+# Source: unbound/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-unbound
+  labels:
+    app: unbound
+    chart: unbound-1.0.0
+    release: release-name
+    heritage: Helm
+data:
+  unbound.conf: |-
+    server:
+        chroot: ""
+        num-threads: 1
+        directory: "/etc/unbound"
+        port: 53
+        so-reuseport: yes
+        do-daemonize: no
+        logfile: ""
+        use-syslog: no
+        auto-trust-anchor-file: "/var/lib/unbound/root.key"
+        verbosity: 1
+        statistics-interval: 0
+        statistics-cumulative: no
+
+        interface: 127.0.0.1
+        interface: 0.0.0.0
+
+        access-control: 127.0.0.1/32 allow
+
+        local-data: "health.check.unbound A 127.0.0.1"
+        local-data-ptr: "127.0.0.1 health.check.unbound"
+---
+# Source: unbound/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-unbound
+  labels:
+    app: unbound
+    chart: unbound-1.0.0
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    app: unbound
+    release: release-name
+  ports:
+  - name: dns-udp
+    protocol: UDP
+    port: 53
+    targetPort: dns-udp
+  - name: dns-tcp
+    protocol: TCP
+    port: 53
+    targetPort: dns-tcp
+---
+# Source: unbound/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-unbound
+  labels:
+    app: unbound
+    chart: unbound-1.0.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unbound
+      release: release-name
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        chart: unbound-1.0.0
+        app: unbound
+        heritage: Helm
+        release: release-name
+      annotations:
+        checksum/config: f596c928ba0c5c8b99064671f043c9a2df7f6d0c50e119df07f558dc4085bae6
+    spec:
+      containers:
+      - name: "unbound"
+        image: markbnj/unbound-docker:0.1.0
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - name: "dns-udp"
+          containerPort: 53
+          protocol: "UDP"
+        - name: "dns-tcp"
+          containerPort: 53
+          protocol: "TCP"
+        volumeMounts:
+        - name: "unbound-conf"
+          mountPath: "/etc/unbound/"
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: "/healthz"
+            port: 8080
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: "/healthz"
+            port: 8080
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+      - name: "healthz"
+        image: googlecontainer/exechealthz:1.2
+        imagePullPolicy: "IfNotPresent"
+        args:
+          - "-cmd=nslookup health.check.unbound 127.0.0.1:53 > /dev/null"
+        ports:
+        - name: healthz
+          containerPort: 8080
+          protocol: TCP
+      volumes:
+      - name: "unbound-conf"
+        configMap:
+          name: release-name-unbound

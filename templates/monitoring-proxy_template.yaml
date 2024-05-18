@@ -1,0 +1,217 @@
+---
+# Source: monitoring-proxy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-monitoring-proxy
+  labels:
+    helm.sh/chart: monitoring-proxy-0.2.0
+    app.kubernetes.io/name: monitoring-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: monitoring-proxy/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-monitoring-proxy-haproxy
+data:
+  haproxy.cfg: |
+    defaults
+      mode tcp
+    frontend kube-controller-manager
+      bind ${POD_IP}:10257
+      default_backend kube-controller-manager
+    backend kube-controller-manager
+      server kube-controller-manager 127.0.0.1:10257
+    frontend kube-scheduler
+      bind ${POD_IP}:10259
+      default_backend kube-scheduler
+    backend kube-scheduler
+      server kube-scheduler 127.0.0.1:10259
+---
+# Source: monitoring-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-monitoring-proxy
+rules:
+- apiGroups: ["authentication.k8s.io"]
+  resources:
+  - tokenreviews
+  verbs: ["create"]
+- apiGroups: ["authorization.k8s.io"]
+  resources:
+  - subjectaccessreviews
+  verbs: ["create"]
+---
+# Source: monitoring-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-monitoring-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-monitoring-proxy
+subjects:
+- kind: ServiceAccount
+  name: release-name-monitoring-proxy
+  namespace: default
+---
+# Source: monitoring-proxy/templates/cp-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-monitoring-proxy
+  labels:
+    helm.sh/chart: monitoring-proxy-0.2.0
+    app.kubernetes.io/name: monitoring-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: control-plane
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monitoring-proxy
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: monitoring-proxy-0.2.0
+        app.kubernetes.io/name: monitoring-proxy
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: control-plane
+    spec:
+      serviceAccountName: release-name-monitoring-proxy
+      hostNetwork: true
+      volumes:
+        - name: config-haproxy
+          configMap:
+            name: release-name-monitoring-proxy-haproxy
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+      containers:
+        - name: haproxy
+          image: haproxy:2.9.6
+          volumeMounts:
+            - name: config-haproxy
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 1m
+              memory: 100Mi
+          ports:
+            - containerPort: 10257
+              name: kube-c-m
+            - containerPort: 10259
+              name: kube-scheduler
+          securityContext:
+            allowPrivilegeEscalation: false
+        - name: kube-rbac-proxy
+          image: quay.io/brancz/kube-rbac-proxy:v0.16.0
+          args:
+            - "--insecure-listen-address=$(POD_IP):2381"
+            - "--upstream=http://127.0.0.1:2381/"
+            - "--auth-header-fields-enabled"
+            - "--allow-paths=/metrics"
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 1m
+              memory: 10Mi
+          ports:
+            - containerPort: 2381
+              name: etcd
+          securityContext:
+            allowPrivilegeEscalation: false
+---
+# Source: monitoring-proxy/templates/kube-proxy-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-monitoring-proxy-kube-proxy
+  labels:
+    helm.sh/chart: monitoring-proxy-0.2.0
+    app.kubernetes.io/name: monitoring-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kube-proxy
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monitoring-proxy
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: kube-proxy
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: monitoring-proxy-0.2.0
+        app.kubernetes.io/name: monitoring-proxy
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: kube-proxy
+    spec:
+      serviceAccountName: release-name-monitoring-proxy
+      hostNetwork: true
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: kube-rbac-proxy
+          image: quay.io/brancz/kube-rbac-proxy:v0.16.0
+          args:
+            - "--insecure-listen-address=$(POD_IP):10249"
+            - "--upstream=http://127.0.0.1:10249/"
+            - "--auth-header-fields-enabled"
+            - "--allow-paths=/metrics"
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 1m
+              memory: 10Mi
+          ports:
+            - containerPort: 10249
+              name: kube-proxy
+          securityContext:
+            allowPrivilegeEscalation: false

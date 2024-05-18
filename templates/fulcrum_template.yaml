@@ -1,0 +1,234 @@
+---
+# Source: fulcrum/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-fulcrum
+  labels:
+    helm.sh/chart: fulcrum-0.5.15
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.9.7"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: fulcrum/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fulcrum
+  labels:
+    helm.sh/chart: fulcrum-0.5.15
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.9.7"
+    app.kubernetes.io/managed-by: Helm
+data:
+  fulcrum.conf: |
+    tcp = 0.0.0.0:50001
+    ssl = 0.0.0.0:50002
+    ws = 0.0.0.0:50003
+    wss = 0.0.0.0:50004
+    stats = 0.0.0.0:8080
+    bitcoind = bitcoind-onchain:8332
+    key = /.fulcrum/tls.key
+    cert = /.fulcrum/tls.cert
+    rpcuser = rpcuser
+    datadir = /.fulcrum/db
+    bitcoind_clients = 1
+    peering = false
+    announce = false
+    fast-sync = 1024
+    worker_threads = 1
+    bitcoind_throttle = 25 10 2
+---
+# Source: fulcrum/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-fulcrum
+  annotations:
+    "helm.sh/resource-policy": keep
+  labels:
+    app: "fulcrum"
+    chart: "fulcrum-0.5.15"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "200Gi"
+---
+# Source: fulcrum/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-fulcrum
+  labels:
+    helm.sh/chart: fulcrum-0.5.15
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.9.7"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: [ "get"]
+---
+# Source: fulcrum/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-fulcrum
+roleRef:
+  kind: Role
+  name: release-name-fulcrum
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: release-name-fulcrum
+    namespace: default
+---
+# Source: fulcrum/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fulcrum
+  labels:
+    helm.sh/chart: fulcrum-0.5.15
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.9.7"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp
+      port: 50001
+    - name: ssl
+      port: 50002
+    - name: ws
+      port: 50003
+    - name: wss
+      port: 50004
+    - name: stats
+      port: 8080
+  selector:
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+---
+# Source: fulcrum/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-fulcrum
+  labels:
+    helm.sh/chart: fulcrum-0.5.15
+    app.kubernetes.io/name: fulcrum
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.9.7"
+    app.kubernetes.io/managed-by: Helm
+    kube-monkey/identifier: release-name
+spec:
+  serviceName: release-name-fulcrum
+  terminationGracePeriodSeconds: 
+  selector:
+    matchLabels:
+      app: release-name-fulcrum
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fulcrum
+        app.kubernetes.io/instance: release-name
+        app: release-name-fulcrum
+        release: "release-name"
+    spec:
+      serviceAccountName: release-name-fulcrum
+      initContainers:
+        - name: copy-fulcrum-config
+          image: "cculianu/fulcrum:v1.9.7"
+          imagePullPolicy: IfNotPresent
+          command:
+          - 'sh'
+          - '-c'
+          - |
+            # fill the bitcoin rpcpassword in fulcrum.conf
+            cat <<EOF > /config/fulcrum.conf
+            rpcpassword=$(cat /rpcpassword/password)
+            $(cat /configmap/fulcrum.conf)
+            EOF
+            # create the ssl key and cert files if not present
+            if [ ! -f /.fulcrum/tls.key ] || [ ! -f /.fulcrum/tls.cert ]; then
+              openssl req -newkey rsa:2048 -sha256 -nodes -x509 -days 365 -subj "/O=Fulcrum" -keyout "/.fulcrum/tls.key" -out "/.fulcrum/tls.cert"
+            fi
+          volumeMounts:
+            - name: configmap
+              mountPath: /configmap
+            - name: config
+              mountPath: /config
+            - name: rpcpassword
+              mountPath: /rpcpassword
+            - name: fulcrum-storage
+              mountPath: /.fulcrum
+      containers:
+        - name: fulcrum
+          image: "cculianu/fulcrum:v1.9.7"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: tcp
+              containerPort: 50001
+            - name: ssl
+              containerPort: 50002
+            - name: ws
+              containerPort: 50003
+            - name: wss
+              containerPort: 50004
+            - name: stats
+              containerPort: 8080
+          command: ["Fulcrum", "/config/fulcrum.conf"]
+          volumeMounts:
+            - name: config
+              mountPath: /config/fulcrum.conf
+              subPath: fulcrum.conf
+            - name: fulcrum-storage
+              mountPath: /.fulcrum
+          startupProbe:
+            tcpSocket:
+              port: stats
+            failureThreshold: 10
+            periodSeconds: 2
+          readinessProbe:
+            tcpSocket:
+              port: stats
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket:
+              port: ssl
+            # allow 10h for initial sync
+            initialDelaySeconds: 36000
+            periodSeconds: 10
+            failureThreshold: 2
+          # Define the resources to be created
+          resources:
+            {}
+      # Define the volumes to be used by the container
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: rpcpassword
+          secret:
+            secretName: bitcoind-onchain-rpcpassword
+        - name: configmap
+          configMap:
+            name: release-name-fulcrum
+        - name: fulcrum-storage
+          persistentVolumeClaim:
+            claimName: release-name-fulcrum

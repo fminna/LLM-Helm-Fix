@@ -1,0 +1,330 @@
+---
+# Source: open-webconcept/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-open-webconcept
+  labels:
+    app.kubernetes.io/name: release-name-open-webconcept
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  mariadb-password: "IWNoYW5nZU1lIQ=="
+  mysql-root-password: "IWNoYW5nZU1lIQ=="
+---
+# Source: open-webconcept/templates/openweb-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-webconcept-configmap
+  #namespace: prod
+  labels:
+    app.kubernetes.io/name: open-webconcept-configmap
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  
+  mariadb-host: 'open-webconcept-mysql'
+  
+  mariadb-port: "3306"
+  mariadb-name: openweb
+  mariadb-user: openweb
+---
+# Source: open-webconcept/templates/mysql-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: openweb-database
+  labels:
+    app.kubernetes.io/name: openweb-database
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+---
+# Source: open-webconcept/templates/openweb-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openweb-data
+  labels:
+    app.kubernetes.io/name: openweb-data
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: open-webconcept/templates/mysql-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webconcept-mysql
+  labels:
+    app.kubernetes.io/name: open-webconcept-mysql
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+  selector:
+    app.kubernetes.io/name: open-webconcept-mysql
+    app.kubernetes.io/instance: release-name
+---
+# Source: open-webconcept/templates/openweb-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webconcept
+  labels:
+    app.kubernetes.io/name: open-webconcept
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 80
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: open-webconcept-wordpress
+    app.kubernetes.io/instance: release-name
+---
+# Source: open-webconcept/templates/mysql-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webconcept-mysql
+  namespace: default
+  labels:
+    app.kubernetes.io/name: open-webconcept-mysql
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-webconcept-mysql
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: open-webconcept-mysql
+        app.kubernetes.io/part-of: open-webconcept
+        helm.sh/chart: open-webconcept-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      initContainers:
+        - name: "remove-lost-found"
+          image: "busybox:1.32"
+          imagePullPolicy: 
+          resources:
+          command:  ["rm", "-fr", "/var/lib/mysql/lost+found"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      nodeSelector:
+                null
+      containers:
+        - name: open-webconcept-mysql
+          image: mysql:5.7
+          imagePullPolicy: 
+          resources:
+                      {}
+          env:
+            - name: MYSQL_ALLOW_EMPTY_PASSWORD
+              value: "false"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-webconcept
+                  key: mysql-root-password
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-webconcept
+                  key: mariadb-password
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-user
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-name
+          ports:
+            - name: mysql
+              containerPort: 3306
+
+          livenessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openweb-database
+---
+# Source: open-webconcept/templates/openweb-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webconcept-wordpress
+  labels:
+    app.kubernetes.io/name: open-webconcept-wordpress
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-webconcept-wordpress
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: open-webconcept-wordpress
+        app.kubernetes.io/part-of: open-webconcept
+        helm.sh/chart: open-webconcept-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      volumes:
+        - name: openweb-data
+          persistentVolumeClaim:
+            claimName: openweb-data
+
+      containers:
+        - name: open-webconcept-wordpress
+          image: "docker.io/conduction/openwebconcept:4.8"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: openweb-data
+              mountPath: /bitnami/wordpress
+              subPath: wordpress
+          env:
+            - name: WORDPRESS_SCHEME
+              value: http
+            - name: WORDPRESS_DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-host
+            - name: WORDPRESS_DB_PORT_NUMBER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-port
+            - name: WORDPRESS_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-name
+            - name: WORDPRESS_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-webconcept-configmap
+                  key: mariadb-user
+            - name: WORDPRESS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-webconcept
+                  key: mariadb-password
+            - name: WORDPRESS_TABLE_PREFIX
+              value: 'wp_'
+            - name: WORDPRESS_SKIP_INSTALL
+              value: 'yes'
+            - name: WORDPRESS_SITEURL
+              value: http://zuid-drecht.nl
+            - name: WORDPRESS_HOME
+              value: http://zuid-drecht.nl
+          resources:
+              {}
+---
+# Source: open-webconcept/templates/ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+  name: open-webconcept-prod-ingress
+  labels:
+    app.kubernetes.io/name: open-webconcept-ingress
+    app.kubernetes.io/part-of: open-webconcept
+    helm.sh/chart: open-webconcept-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+
+    - host: zuid-drecht.nl
+      http:
+          paths:
+            - backend:
+                serviceName: open-webconcept
+                servicePort: 80
+    - host: www.zuid-drecht.nl
+      http:
+          paths:
+            - backend:
+                serviceName: open-webconcept
+                servicePort: 80

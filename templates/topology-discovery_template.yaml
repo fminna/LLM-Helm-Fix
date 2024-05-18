@@ -1,0 +1,169 @@
+---
+# Source: topology-discovery/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-topology-discovery
+  labels:
+    helm.sh/chart: topology-discovery-3.0.0
+    app.kubernetes.io/name: topology-discovery
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.0.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: topology-discovery/templates/arangodb-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-topology-discovery
+data:
+  ARANGO_USERNAME: cm9vdA==
+  ARANGO_ROOT_PASSWORD: ZnJpbng=
+---
+# Source: topology-discovery/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-topology-discovery
+  labels:
+    helm.sh/chart: topology-discovery-3.0.0
+    app.kubernetes.io/name: topology-discovery
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: topology-discovery
+    app.kubernetes.io/instance: release-name
+---
+# Source: topology-discovery/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-topology-discovery
+  labels:
+    helm.sh/chart: topology-discovery-3.0.0
+    app.kubernetes.io/name: topology-discovery
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: topology-discovery
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: topology-discovery
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-topology-discovery
+      securityContext:
+        {}
+      initContainers:
+        - name: check-conductor-ready
+          image: curlimages/curl
+          command: ["/bin/sh","-c"]
+          args: ['while [ $(curl -o /dev/null --silent --write-out "%{http_code}" http://conductor-server:8080/health) -ne 200 ];
+            do sleep 5; echo "waiting for conductor";
+            done;
+            echo "connection successful!"']
+        - name: check-arangodb-ready
+          image: curlimages/curl
+          command: ["/bin/sh","-c"]
+          env:
+            - name: ARANGO_URL 
+              value: "http://arangodb:8529"
+            - name: ARANGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-topology-discovery
+                  key: ARANGO_USERNAME
+            - name: ARANGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-topology-discovery
+                  key: ARANGO_ROOT_PASSWORD
+          args: ['while [ $(curl -ksw "%{http_code}" --user "${ARANGO_USERNAME}:${ARANGO_ROOT_PASSWORD}" "${ARANGO_URL}/_api/version" -o /dev/null) -ne 200 ];
+            do sleep 5; echo "waiting for arangodb";
+            done;
+            echo "connection successful!"']
+      containers:
+        - name: topology-discovery
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+          image: "frinx/topology-discovery:6.0.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONDUCTOR_URL_BASE 
+              value: "http://conductor-server:8080/api"
+            - name: ARANGO_URL 
+              value: "http://arangodb:8529"
+            - name: ARANGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-topology-discovery
+                  key: ARANGO_USERNAME
+            - name: ARANGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-topology-discovery
+                  key: ARANGO_ROOT_PASSWORD
+            - name: "ADMIN"
+              value: "admin"
+            - name: "BGPLS_ENABLED"
+              value: "false"
+            - name: "BGPLS_LOCAL_AS"
+              value: "100"
+            - name: "BGPLS_NEIGHBOR_IP"
+              value: "192.168.99.100"
+            - name: "BGPLS_NETWORK"
+              value: "172.18.0.0/16"
+            - name: "BGPLS_PEER_AS"
+              value: "100"
+            - name: "BGPLS_ROUTER_ID"
+              value: "192.168.99.1"
+            - name: "CONDUCTOR_URL"
+              value: "http://conductor-server:8080"
+            - name: "EDITOR"
+              value: "editor"
+            - name: "IMPORT_ARANGO_DEMO_DATA"
+              value: "false"
+            - name: "IMPORT_DEVICE_INVENTORY_DATA"
+              value: "false"
+            - name: "UC_URL_BASE"
+              value: "http://uniconfig:8181/rests/"
+            - name: "VIEWER"
+              value: "viewer"
+            - name: "X_TENANT_ID"
+              value: "frinx"
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {}

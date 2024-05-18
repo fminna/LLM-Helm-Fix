@@ -1,0 +1,427 @@
+---
+# Source: reservation-app/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+
+metadata:
+  name: release-name-secret
+
+data:
+  DB_PASSWORD: MTIzZGJzZWNyZXQ=
+  ADMIN_USER_PASSWORD: YWRtMXc0SzZCOA==
+
+type: Opaque
+
+# kubectl create secret generic reservation-secret --from-literal=DB_PASSWORD=123dbsecret
+# echo -n 123dbsecret | base64
+#
+# MTIzZGJzZWNyZXQ=
+# YWRtMXc0SzZCOA==
+---
+# Source: reservation-app/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: release-name-configmap
+
+data:
+  DB_NAME: zbaloghspringdemo
+  DB_HOSTNAME: postgres-server
+  DB_PORT: "5432"
+  DB_USERNAME: postgres
+  RESERVATION_ALLDESK_NUMBER: "200"
+  RESERVATION_AUTH_SERVER_NAME: auth-server
+
+# kubectl create configmap reservation-configmap --from-literal=DB_NAME=zbaloghspringdemo --from-literal=DB_HOSTNAME=postgres-cluster-ip-service --from-literal=DB_PORT=5432 --from-literal=DB_USERNAME=postgres
+---
+# Source: reservation-app/templates/database-persistent-volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+
+metadata:
+  name: release-name-database-pvc
+
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: reservation-app/templates/api-server-cluster-ip-service.yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: api-server
+
+spec:
+  type: NodePort
+  sessionAffinity: ClientIP
+  selector:
+    component: api-backend
+  ports:
+    - name: api-server-port
+      port: 8080
+      targetPort: 8080
+      nodePort: 31900
+---
+# Source: reservation-app/templates/auth-server-service.yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: auth-server
+
+spec:
+  type: NodePort
+  sessionAffinity: ClientIP
+  selector:
+    component: auth-server
+  ports:
+    - name: auth-server-web-port
+      port: 5000
+      targetPort: 5000
+      nodePort: 31950
+    - name: auth-server-grpc-port
+      port: 5002
+      targetPort: 5002
+      nodePort: 31952
+---
+# Source: reservation-app/templates/postgres-cluster-ip-service.yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: postgres-server
+
+spec:
+  type: ClusterIP
+  selector:
+    component: database-server
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Source: reservation-app/templates/webgui-cluster-ip-service.yaml
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: webgui-server
+
+spec:
+  type: NodePort
+  sessionAffinity: ClientIP
+  selector:
+    component: webgui
+  ports:
+    - name: webgui-port
+      port: 8050
+      targetPort: 8050
+      nodePort: 31800
+---
+# Source: reservation-app/templates/api-server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+    name: release-name-api-server-deployment
+
+spec:
+    replicas: 2
+    minReadySeconds: 15
+
+    selector:
+        matchLabels:
+            component: api-backend
+
+    strategy:
+        rollingUpdate:
+          maxSurge: 50%
+          maxUnavailable: 50%
+        type: RollingUpdate
+
+    template:
+        metadata:
+            labels:
+                component: api-backend
+        spec:
+            restartPolicy: Always
+            containers:
+            - name: api-backend
+              image: zbalogh/reservation-api-server:1.0.9
+              imagePullPolicy: Always
+              readinessProbe:
+                  httpGet:
+                    path: /api/health
+                    port: 8080
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+              ports:
+                - containerPort: 8080
+              env:
+                - name: DB_HOSTNAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_HOSTNAME
+                      name: release-name-configmap
+                - name: DB_PORT
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_PORT
+                      name: release-name-configmap
+                - name: DB_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_NAME
+                      name: release-name-configmap
+                - name: DB_USERNAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_USERNAME
+                      name: release-name-configmap
+                - name: RESERVATION_ALLDESK_NUMBER
+                  valueFrom:
+                    configMapKeyRef:
+                      key: RESERVATION_ALLDESK_NUMBER
+                      name: release-name-configmap
+                - name: RESERVATION_AUTH_SERVER_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: RESERVATION_AUTH_SERVER_NAME
+                      name: release-name-configmap
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      key: DB_PASSWORD
+                      name: release-name-secret
+            initContainers:
+              - name: init-release-name-postgresql
+                image: postgres:9.6
+                command: ['sh', '-c', 'until pg_isready -h postgres-server -p 5432; do echo waiting for database; sleep 2; done; sleep 15;']
+---
+# Source: reservation-app/templates/auth-server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+    name: release-name-auth-server-deployment
+
+spec:
+    replicas: 1
+    minReadySeconds: 15
+
+    selector:
+        matchLabels:
+            component: auth-server
+
+    strategy:
+        rollingUpdate:
+          maxSurge: 50%
+          maxUnavailable: 50%
+        type: RollingUpdate
+
+    template:
+        metadata:
+            labels:
+                component: auth-server
+        spec:
+            restartPolicy: Always
+            containers:
+            - name: auth-server
+              image: zbalogh/reservation-dotnet-auth-server:1.0.9
+              imagePullPolicy: Always
+              
+              readinessProbe:
+                  httpGet:
+                    path: /api/auth/account/health
+                    port: 5000
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+              
+              ports:
+                - containerPort: 5000
+                  name: authc-web-port
+                - containerPort: 5002
+                  name: authc-grpc-port
+
+              env:
+                - name: DB_HOSTNAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_HOSTNAME
+                      name: release-name-configmap
+                - name: DB_PORT
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_PORT
+                      name: release-name-configmap
+                - name: DB_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_NAME
+                      name: release-name-configmap
+                - name: DB_USERNAME
+                  valueFrom:
+                    configMapKeyRef:
+                      key: DB_USERNAME
+                      name: release-name-configmap
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      key: DB_PASSWORD
+                      name: release-name-secret
+                - name: ADMIN_USER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      key: ADMIN_USER_PASSWORD
+                      name: release-name-secret
+
+            initContainers:
+              - name: init-release-name-postgresql
+                image: postgres:9.6
+                command: ['sh', '-c', 'until pg_isready -h postgres-server -p 5432; do echo waiting for database; sleep 2; done; sleep 15;']
+---
+# Source: reservation-app/templates/postgres-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: release-name-postgres-deployment
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: database-server
+
+  template:
+    metadata:
+      labels:
+        component: database-server
+    spec:
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: release-name-database-pvc
+      containers:
+        - name: database-server
+          image: postgres:9.6
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  key: DB_NAME
+                  name: release-name-configmap
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  key: DB_USERNAME
+                  name: release-name-configmap
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: DB_PASSWORD
+                  name: release-name-secret
+---
+# Source: reservation-app/templates/webgui-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+    name: release-name-webgui-deployment
+
+spec:
+    replicas: 1
+    minReadySeconds: 15
+    
+    selector:
+        matchLabels:
+            component: webgui
+
+    strategy:
+        rollingUpdate:
+          maxSurge: 50%
+          maxUnavailable: 50%
+        type: RollingUpdate
+
+    template:
+        metadata:
+            labels:
+                component: webgui
+        spec:
+            containers:
+            - name: angular-ui
+              image: zbalogh/reservation-angular-ui:1.0.9
+              imagePullPolicy: Always
+              readinessProbe:
+                  httpGet:
+                    path: /health.html
+                    port: 8050
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+              ports:
+                - containerPort: 8050
+            restartPolicy: Always
+---
+# Source: reservation-app/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: release-name-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api/data/.*
+        pathType: Prefix
+        backend:
+          service:
+            name: api-server
+            port: 
+              number: 8080
+
+      - path: /api/auth/.*
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-server
+            port:
+              number: 5000
+
+      - path: /web-gui/angular-gui/.*
+        pathType: Prefix
+        backend:
+          service:
+            name: webgui-server
+            port:
+              number: 8050
+
+      - path: /web-gui/angular-gui
+        pathType: Prefix
+        backend:
+          service:
+            name: webgui-server
+            port:
+              number: 8050
+
+      - path: /.*
+        pathType: Prefix
+        backend:
+          service:
+            name: webgui-server
+            port:
+              number: 8050

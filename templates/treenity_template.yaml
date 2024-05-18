@@ -1,0 +1,291 @@
+---
+# Source: treenity/templates/db.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: db-credentials
+  namespace: default
+data:
+  POSTGRES_DB: "dHJlZW5pdHk="
+  DB_DATABASE: "dHJlZW5pdHk="
+  POSTGRES_USER: "dHJlZW5pdHk="
+  DB_USERNAME: "dHJlZW5pdHk="
+  POSTGRES_PASSWORD: "MTIzNDU2"
+  DB_PASSWORD: "MTIzNDU2"
+  DB_HOST: "cG9zdGdyZXM="
+  DB_PORT: "NTQzMg=="
+---
+# Source: treenity/templates/pull.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: pull-secret
+  namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson:
+---
+# Source: treenity/templates/gateway.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginxconfigmap
+  namespace: default
+data:
+  default.conf: |
+    server {
+      listen 80 default_server;
+      listen [::]:80 default_server ipv6only=on;
+
+      location / {
+        auth_request /auth;
+
+        proxy_pass http://backend:3030;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      }
+
+      location = /auth {
+        internal;
+
+        if ($request_uri ~ ^/api(/.*)$) {
+            set $api_path $1;
+        }
+
+        proxy_method POST;
+        proxy_pass http://backend:3030/api/sys/access-control?path=$api_path;
+        proxy_set_header  X-Service-Method "check";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      }
+    }
+---
+# Source: treenity/templates/postgresql.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: postgres-pv-claim
+  namespace: default
+  labels:
+    app: treenity
+    tier: Postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+# Source: treenity/templates/gateway.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8080
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: treenity
+    tier: Nginx
+---
+# Source: treenity/templates/nats.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  type: NodePort
+  selector:
+    app: treenity
+    tier: Nats
+  ports:
+    - port: 4222
+      name: port4222
+      targetPort: 4222
+    - port: 6222
+      name: port6222
+      targetPort: 6222
+    - port: 8222
+      name: port8222
+      targetPort: 8222
+---
+# Source: treenity/templates/postgresql.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  type: NodePort
+  selector:
+    app: treenity
+    tier: Postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Source: treenity/templates/redis.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  type: NodePort
+  selector:
+    app: treenity
+    tier: Redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# Source: treenity/templates/gateway.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  selector:
+    matchLabels:
+      app: treenity
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: treenity
+        tier: Nginx
+    spec:
+      volumes:
+        - name: configmap-volume
+          configMap:
+            name: nginxconfigmap
+      containers:
+        - name: nginxhttps
+          image: nginx:1-alpine-perl
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - mountPath: /etc/nginx/conf.d
+              name: configmap-volume
+---
+# Source: treenity/templates/nats.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  selector:
+    matchLabels:
+      app: treenity
+  template:
+    metadata:
+      labels:
+        app: treenity
+        tier: Nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.9.6-alpine3.16
+          ports:
+            - containerPort: 4222
+            - containerPort: 8222
+            - containerPort: 6222
+          livenessProbe:
+            periodSeconds: 5
+            tcpSocket:
+              port: 4222
+          resources:
+             limits:
+               cpu: "1"
+               memory: 512Mi
+             requests:
+               cpu: 100m
+               memory: 256Mi
+---
+# Source: treenity/templates/postgresql.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  selector:
+    matchLabels:
+      app: treenity
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: treenity
+        tier: Postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14
+          args: ["-c", "max_connections=200"]
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - containerPort: 5432
+          env:
+            - name: PGDATA
+              value: /var/lib/pg/data
+          envFrom:
+            - secretRef:
+                name: db-credentials
+          volumeMounts:
+            - mountPath: /var/lib/pg
+              name: postgredb
+      volumes:
+        - name: postgredb
+          persistentVolumeClaim:
+            claimName: postgres-pv-claim
+---
+# Source: treenity/templates/redis.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: default
+  labels:
+    app: treenity
+spec:
+  selector:
+    matchLabels:
+      app: treenity
+  template:
+    metadata:
+      labels:
+        app: treenity
+        tier: Redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:alpine
+          livenessProbe:
+            periodSeconds: 5
+            tcpSocket:
+              port: 6379

@@ -1,0 +1,232 @@
+---
+# Source: prometheus-elasticsearch-exporter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-prometheus-elasticsearch-exporter
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::659743964700:role/pc360-integ-test-es-role
+  labels:
+    chart: prometheus-elasticsearch-exporter-4.5.1
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+    heritage: "Helm"
+automountServiceAccountToken: true
+---
+# Source: prometheus-elasticsearch-exporter/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-prometheus-elasticsearch-exporter
+  labels:
+    chart: prometheus-elasticsearch-exporter-4.5.1
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9108
+      protocol: TCP
+  selector:
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+---
+# Source: prometheus-elasticsearch-exporter/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-prometheus-elasticsearch-exporter
+  labels:
+    chart: prometheus-elasticsearch-exporter-4.5.1
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-elasticsearch-exporter
+      release: "release-name"
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: prometheus-elasticsearch-exporter
+        release: "release-name"
+    spec:
+      serviceAccountName: release-name-prometheus-elasticsearch-exporter
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: exporter
+          env:
+          image: "justwatch/elasticsearch_exporter:1.1.0"
+          imagePullPolicy: IfNotPresent
+          command: ["elasticsearch_exporter",
+                    "--log.format=logfmt",
+                    "--log.level=info",
+                    "--es.uri=http://localhost:9252",
+                    "--es.all",
+                    "--es.indices",
+                    "--es.indices_settings",
+                    "--es.shards",
+                    "--es.snapshots",
+                    "--es.cluster_settings",
+                    "--es.timeout=30s",
+                    "--web.listen-address=:9108",
+                    "--web.telemetry-path=/metrics"]
+          securityContext:
+            capabilities:
+              drop:
+                - SETPCAP
+                - MKNOD
+                - AUDIT_WRITE
+                - CHOWN
+                - NET_RAW
+                - DAC_OVERRIDE
+                - FOWNER
+                - FSETID
+                - KILL
+                - SETGID
+                - SETUID
+                - NET_BIND_SERVICE
+                - SYS_CHROOT
+                - SETFCAP
+            readOnlyRootFilesystem: true
+          resources:
+            {}
+          ports:
+            - containerPort: 9108
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            timeoutSeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/bash", "-c", "sleep 20"]
+          volumeMounts:
+        - name: "aws-es-proxy"
+          image: "abutaha/aws-es-proxy:v1.1"
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - "-endpoint"
+            - "https://vpc-pc360-integ-data-es-qasde2d35g3d4vug4gljhxhdfa.us-east-1.es.amazonaws.com"
+            - "-listen"
+            - "localhost:9252"
+            - "-timeout"
+            - "60"
+            - "-pretty"
+          env:
+            - name: PORT_NUM
+              value: "9252"
+            - name: AWS_ROLE_ARN
+              value: "arn:aws:iam::659743964700:role/pc360-integ-test-es-role"
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+          
+          livenessProbe:
+            exec:
+              command:
+                - wget
+                - -q
+                - -O
+                - /dev/null
+                - "localhost:9252/_cluster/health"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: aws-iam-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: "sts.amazonaws.com"
+                  expirationSeconds: 86400
+                  path: token
+---
+# Source: prometheus-elasticsearch-exporter/templates/prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: release-name-prometheus-elasticsearch-exporter
+  labels:
+    chart: prometheus-elasticsearch-exporter-4.5.1
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  groups:
+    - name: prometheus-elasticsearch-exporter
+      rules: 
+        - expr: |
+            100 * (elasticsearch_filesystem_data_size_bytes{service="release-name-prometheus-elasticsearch-exporter"} - elasticsearch_filesystem_data_free_bytes{service="release-name-prometheus-elasticsearch-exporter"})
+            / elasticsearch_filesystem_data_size_bytes{service="release-name-prometheus-elasticsearch-exporter"}
+          record: elasticsearch_filesystem_data_used_percent
+        - expr: 100 - elasticsearch_filesystem_data_used_percent{service="release-name-prometheus-elasticsearch-exporter"}
+          record: elasticsearch_filesystem_data_free_percent
+        - alert: ElasticsearchTooFewNodesRunning
+          annotations:
+            description: There are only {{ $value }} < 3 ElasticSearch nodes running
+            summary: ElasticSearch running on less than 3 nodes
+          expr: elasticsearch_cluster_health_number_of_nodes{service="release-name-prometheus-elasticsearch-exporter"} < 3
+          for: 5m
+          labels:
+            severity: critical
+        - alert: ElasticsearchHeapTooHigh
+          annotations:
+            description: The heap usage is over 90% for 15m
+            summary: ElasticSearch node {{ $labels.node }} heap usage is high
+          expr: |
+            elasticsearch_jvm_memory_used_bytes{service="release-name-prometheus-elasticsearch-exporter", area="heap"} / elasticsearch_jvm_memory_max_bytes{service="release-name-prometheus-elasticsearch-exporter", area="heap"}
+            > 0.9
+          for: 15m
+          labels:
+            severity: critical
+---
+# Source: prometheus-elasticsearch-exporter/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-prometheus-elasticsearch-exporter
+  labels:
+    chart: prometheus-elasticsearch-exporter-4.5.1
+    app: prometheus-elasticsearch-exporter
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  endpoints:
+  - interval: 10s
+    scrapeTimeout: 10s
+    honorLabels: true
+    port: http
+    path: /metrics
+    scheme: http
+  jobLabel: "release-name"
+  selector:
+    matchLabels:
+      app: prometheus-elasticsearch-exporter
+      release: "release-name"
+  namespaceSelector:
+    matchNames:
+      - default
+  sampleLimit: 0

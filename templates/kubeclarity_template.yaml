@@ -1,0 +1,894 @@
+---
+# Source: kubeclarity/templates/grype_server/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kubeclarity-grype-server
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-grype-server
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+---
+# Source: kubeclarity/templates/sbom_db/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kubeclarity-sbom-db
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-sbom-db
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+---
+# Source: kubeclarity/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kubeclarity
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+---
+# Source: kubeclarity/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubeclarity-postgresql-secret
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+data:
+  postgres-password: a3ViZWNsYXJpdHk=
+---
+# Source: kubeclarity/templates/scanner-template-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kubeclarity-scanner-template
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+data:
+  config: |-
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      namespace: ""
+      labels:
+        app: kubeclarity-scanner
+        sidecar.istio.io/inject: "false"
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app: kubeclarity-scanner
+            sidecar.istio.io/inject: "false"
+        spec:
+          nodeSelector:
+            kubernetes.io/arch: amd64
+            kubernetes.io/os: linux
+          restartPolicy: Never
+          volumes:
+          - name: tmp-volume
+            emptyDir: {}
+          securityContext:
+            fsGroup: 1001
+          containers:
+          - name: vulnerability-scanner
+            image: 'ghcr.io/openclarity/kubeclarity-runtime-k8s-scanner:v2.22.0'
+            imagePullPolicy: Always
+            volumeMounts:
+              - mountPath: /tmp
+                name: tmp-volume
+            args:
+            - scan
+            - --log-level
+            - warning
+            env:
+            - name: RESULT_SERVICE_ADDR
+              value: release-name-kubeclarity.default:8888
+            - name: SBOM_DB_ADDR
+              value: release-name-kubeclarity-sbom-db.default:8080
+            - name: ANALYZER_LIST
+              value: syft gomod
+            - name: ANALYZER_SCOPE
+              value: squashed
+            - name: SCANNERS_LIST
+              value: grype
+            - name: SCANNER_GRYPE_MODE
+              value: REMOTE
+            - name: REGISTRY_SKIP_VERIFY_TLS
+              value: false
+            - name: REGISTRY_USE_HTTP
+              value: false
+            - name: SCANNER_REMOTE_GRYPE_SERVER_ADDRESS
+              value: release-name-kubeclarity-grype-server.default:9991
+            - name: SCANNER_REMOTE_GRYPE_SERVER_TIMEOUT
+              value: 2m
+            securityContext:
+              capabilities:
+                drop:
+                - ALL
+              runAsNonRoot: true
+              runAsGroup: 1001
+              runAsUser: 1001
+              privileged: false
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+            resources:
+              limits:
+                cpu: 1000m
+                memory: 1000Mi
+              requests:
+                cpu: 50m
+                memory: 50Mi
+          - name: cis-docker-benchmark-scanner
+            image: 'ghcr.io/openclarity/kubeclarity-cis-docker-benchmark-scanner:v2.22.0'
+            imagePullPolicy: Always
+            args:
+            - scan
+            - --log-level
+            - warning
+            env:
+            - name: RESULT_SERVICE_ADDR
+              value: release-name-kubeclarity.default:8888
+            - name: TIMEOUT
+              value: 2m
+            - name: REGISTRY_SKIP_VERIFY_TLS
+              value: false
+            - name: REGISTRY_USE_HTTP
+              value: false
+            securityContext:
+              capabilities:
+                drop:
+                  - ALL
+              runAsNonRoot: true
+              runAsGroup: 1001
+              runAsUser: 1001
+              privileged: false
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+            resources:
+              limits:
+                cpu: 1000m
+                memory: 1000Mi
+              requests:
+                cpu: 50m
+                memory: 50Mi
+---
+# Source: kubeclarity/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-kubeclarity
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+rules:
+  # Runtime scan permissions. We need to be able to list namespaces, and pods
+  # in those namespaces across the whole cluster to determine what to scan, as
+  # well as start and delete the scanner jobs in those namespaces.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create","delete"]
+---
+# Source: kubeclarity/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-kubeclarity
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-kubeclarity
+subjects:
+  - kind: ServiceAccount
+    name: release-name-kubeclarity
+    namespace: 'default'
+---
+# Source: kubeclarity/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-kubeclarity
+  namespace: default
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+rules:
+  # Runtime scan permissions. Only within the kubeclarity namespace do we need to:
+  # a) read the configmaps to get the scanner job template
+  # b) read the secrets to fetch AWS, GKE, and Azure specific pull secrets
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+# Source: kubeclarity/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-kubeclarity
+  namespace: default
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-kubeclarity
+subjects:
+  - kind: ServiceAccount
+    name: release-name-kubeclarity
+    namespace: 'default'
+---
+# Source: kubeclarity/charts/kubeclarity-postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kubeclarity-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kubeclarity-postgresql
+    app.kubernetes.io/version: 16.1.0
+    helm.sh/chart: kubeclarity-postgresql-13.2.24
+    app.kubernetes.io/component: primary
+  annotations:
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: kubeclarity-postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: kubeclarity/charts/kubeclarity-postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kubeclarity-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kubeclarity-postgresql
+    app.kubernetes.io/version: 16.1.0
+    helm.sh/chart: kubeclarity-postgresql-13.2.24
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: kubeclarity-postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: kubeclarity/templates/grype_server/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kubeclarity-grype-server
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-grype-server
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+spec:
+  ports:
+    - name: healthz
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    - name: grype-server
+      port: 9991
+      protocol: TCP
+      targetPort: 9991
+  selector:
+    app: release-name-kubeclarity-grype-server
+---
+# Source: kubeclarity/templates/sbom_db/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kubeclarity-sbom-db
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-sbom-db
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+spec:
+  ports:
+    - name: healthz
+      port: 8081
+      protocol: TCP
+      targetPort: 8081
+    - name: backend
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: release-name-kubeclarity-sbom-db
+---
+# Source: kubeclarity/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kubeclarity
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+
+spec:
+  type: ClusterIP
+  ports:
+    - name: backend
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    - name: runtime-scan-results
+      port: 8888
+      protocol: TCP
+      targetPort: 8888
+  selector:
+    app: release-name-kubeclarity
+---
+# Source: kubeclarity/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kubeclarity
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+    app: release-name-kubeclarity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-kubeclarity
+  template:
+    metadata:
+      labels:
+        app: release-name-kubeclarity
+    spec:
+      serviceAccountName: release-name-kubeclarity
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      initContainers:
+        - name: 'release-name-kubeclarity-wait-for-pg-db'
+          image: docker.io/bitnami/postgresql:16.1.0-debian-11-r0
+          command: ['sh', '-c', 'until pg_isready -h release-name-kubeclarity-postgresql -p 5432 -U "postgres" -d "dbname=kubeclarity";
+            do echo waiting for database; sleep 2; done;']
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1001
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+        - name: 'release-name-kubeclarity-wait-for-sbom-db'
+          image: docker.io/curlimages/curl:8.5.0@sha256:4bfa3e2c0164fb103fb9bfd4dc956facce32b6c5d47cc09fcec883ce9535d5ac
+          args:
+            - /bin/sh
+            - -c
+            - >
+              set -x;
+              while [ $(curl -sw '%{http_code}' "http://release-name-kubeclarity-sbom-db:8081/healthz/ready" -o /dev/null) -ne 200 ]; do
+                echo waiting for sbom database; sleep 2;
+              done;
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1001
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+        - name: 'release-name-kubeclarity-wait-for-grype-server'
+          image: docker.io/curlimages/curl:8.5.0@sha256:4bfa3e2c0164fb103fb9bfd4dc956facce32b6c5d47cc09fcec883ce9535d5ac
+          args:
+            - /bin/sh
+            - -c
+            - >
+              set -x;
+              while [ $(curl -sw '%{http_code}' "http://release-name-kubeclarity-grype-server:8080/healthz/ready" -o /dev/null) -ne 200 ]; do
+                echo waiting for grype-server to be ready; sleep 2;
+              done;
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1001
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+      containers:
+        - name: kubeclarity
+          image: 'ghcr.io/openclarity/kubeclarity:v2.22.0'
+          imagePullPolicy: Always
+          args:
+            - run
+            - --log-level
+            - warning
+          env:
+            - name: ENABLE_DB_INFO_LOGS
+              value: "false"
+            # DB envs
+            - name: DB_NAME
+              value: kubeclarity
+            - name: DB_HOST
+              value: "release-name-kubeclarity-postgresql"
+            - name: DB_PORT_NUMBER
+              value: "5432"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_SSL_MODE
+              value: "disable"
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: kubeclarity-postgresql-secret
+                  key: postgres-password
+            # runtime-scan envs
+            - name: SCANNER_JOB_RESULT_LISTEN_PORT
+              value: "8888"
+            - name: SCANNER_JOB_TEMPLATE_CONFIG_MAP_NAME
+              value: "release-name-kubeclarity-scanner-template"
+            - name: SCANNER_JOB_TEMPLATE_CONFIG_MAP_NAMESPACE
+              value: "default"
+            - name: CREDS_SECRET_NAMESPACE
+              value: "default"
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+            - containerPort: 8888
+              name: scan-results
+              protocol: TCP
+            - containerPort: 8081
+              name: health
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8081
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 1000
+            runAsUser: 1000
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1000Mi
+            requests:
+              cpu: 100m
+              memory: 200Mi
+---
+# Source: kubeclarity/templates/grype_server/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kubeclarity-grype-server
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-grype-server
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-kubeclarity-grype-server
+  template:
+    metadata:
+      labels:
+        app: release-name-kubeclarity-grype-server
+    spec:
+      serviceAccountName: release-name-kubeclarity-grype-server
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+      securityContext:
+        fsGroup: 1000
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      containers:
+        - name: grype-server
+          image: 'ghcr.io/openclarity/grype-server:v0.6.0'
+          imagePullPolicy: Always
+          args:
+            - run
+            - --log-level
+            - warning
+          env:
+            - name: DB_ROOT_DIR
+              value: /tmp/
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8080
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 1000
+            runAsUser: 1000
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1G
+            requests:
+              cpu: 200m
+              memory: 200Mi
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp-volume
+---
+# Source: kubeclarity/templates/sbom_db/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kubeclarity-sbom-db
+  namespace: 'default'
+  labels:
+    app.kubernetes.io/name: release-name-kubeclarity-sbom-db
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: kubeclarity-1.0.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-kubeclarity-sbom-db
+  template:
+    metadata:
+      labels:
+        app: release-name-kubeclarity-sbom-db
+    spec:
+      serviceAccountName: release-name-kubeclarity-sbom-db
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+      securityContext:
+        fsGroup: 1000
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      containers:
+        - name: sbom-db
+          image: 'ghcr.io/openclarity/kubeclarity-sbom-db:v2.22.0'
+          imagePullPolicy: Always
+          args:
+            - run
+            - --log-level
+            - warning
+          env:
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8081
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 1000
+            runAsUser: 1000
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 1Gi
+            requests:
+              cpu: 10m
+              memory: 20Mi
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp-volume
+---
+# Source: kubeclarity/charts/kubeclarity-postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-kubeclarity-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kubeclarity-postgresql
+    app.kubernetes.io/version: 16.1.0
+    helm.sh/chart: kubeclarity-postgresql-13.2.24
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: release-name-kubeclarity-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: kubeclarity-postgresql
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-kubeclarity-postgresql
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kubeclarity-postgresql
+        app.kubernetes.io/version: 16.1.0
+        helm.sh/chart: kubeclarity-postgresql-13.2.24
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: kubeclarity-postgresql
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:16.1.0-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kubeclarity-postgresql-secret
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "kubeclarity"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -d "dbname=kubeclarity" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -d "dbname=kubeclarity" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"

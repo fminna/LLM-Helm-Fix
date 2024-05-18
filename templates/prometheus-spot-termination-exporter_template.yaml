@@ -1,0 +1,119 @@
+---
+# Source: prometheus-spot-termination-exporter/templates/serviceaccount.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: release-name-prometheus-spot-termination-exporter
+---
+# Source: prometheus-spot-termination-exporter/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-prometheus-spot-termination-exporter
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+# Source: prometheus-spot-termination-exporter/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-prometheus-spot-termination-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-prometheus-spot-termination-exporter
+subjects:
+  - kind: ServiceAccount
+    name: release-name-prometheus-spot-termination-exporter
+    namespace: default
+---
+# Source: prometheus-spot-termination-exporter/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-prometheus-spot-termination-exporter
+  labels:
+    app.kubernetes.io/name: prometheus-spot-termination-exporter
+    helm.sh/chart: prometheus-spot-termination-exporter-0.2.10
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-spot-termination-exporter
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus-spot-termination-exporter
+        helm.sh/chart: prometheus-spot-termination-exporter-0.2.10
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.0.2"
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9189"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      serviceAccount: release-name-prometheus-spot-termination-exporter
+      volumes:
+      - name: node-data
+        emptyDir: {}
+      initContainers:
+      - name: init
+        image: scottcrossen/kube-node-labels:1.1.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: OUTPUT_DIR
+          value: /output
+        volumeMounts:
+        - name: node-data
+          mountPath: /output
+      containers:
+      - name: spot-termination-exporter
+        image: "banzaicloud/spot-termination-exporter:0.0.1"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - "/bin/sh"
+        - "-ecx"
+        - |
+          spot-termination-exporter \
+          --bind-addr :9189 \
+          --metrics-path /metrics \
+          --metadata-endpoint http://169.254.169.254/latest/meta-data/ \
+          --log-level debug \
+          --extra-labels node_group=$(/node-data/label.sh node-group)
+        ports:
+        - name: http
+          containerPort: 9189
+        resources:
+          {}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 120
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+            httpHeaders: 
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          periodSeconds: 5
+
+        volumeMounts:
+        - name: node-data
+          mountPath: /node-data
+      nodeSelector:
+        node.kubernetes.io/lifecycle: spot

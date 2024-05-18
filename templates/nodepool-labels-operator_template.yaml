@@ -1,0 +1,173 @@
+---
+# Source: nodepool-labels-operator/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodepool-labels-operator
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+---
+# Source: nodepool-labels-operator/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-nodepool-labels-operator
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |
+    controller:
+      namespace: default
+      nodepoolNameLabels:
+      - nodepool.banzaicloud.io/name
+      - cloud.google.com/gke-nodepool
+      - agentpool
+    labeler:
+      forbiddenLabelDomains:
+      - kubernetes.io
+      - k8s.io
+      - google.com
+      managedLabelsAnnotation: nodepool.banzaicloud.io/managed-labels
+    log:
+      format: logfmt
+      level: debug
+    healthcheck:
+      listenAddress: ":8882"
+      endpoint: "/healthz"
+---
+# Source: nodepool-labels-operator/templates/crd.yml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodepoollabelsets.labels.banzaicloud.io
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+spec:
+  group: labels.banzaicloud.io
+  scope: Namespaced
+  names:
+    kind: NodePoolLabelSet
+    plural: nodepoollabelsets
+    singular: nodepoollabelset
+    shortNames:
+      - npls
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: [ "labels" ]
+              properties:
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+      served: true
+      storage: true
+---
+# Source: nodepool-labels-operator/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodepool-labels-operator
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups: [ "labels.banzaicloud.io" ]
+  resources: [ "nodepoollabelsets" ]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+---
+# Source: nodepool-labels-operator/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodepool-labels-operator
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+subjects:
+- kind: ServiceAccount
+  name: nodepool-labels-operator
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: nodepool-labels-operator
+---
+# Source: nodepool-labels-operator/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-nodepool-labels-operator
+  labels:
+    app: nodepool-labels-operator
+    chart: nodepool-labels-operator-0.2.7
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nodepool-labels-operator
+      release: "release-name"
+  template:
+    metadata:
+      labels:
+        app: nodepool-labels-operator
+        release: release-name
+    spec:
+      serviceAccountName: nodepool-labels-operator
+      volumes:
+      - name: config-volume
+        configMap:
+          name: release-name-nodepool-labels-operator
+      containers:
+        - name: nodepool-labels-operator
+          image: "ghcr.io/banzaicloud/nodepool-labels-operator:v0.2.0"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: GIN_MODE
+            value: release
+          - name: NPLSO_CONTROLLER_NAMESPACE
+            value: default
+          ports:
+            - name: healthcheck
+              containerPort: 8882
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthcheck
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: healthcheck
+          volumeMounts:
+          - name: config-volume
+            mountPath: /config/
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            {}

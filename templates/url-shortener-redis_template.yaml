@@ -1,0 +1,131 @@
+---
+# Source: url-shortener-redis/templates/redis-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: url-shortener
+  labels:
+    app: redis
+data:
+
+  launch.sh: |
+
+    PASSWORD=$(cat /etc/redis-passwd/passwd)
+
+    if [[ $HOSTNAME == "redis-sts-0" ]]; then
+      redis-server /mnt/master.conf --requirepass $PASSWORD
+    else
+      redis-server --replicaof redis-sts-0.redis-write.url-shortener.svc.cluster.local 6379 \
+                   --masterauth $PASSWORD --requirepass $PASSWORD
+    fi
+
+  master.conf: |
+    dir /data
+    cluster-config-file /data/nodes.conf
+---
+# Source: url-shortener-redis/templates/redis-svc.yaml
+# read only redis
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis
+  name: redis
+  namespace: url-shortener
+spec:
+  ports:
+  - port: 6379
+    protocol: TCP
+    targetPort: 6379
+  selector:
+    app: redis-sts
+  sessionAffinity: None
+  type: ClusterIP
+---
+# Source: url-shortener-redis/templates/redis-svc.yaml
+# read/write redis,  headless service
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis-write
+  name: redis-write
+  namespace: url-shortener
+spec:
+  clusterIP: None
+  ports:
+  - port: 6379
+  selector:
+    app: redis-sts
+---
+# Source: url-shortener-redis/templates/redis-sts.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sts
+  namespace: url-shortener
+spec:
+  serviceName: "redis-write"
+  selector:
+    matchLabels:
+      app: redis-sts
+  replicas: 6
+  minReadySeconds: 5
+  template:
+    metadata:
+      labels:
+        app: redis-sts
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+      containers:
+      - name: redis
+        image: redis:7.0
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+            requests:
+              cpu: "5m"
+              memory: "5Mi"
+            limits:
+              cpu: "50m"
+              memory: "50Mi"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          readOnly: false
+        - name: config
+          readOnly: true
+          mountPath: /mnt
+        - name: redis-passwd
+          readOnly: true
+          mountPath: "/etc/redis-passwd"
+        securityContext:
+          runAsUser: 2000
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+              drop: ["ALL"]
+        command:
+          - bash
+          - -c
+          - /mnt/launch.sh
+      volumes:
+      - name: config
+        configMap:
+          name: redis-config
+          defaultMode: 0777
+      - name: redis-passwd
+        secret:
+          secretName: redis-passwd
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

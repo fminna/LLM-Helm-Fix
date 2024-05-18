@@ -1,0 +1,502 @@
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: pod-snapshot
+spec:
+  title: Pod Snapshot
+  category: Kubernetes
+  description: Takes a snapshot of the pod (Logs, yaml, & events)
+  icon: add-snapshot
+  components:
+    - type: Kubernetes::Pod
+  actions:
+    - name: Take snapshot
+      exec:
+        script: |
+          path="/tmp/pod-snapshot/$(.component.id)"
+          rm -rf $path
+          mkdir -p $path
+          kubectl logs $(.component.name) -n $(.component.namespace) > "$path/logs.txt"
+          kubectl get pods -n $(.component.namespace) $(.component.name) -o yaml > "$path/manifest.yaml"
+          kubectl get events --field-selector=involvedObject.kind=Pod,involvedObject.name=$(.component.name) \
+            -n $(.component.namespace) > "$path/events.txt"
+        artifacts:
+          - path: '/tmp/pod-snapshot/$(.component.id)/*'
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: scale-deployment
+spec:
+  title: Scale Deployment
+  icon: scale-out
+  category: Kubernetes
+  configs:
+    - types:
+        - Kubernetes::Deployment
+  parameters:
+    - name: replicas
+      label: Replicas
+      type: text
+      default: "$(.config.config.spec.replicas)"
+  actions:
+    - name: Scale deployment
+      exec:
+        script: |
+          kubectl scale deployment -n $(.config.namespace) $(.config.name) --replicas=$(.params.replicas)
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: restart-deployment
+spec:
+  title: Restart Deployment
+  icon: reload
+  category: Kubernetes
+  configs:
+    - types:
+        - Kubernetes::Deployment
+  actions:
+    - name: Scale deployment
+      exec:
+        script: kubectl rollout release deployment -n $(.config.namespace) $(.config.name)
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: cleanup-failed-pod
+spec:
+  title: Cleanup Failed Pods
+  icon: remove-trash
+  category: Kubernetes
+  description: Deletes all failed kubernetes pod
+  configs:
+    - types:
+        - Kubernetes::Cluster
+  actions:
+    - name: Delete pods
+      exec:
+        script: >
+          kubectl get pods -A --no-headers |
+          grep -E 'Completed|Error|CrashLoopBackOff|ErrImagePull|ImagePullBackOff|ContainerStatusUnknown|CreateContainerConfigError|Evicted' |
+          while read -r namespace pod _; do
+              kubectl delete pod "$pod" --namespace="$namespace"
+          done
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: delete-pod
+spec:
+  title: Delete Pod
+  icon: delete
+  category: Kubernetes
+  description: Deletes the selected pod
+  configs:
+    - types:
+        - Kubernetes::Pod
+  actions:
+    - name: Delete pod
+      exec:
+        script: |
+          kubectl delete pod -n $(.config.tags.namespace) $(.config.name)
+---
+# Source: mission-control-kubernetes/templates/playbooks/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: request-namespace-access
+spec:
+  title: Request Namespace Access
+  icon: add-shield
+  category: Kubernetes
+  description: Adds a Rolebinding to the given role
+  parameters:
+    - name: user
+      label: User
+    - name: delay
+      label: Expires after
+      type: list
+      properties:
+        options:
+          - label: "30 minutes"
+            value: '30m'
+          - label: "1 hour"
+            value: '1h'
+          - label: "6 hour"
+            value: "6h"
+          - label: "12 hours"
+            value: "12h"
+          - label: "1 day"
+            value: "1d"
+          - label: "1 week"
+            value: "1w"
+    - name: role
+      label: Role
+      type: config
+      properties:
+        filter:
+          - types:
+              - Kubernetes::ClusterRole
+  configs:
+    - types:
+        - Kubernetes::Namespace
+  actions:
+    - name: Create RoleBinding
+      exec:
+        script: >-
+          kubectl create rolebinding "playbook-$(.run.id)"
+          --namespace=$(.config.name)
+          --user=$(.params.user)
+          --role=$(.params.role)
+    - name: Clear Rolebinding
+      if: "success()"
+      delay: ".params.delay"
+      exec:
+        script: |
+          kubectl delete rolebinding "playbook-$(.run.id)" --namespace=$(.config.name)
+---
+# Source: mission-control-kubernetes/templates/scraper.yaml
+apiVersion: configs.flanksource.com/v1
+kind: ScrapeConfig
+metadata:
+  name: kubernetes
+  labels:
+    helm.sh/chart: mission-control-kubernetes-0.1.22
+    app.kubernetes.io/name: mission-control-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "@every 15m"
+  kubernetes:
+    - clusterName: kubernetes
+      exclusions:
+        name:  
+          []
+        kind:  
+          - Secret
+          - APIService
+          - PodMetrics
+          - NodeMetrics
+          - endpoints.discovery.k8s.io
+          - endpointslices.discovery.k8s.io
+          - leases.coordination.k8s.io
+          - podmetrics.metrics.k8s.io
+          - nodemetrics.metrics.k8s.io
+          - customresourcedefinition
+          - controllerrevisions
+          - certificaterequests
+          - orders.acme.cert-manager.io
+        labels:  
+          canary-checker.flanksource.com/check: '*'
+          canary-checker.flanksource.com/generated: "true"
+        namespace:  
+          []
+      relationships: 
+        - kind:
+            expr: 'has(spec.claimRef) ? spec.claimRef.kind : '''''
+          name:
+            expr: 'has(spec.claimRef) ? spec.claimRef.name : '''''
+          namespace:
+            expr: 'has(spec.claimRef) ? spec.claimRef.namespace : '''''
+        - kind:
+            value: HelmRelease
+          name:
+            label: helm.toolkit.fluxcd.io/name
+          namespace:
+            label: helm.toolkit.fluxcd.io/namespace
+        - kind:
+            value: Kustomization
+          name:
+            label: kustomize.toolkit.fluxcd.io/name
+          namespace:
+            label: kustomize.toolkit.fluxcd.io/namespace
+        - kind:
+            value: GitRepository
+          name:
+            expr: 'has(spec.sourceRef) ? spec.sourceRef.name : '''' '
+          namespace:
+            expr: 'has(spec.sourceRef) && has(spec.sourceRef.namespace)  ? spec.sourceRef.namespace
+              : metadata.namespace '
+      transform: 
+        changes:
+          exclude:
+          - details.source.component == "canary-checker" && (change_type == "Failed" || change_type
+            == "Pass")
+          - config_type == "Kubernetes::Node" && details.?message.orValue("") == "status.images"
+          - has(details.source) && details.source.component == "kustomize-controller" && details.reason
+            == "ReconciliationSucceeded"
+          - config_type.startsWith("Kubernetes::") && has(details.message) && details.message
+            == "metadata.annotations.endpoints.kubernetes.io/last-change-trigger-time"
+          - |
+            change_type == "diff" && summary == "status.reconciledAt" && config != null && has(config.apiVersion) && config.apiVersion == "argoproj.io/v1alpha1" && has(config.kind) && config.kind == "Application"
+          mapping:
+          - filter: |
+              change.change_type == 'diff' && change.summary == "status.containerStatuses" && patch != null && has(patch.status) && has(patch.status.containerStatuses) && patch.status.containerStatuses.size() > 0 && has(patch.status.containerStatuses[0].restartCount)
+            type: PodCrashLooping
+        relationship:
+        - filter: config_type == "Kubernetes::Service"
+          name:
+            expr: |
+              has(config.spec.selector) && has(config.spec.selector.name) ? config.spec.selector.name : ''
+          type:
+            value: Kubernetes::Deployment
+        - expr: |
+            config.spec.volumes.
+              filter(item, has(item.persistentVolumeClaim)).
+              map(item, {"type": "Kubernetes::PersistentVolumeClaim", "name": item.persistentVolumeClaim.claimName}).
+              toJSON()
+          filter: config_type == 'Kubernetes::Pod'
+        - expr: |
+            config.status.resources.map(item, {
+              "type": "Kubernetes::" + item.kind,
+              "name": item.name,
+              "labels": {
+                "namespace": item.namespace,
+              },
+            }).toJSON()
+          filter: config_type == "Kubernetes::Application" && config.apiVersion == "argoproj.io/v1alpha1"
+      event:  
+        exclusions:
+          reason:
+          - SuccessfulCreate
+          - Created
+          - DNSConfigForming
+        severityKeywords:
+          error:
+          - failed
+          - error
+          warn:
+          - backoff
+          - nodeoutofmemory
+  retention:
+    changes: 
+      - age: 1d
+        name: ReconciliationSucceeded
+      - age: 1d
+        name: ArtifactUpToDate
+      - age: 1d
+        name: GarbageCollectionSucceeded
+      - age: 1d
+        name: Pulling
+      - age: 1d
+        name: Pulled
+      - age: 7d
+        name: Killing
+      - age: 7d
+        name: Scheduled
+      - age: 7d
+        name: Started
+---
+# Source: mission-control-kubernetes/templates/topology.yaml
+apiVersion: canaries.flanksource.com/v1
+kind: Topology
+metadata:
+  name: cluster
+  labels:
+    helm.sh/chart: mission-control-kubernetes-0.1.22
+    app.kubernetes.io/name: mission-control-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: Kubernetes::Cluster
+  icon: "kubernetes"
+  schedule: "@every 5m"
+  properties:
+  - name: cpu
+    lookup:
+      prometheus:
+      - query: '1000 * sum(rate(container_cpu_usage_seconds_total{container!=""}[5m]))'
+        url: ""
+        display:
+          expr: |
+            [{'name': 'cpu', 'value': int(results[0].value), 'headline': true, 'unit': 'millicores'}].toJSON()
+  - name: memory
+    lookup:
+      prometheus:
+      - query: 'sum(container_memory_working_set_bytes{container!=""})'
+        url: ""
+        display:
+          expr: |
+            [{'name': 'memory', 'value': int(results[0].value), 'headline': true, 'unit': 'bytes'}].toJSON()
+
+  components:
+    - name: nodes
+      icon: server
+      id:
+        javascript: properties.zone + "/" + self.name
+      type: Kubernetes::Node
+      components:
+        - name: NodesGroup
+          type: virtual
+          icon: server
+          lookup:
+            kubernetes:
+              - kind: Node
+                name: k8s
+                display:
+                  expr: |
+                    dyn(results).map(r, r.Object).map(r, {
+                      'name': r.metadata.name,
+                      'type': 'Kubernetes::Node',
+                      'labels': k8s.labels(r),
+                      'external_id': r.metadata.name,
+                      'logs': [{'name': 'Kubernetes', 'type': 'KubernetesNode'}],
+                      'configs': [{'name': r.metadata.name, 'type': 'Kubernetes::Node'}],
+                      'selectors':[{'fieldSelector': 'node='+r.metadata.name}],
+                      'status': k8s.getHealth(r).health,
+                      'status_reason': k8s.getHealth(r).status + ' ' + k8s.getHealth(r).message,
+                      'properties': [
+                        {"name": "cpu", "max": k8s.cpuAsMillicores(r.status.allocatable["cpu"]), "unit": "millicores", "headline": true},
+                        {"name": "memory", "max": k8s.memoryAsBytes(r.status.allocatable["memory"]), "unit": "bytes", "headline": true},
+                        {"name": "ephemeral-storage", "max": k8s.memoryAsBytes(r.status.allocatable["ephemeral-storage"]), "unit": "bytes", "headline": true},
+                        {"name": "zone", "text": "topology.kubernetes.io/zone" in r.metadata.labels ? r.metadata.labels["topology.kubernetes.io/zone"]: ""},
+                      ]
+                    }).toJSON()
+
+          properties:
+            - name: cpu
+              lookup:
+                prometheus:
+                - query: '1000 * sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (node)'
+                  url: ""
+                  display:
+                    expr: |
+                      dyn(results).map(r, {
+                        'name': r.node,
+                        'properties': [{'name': 'cpu', 'value': math.Ceil(int(r.value))}]
+                      }).toJSON()
+            - name: memory
+              lookup:
+                prometheus:
+                - query: 'sum(container_memory_working_set_bytes{container!="",pod!=""} * on(pod, namespace) group_left kube_pod_status_phase{phase="Running"} > 0) by (node)'
+                  url: ""
+                  display:
+                    expr: |
+                      dyn(results).map(r, {
+                        'name': r.node,
+                        'properties': [{'name': 'memory', 'value': int(r.value)}]
+                      }).toJSON()
+
+            - name: ephemeral-storage
+              lookup:
+                prometheus:
+                - query: 'max by (instance) (avg_over_time(node_filesystem_avail_bytes{mountpoint="/",fstype!="rootfs"}[5m]))'
+                  url: ""
+                  display:
+                    expr: |
+                      dyn(results).map(r, {
+                        'name': r.instance,
+                        'properties': [{'name': 'memory', 'value': int(r.value)}]
+                      }).toJSON()
+
+    - name: PodGroup
+      icon: pods
+      type: virtual
+      lookup:
+        kubernetes:
+          - kind: Pod
+            ready: false
+            ignore:
+              - junit-fail**
+              - junit-pass**
+            display:
+              expr: |
+                dyn(results).map(r, r.Object).map(r, {
+                  'name': r.metadata.name,
+                  'namespace': r.metadata.namespace,
+                  'type': 'Kubernetes::Pod',
+                  'external_id': r.metadata.namespace + '/' + r.metadata.name,
+                  'parentLookup': {'name': r.metadata.namespace, 'type': 'Kubernetes::Namespace'},
+                  'labels': k8s.labels(r),
+                  'configs': [{'name': r.metadata.name, 'type': 'Kubernetes::Pod'}],
+                  'logs': [{'name': 'Kubernetes', 'type': 'KubernetesPod'}],
+                  'status': k8s.getHealth(r).health,
+                  'status_reason': k8s.getHealth(r).status + ' ' + k8s.getHealth(r).message,
+                  'properties': [
+                    {"name": "image", "text": r.spec.containers[0].image},
+                    {"name": "cpu", "max": k8s.getResourcesLimit(r, "cpu"), "unit": "millicores", "headline": true},
+                    {"name": "memory", "max": k8s.getResourcesLimit(r, "memory"), "unit": "bytes", "headline": true},
+                    {"name": "node", "text": r.spec.nodeName},
+                    {"name": "created_at", "text": time.Parse('2006-01-02T15:04:05Z07:00', r.metadata.creationTimestamp)},
+                    {"name": "namespace", "text": r.metadata.namespace},
+                  ]
+                }).toJSON()
+
+      properties:
+        - name: cpu
+          lookup:
+            prometheus:
+            - query: '1000 * sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod)'
+              url: ""
+              display:
+                expr: |
+                  dyn(results).map(r, {
+                    'name': r.pod,
+                    'properties': [{'name': 'cpu', 'value': math.Ceil(int(r.value))}]
+                  }).toJSON()
+        - name: memory
+          lookup:
+            prometheus:
+            - query: 'sum(container_memory_working_set_bytes{container!=""}) by (pod)'
+              url: ""
+              display:
+                expr: |
+                  dyn(results).map(r, {
+                    'name': r.pod,
+                    'properties': [{'name': 'memory', 'value': int(r.value)}]
+                    }).toJSON()
+
+    - name: Namespaces
+      icon: namespace
+      type: Kubernetes::Namespaces
+      components:
+        - name: NamespaceGroup
+          type: virtual
+          lookup:
+            kubernetes:
+              - kind: Namespace
+                display:
+                  expr: |
+                    dyn(results).map(r, r.Object).map(r, {
+                      'name': r.metadata.name,
+                      'type': 'Kubernetes::Namespace',
+                      'external_id': r.metadata.name,
+                      'labels': k8s.labels(r),
+                      'configs': [{'name': r.metadata.name, 'type': 'Kubernetes::Namespace'}],
+                      'properties': [
+                        {'name': 'cpu', 'unit': 'millicores', 'headline': true},
+                        {'name': 'memory', 'unit': 'bytes', 'headline': true},
+                      ],
+                    }).toJSON()
+          properties:
+            - name: cpu
+              lookup:
+                prometheus:
+                - query: '1000 * sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace)'
+                  url: ""
+                  display:
+                    expr: |
+                      dyn(results).map(r, {
+                        'name': r.namespace,
+                        'properties': [{'name': 'cpu', 'value': math.Ceil(int(r.value))}]
+                      }).toJSON()
+            - name: memory
+              lookup:
+                prometheus:
+                - query: 'sum(container_memory_working_set_bytes{container!="",pod!=""} * on(pod, namespace) group_left kube_pod_status_phase{phase="Running"} > 0) by (namespace)'
+                  url: ""
+                  display:
+                    expr: |
+                      dyn(results).map(r, {
+                        'name': r.namespace,
+                        'properties': [{'name': 'memory', 'value': int(r.value)}]
+                      }).toJSON()

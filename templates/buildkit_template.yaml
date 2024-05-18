@@ -1,0 +1,132 @@
+---
+# Source: buildkit/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-buildkit
+  labels:
+    helm.sh/chart: buildkit-0.1.0
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: buildkit/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-buildkit
+  labels:
+    helm.sh/chart: buildkit-0.1.0
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 1234
+      targetPort: buildkit
+      protocol: TCP
+      name: buildkit
+      
+      nodePort: 31234
+  selector:
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/instance: release-name
+---
+# Source: buildkit/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-buildkit
+  labels:
+    helm.sh/chart: buildkit-0.1.0
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkit
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        container.apparmor.security.beta.kubernetes.io/buildkit: unconfined
+      labels:
+        helm.sh/chart: buildkit-0.1.0
+        app.kubernetes.io/name: buildkit
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "1.16.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: release-name-buildkit
+      securityContext:
+        {}
+      containers:
+        - name: buildkit
+          securityContext:
+            runAsGroup: 1000
+            runAsUser: 1000
+            seccompProfile:
+              type: Unconfined
+          image: "moby/buildkit:master-rootless"
+          args:
+            - --addr
+            - unix:///run/user/1000/buildkit/buildkitd.sock
+            - --addr
+            - tcp://0.0.0.0:1234
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: buildkit
+              containerPort: 1234
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - buildctl
+                - debug
+                - workers
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          livenessProbe:
+            exec:
+              command:
+                - buildctl
+                - debug
+                - workers
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            {}
+          volumeMounts:
+            - mountPath: /home/user/.local/share/buildkit
+              name: buildkitd
+      volumes:
+        - emptyDir: {}
+          name: buildkitd
+---
+# Source: buildkit/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-buildkit-test-connection"
+  labels:
+    helm.sh/chart: buildkit-0.1.0
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-buildkit:1234']
+  restartPolicy: Never

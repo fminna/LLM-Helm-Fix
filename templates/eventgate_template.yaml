@@ -1,0 +1,269 @@
+---
+# Source: eventgate/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eventgate-release-name
+  labels:
+    app: eventgate
+    chart: eventgate-0.12.4
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: eventgate
+      release: release-name
+      routed_via: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8192
+          protocol: TCP
+        - port: 9102
+          protocol: TCP
+---
+# Source: eventgate/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eventgate-release-name-config
+  labels:
+    app: eventgate
+    chart: eventgate-0.12.4
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |- 
+    # service-runner EventGate app config.yaml.
+    
+    # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    # NOTE: If main_app.num_workers is set to 0, it will evaluate to false in
+    # a template conditional.  The user may want to set num_workers to 0, so
+    # we need to check it in a different way.
+    # See: https://github.com/helm/helm/issues/3164#issuecomment-709537506
+    #
+    # This eventgate chart defaults to num_workers: 0.  This should work better
+    # with k8s CPU scheduling, as there will be fewer threads to divide work between.
+    num_workers: 0
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 200
+    
+    # Logger info
+    logging:
+      level:  info
+      streams:
+        - type: stdout
+          named_levels: true
+    # Statsd metrics reporter
+    metrics:
+      name: eventgate
+      type: prometheus
+      port: 9102
+    
+    services:
+      - name: eventgate
+        # We want service-runner to start eventgate.
+        # Since eventgate is also a library, it exports the
+        # service-runner app as 'app'.
+        module: eventgate
+        entrypoint: app
+        conf:
+          port: 8192
+          # Default cors to false.
+          cors: false
+          user_agent: eventgate-release-name
+    
+          eventgate_factory_module: '/srv/service/eventgate-wikimedia.js'
+    
+          # If a validation error is encountered, a validation error event
+          # will be produced to this stream.
+          # This should be set in release specific values files.
+          # In production, this should be prefixed with service name,
+          # e.g. eventgate-analytics, eventgate-main
+          error_stream: eventgate.error.validation
+    
+          # eventgate app settings
+          dt_field: meta.dt
+          id_field: meta.id
+          kafka:
+            conf:
+              broker.address.family: v4
+              compression.codec: snappy
+              log.connection.close: false
+              message.max.bytes: 4194304
+              metadata.broker.list:
+              - kafka.default.svc.cluster.local:31092
+              ssl.ca.location: /etc/ssl/certs/wmf-ca-certificates.crt
+              ssl.cipher.suites: ECDHE-ECDSA-AES256-GCM-SHA384
+              ssl.curves.list: P-256
+              ssl.sigalgs.list: ECDSA+SHA256
+              statistics.interval.ms: 30000
+            guaranteed:
+              conf:
+                producer.poll.interval.ms: 10
+                queue.buffering.max.ms: 10
+            hasty:
+              conf:
+                producer.poll.interval.ms: 100
+                queue.buffering.max.ms: 1000
+            topic_conf: {}
+          max_body_size: 10mb
+          schema_base_uris:
+          - file:///srv/service/schemas/event/primary/jsonschema/
+          schema_precache_uris:
+          - /error/0.0.3
+          - /test/event/0.0.3
+          schema_uri_field: $schema
+          stream_config_retries: 3
+          stream_config_uri: /etc/eventgate/stream-config.yaml
+          stream_field: meta.stream
+          test_events:
+          - $schema: /test/event/1.0.0
+            meta:
+              stream: eventgate.test.event
+          topic_prefix: datacenter1.
+  # All Kafka Broker and client certificates use the Puppet CA.
+  # This is also used to allow NodeJS to talk to internal envoy TLS endpoints
+  # like schema.discovery.wmnet:443
+  puppetca.crt.pem: |-
+    snakeoil
+---
+# Source: eventgate/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: eventgate-release-name-http-service
+  labels:
+    app: eventgate
+    chart: eventgate-0.12.4
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: eventgate
+    routed_via: release-name
+  ports:
+  - name: eventgate-http
+    protocol: TCP
+    port: 8192
+---
+# Source: eventgate/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eventgate-release-name
+  labels:
+    app: eventgate
+    chart: eventgate-0.12.4
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: eventgate
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: eventgate
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: e093093488db1b0cac4bd1c1455ee3b5834a9ae354b6e3bebf3bbe5d429f2949
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      terminationGracePeriodSeconds: 13
+      containers:
+        # The main application container
+        - name: eventgate
+          image: "docker-registry.wikimedia.org/wikimedia/eventgate-wikimedia:latest"
+          command: ["nodejs"]
+          args: [
+            "/srv/service/node_modules/.bin/eventgate",
+            "-c",
+            "/etc/eventgate/config.yaml"
+          ]
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8192
+          livenessProbe:
+            tcpSocket:
+              port: 8192
+          readinessProbe:
+            # EventGate should process a test event if it is ready.
+            # The GET /v1/_test/events route will process the configured
+            # test_events as if they were POSTed to /v1/events.
+            httpGet:
+              path: /v1/_test/events
+              port: 8192
+            initialDelaySeconds: 2
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                - "/bin/sh"
+                - "-c"
+                - "sleep 11"
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: eventgate
+
+          volumeMounts:
+            - name: eventgate-config-volume
+              mountPath: /etc/eventgate
+          resources:
+            requests:
+              cpu: 200m
+              memory: 150Mi
+            limits:
+              cpu: 1500m
+              memory: 300Mi          
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+               drop:
+               - ALL
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault        
+      volumes:
+        - name: eventgate-config-volume
+          configMap:
+            name: eventgate-release-name-config
+        - name: metrics-exporter-config-volume
+          configMap:
+            name: eventgate-release-name-metrics-exporter-config
+---
+# Source: eventgate/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'eventgate-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'eventgate-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(EVENTGATE_RELEASE_NAME_SERVICE_HOST)', 'http://eventgate-release-name:8192']    
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+         drop:
+         - ALL
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

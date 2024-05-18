@@ -1,0 +1,195 @@
+---
+# Source: kube-packetloss-exporter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kube-packetloss-exporter
+  labels:
+    helm.sh/chart: kube-packetloss-exporter-0.1.0
+    app.kubernetes.io/name: kube-packetloss-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.7.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kube-packetloss-exporter/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-kube-packetloss-exporter-config-reloader
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["endpoints"]
+  verbs: ["get", "watch", "list"]
+---
+# Source: kube-packetloss-exporter/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-kube-packetloss-exporter-config-reloader
+subjects:
+- kind: ServiceAccount
+  name: release-name-kube-packetloss-exporter
+roleRef:
+  kind: Role
+  name: release-name-kube-packetloss-exporter-config-reloader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: kube-packetloss-exporter/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kube-packetloss-exporter
+  labels:
+    helm.sh/chart: kube-packetloss-exporter-0.1.0
+    app.kubernetes.io/name: kube-packetloss-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.7.1"
+    app.kubernetes.io/managed-by: Helm
+  
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9374
+      targetPort: http
+      protocol: TCP
+      name: http
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: kube-packetloss-exporter
+    app.kubernetes.io/instance: release-name
+---
+# Source: kube-packetloss-exporter/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-kube-packetloss-exporter
+  labels:
+    helm.sh/chart: kube-packetloss-exporter-0.1.0
+    app.kubernetes.io/name: kube-packetloss-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-packetloss-exporter
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-packetloss-exporter
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-kube-packetloss-exporter
+      securityContext:
+        runAsUser: 0
+      shareProcessNamespace: true
+      containers:
+        - name: kube-packetloss-exporter
+          securityContext:
+            {}
+          image: "quay.io/superq/smokeping-prober:v0.7.1"
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+               while [ ! -f /etc/kube-packetloss-exporter/config.yaml ]; do
+                 echo 'waiting for configfile';
+                 sleep 1;
+               done;
+               while smokeping_prober $@; EC=$?; [ ${EC} -eq 0 ] || [ ${EC} -eq 143 ]; do
+                 echo 'restarting....';
+               done;
+               exit ${EC}
+            - "--"
+          args:
+            - "--config.file=/etc/kube-packetloss-exporter/config.yaml"
+          ports:
+            - name: http
+              containerPort: 9374
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+          resources:
+            {}
+          volumeMounts:
+          - name: config
+            mountPath: /etc/kube-packetloss-exporter
+        - name: config-reloader
+          securityContext:
+            {}
+          image: bitnami/kubectl:1.28
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/sh"
+            - "-c"
+          args:
+            - |
+               SERVICE_NAME="release-name-kube-packetloss-exporter"
+               CONFIG_FILE="/etc/kube-packetloss-exporter/config.yaml"
+               SAMPLE_NODE="3"
+
+               mk_config () {
+                  TMP_CONFIG=$(mktemp -p $(dirname "${CONFIG_FILE}"))
+                  ALL_HOSTS=$(kubectl get ep "${SERVICE_NAME}" -o jsonpath="{range .subsets[*].addresses[*]}{.ip}{'\n'}{end}")
+                  if [ "${SAMPLE_NODE}" = "all" ]; then
+                      RETAIN_HOSTS=$(echo "${ALL_HOSTS}"|grep -v "${POD_IP}")
+                  else
+                      RETAIN_HOSTS=$( (echo "${ALL_HOSTS}";echo "${ALL_HOSTS}")|grep "${POD_IP}" -m 1 -A "${SAMPLE_NODE}"|grep -v "${POD_IP}")
+                  fi;
+                  if [ -z "${RETAIN_HOSTS}" ]; then
+                      echo "No hosts to create config..."
+                      return 1
+                  fi
+                  (echo "targets:"
+                   echo "- interval: ${PING_INTERVAL}"
+                   echo "  hosts:"
+                   for IP in ${RETAIN_HOSTS}; do
+                      echo "  - ${IP}";
+                   done) > "${TMP_CONFIG}";
+                  if ! diff --new-file "${TMP_CONFIG}" "${CONFIG_FILE}" > /dev/null; then
+                       echo "Installing new config"
+                       mv "${TMP_CONFIG}" "${CONFIG_FILE}"
+                       cat ${CONFIG_FILE}
+                       echo "Restart exporter ($(pgrep 'smokeping'))"
+                       kill $(pgrep 'smokeping')
+                  else
+                    rm "${TMP_CONFIG}"
+                  fi
+               }
+               while true; do
+                   while mk_config; do
+                       kubectl get ep "${SERVICE_NAME}" --watch-only | while read line; do
+                           mk_config
+                       done
+                   done
+                   sleep 1
+               done
+          volumeMounts:
+          - name: config
+            mountPath: /etc/kube-packetloss-exporter
+          env:
+          - name: PING_INTERVAL
+            value: "0.5s"
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+      volumes:
+      - name: config
+        emptyDir:
+      hostNetwork: false
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists

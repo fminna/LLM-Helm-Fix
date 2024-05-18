@@ -1,0 +1,360 @@
+---
+# Source: radar-gateway/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      helm.sh/chart: radar-gateway-1.1.3
+      app.kubernetes.io/name: radar-gateway
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "0.7.1"
+      app.kubernetes.io/managed-by: Helm
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-kafka
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-schema-registry
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: management-portal
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# Source: radar-gateway/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  healthcheck.sh: |
+    #!/bin/sh
+    STATUS=$(curl -s --max-time 4 localhost:8080/kafka/health)
+    if ! (echo "$STATUS" | grep -Fq '"kafka":{"status":"UP"'); then
+      exit 1
+    fi
+  gateway.yml: |
+    # Resource config class
+    #resourceConfig: org.radarbase.gateway.inject.ManagementPortalEnhancerFactory
+
+    server:
+      baseUri: http://0.0.0.0:8080/kafka/
+      maxRequestSize: 2.5165824e+07
+
+    kafka:
+      producer:
+        bootstrap.servers: cp-kafka-headless:9092
+        compression.type: lz4
+      admin:
+        bootstrap.servers: cp-kafka-headless:9092
+      serialization:
+        schema.registry.url: http://cp-schema-registry:8081
+    auth:
+      managementPortalUrl: http://management-portal:8080/managementportal
+      checkSourceId: true
+---
+# Source: radar-gateway/templates/jmx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-radar-gateway-jmx-configmap
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.yml: |
+    jmxUrl: service:jmx:rmi:///jndi/rmi://localhost:9010/jmxrmi
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    ssl: false
+---
+# Source: radar-gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - name: metrics
+      port: 5556
+      protocol: TCP
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+---
+# Source: radar-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radar-gateway
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/configmap: 8f9ec77b66623753b9333f380e9dfbe721513f7324f978c1ed1aaf7c26756157
+      labels:
+        app.kubernetes.io/name: radar-gateway
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: "app.kubernetes.io/name"
+                    operator: In
+                    values:
+                    - radar-gateway
+                  - key: "app.kubernetes.io/instance"
+                    operator: In
+                    values:
+                    - release-name
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - image: sscaling/jmx-prometheus-exporter
+          securityContext:
+            {}
+          imagePullPolicy: IfNotPresent
+          name: prometheus-jmx-exporter
+          env:
+            - name: "CONFIG_YML"
+              value: "/etc/radar-gateway/config.yml"
+          ports:
+          - containerPort: 5556
+            protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+          - mountPath: /etc/radar-gateway/
+            name: gateway-jmx-configmap
+        - name: radar-gateway
+          image: "radarbase/radar-gateway:0.7.1"
+          imagePullPolicy: IfNotPresent
+          command: ["radar-gateway", "/etc/radar-gateway/gateway.yml"]
+          env:
+          - name: JAVA_OPTS
+            value: "-XX:GCTimeRatio=19 -XX:MinHeapFreeRatio=20 -XX:MaxHeapFreeRatio=30 --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.management/javax.management.openmbean=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.management/javax.management=ALL-UNNAMED -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - /etc/radar-gateway/healthcheck.sh
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - /etc/radar-gateway/healthcheck.sh
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/radar-gateway
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-radar-gateway
+        - name: gateway-jmx-configmap
+          configMap:
+            name:  release-name-radar-gateway-jmx-configmap
+---
+# Source: radar-gateway/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  maxReplicas: 5
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-radar-gateway
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+---
+# Source: radar-gateway/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/cors-allow-headers: DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,Content-Encoding
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 24m
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/rewrite-target: /kafka/$1
+spec:
+  ingressClassName: "nginx"
+  tls:
+    - hosts:
+        - "localhost"
+      secretName: radar-base-tls-radar-gateway
+  rules:
+    - host: "localhost"
+      http:
+        paths:
+          - path: "/kafka/?(.*)"
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: release-name-radar-gateway
+                port:
+                  number: 8080
+---
+# Source: radar-gateway/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-radar-gateway
+  labels:
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/name: radar-gateway
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.7.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      helm.sh/chart: radar-gateway-1.1.3
+      app.kubernetes.io/name: radar-gateway
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "0.7.1"
+      app.kubernetes.io/managed-by: Helm
+  endpoints:
+  - port: metrics
+    interval: 15s
+---
+# Source: radar-gateway/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-radar-gateway-test-connection"
+  labels:
+    app.kubernetes.io/name: radar-gateway
+    helm.sh/chart: radar-gateway-1.1.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-radar-gateway:8080']
+  restartPolicy: Never

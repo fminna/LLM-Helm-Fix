@@ -20,7 +20,7 @@ import os
 import pandas as pd
 import ast
 import math
-from llm_apis import query_chatgpt
+from llm_apis import query_local_llm
 from difflib import Differ
 from pprint import pprint
 
@@ -52,11 +52,17 @@ def parse_yaml_template(chart_name: str) -> list:
 
     # Parse and return the multi-document YAML file while preserving comments
     file_path = f"templates/{chart_name}_template.yaml"
-    with open(file_path, "r", encoding="utf-8") as file:
-        template = list(yaml.load_all(file, Loader=yaml.FullLoader))
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            template = list(yaml.load_all(file, Loader=yaml.FullLoader))
+    except yaml.scanner.ScannerError:
+        return []
+    except yaml.constructor.ConstructorError:
+        return []
 
     # Remove null document (--- null) from template
-    template = [document for document in template if document is not None and document["kind"] != "PodSecurityPolicy"]
+    template = [document for document in template if document is not None and "kind" in document and document["kind"] != "PodSecurityPolicy"]
     return template
 
 
@@ -294,7 +300,7 @@ def query_llm(chart_name: str):
     rq2_rows = build_query(rq1_df)
 
     # Query LLM models
-    rq2_rows = query_chatgpt(rq2_rows)
+    rq2_rows = query_local_llm(rq2_rows)
 
     # Evaluate LLM answers
     # Add Changed, Added, Removed columns to the df

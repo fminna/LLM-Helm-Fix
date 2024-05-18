@@ -1,0 +1,295 @@
+---
+# Source: escvmscheduler/templates/certificates-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: certificates-secret
+type: Opaque
+data:
+  nginx_ssl_crt: 
+  nginx_ssl_key:
+---
+# Source: escvmscheduler/templates/certificates-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: certificates-config
+data:
+  ldap_certificate: ""
+---
+# Source: escvmscheduler/templates/nginx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  nginx_conf: |-
+    upstream vm_scheduler {
+      server web:80;
+    }
+
+    server {
+        listen 443 ssl;
+        ssl_certificate     /etc/ssl/certs/escvmscheduler-nginx-selfsigned.crt;
+        ssl_certificate_key /etc/ssl/certs/escvmscheduler-nginx-selfsigned.key;
+        proxy_read_timeout 180s;
+        server_tokens off; # Hide nginx version - For security reasons
+        location / {
+            proxy_pass http://vm_scheduler;
+            proxy_http_version 1.1;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $host;
+            proxy_redirect off;
+        }
+        location /staticfiles/ {
+            alias /app/staticfiles/;
+        }
+    }
+---
+# Source: escvmscheduler/templates/mysqldb-persistentvolumeclaim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app: mysqldb-persistentvolumeclaim
+  name: mysqldb-persistentvolumeclaim
+spec:
+  accessModes: [ "ReadWriteMany" ]
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: escvmscheduler/templates/static-volume-persistentvolumeclaim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app: static-volume
+  name: static-volume
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 100Mi
+---
+# Source: escvmscheduler/templates/mysqldb-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: mysqldb
+  name: mysqldb
+spec:
+  ports:
+  - name: "3306"
+    port: 3306
+    protocol: TCP
+    targetPort: 3306
+  selector:
+    app: mysqldb
+---
+# Source: escvmscheduler/templates/nginx-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: nginx
+  name: nginx
+spec:
+  ports:
+  - name: "http"
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  - name: "https"
+    port: 443
+    protocol: TCP
+    targetPort: 443
+  selector:
+    app: nginx
+  type: LoadBalancer
+---
+# Source: escvmscheduler/templates/web-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: web
+  name: web
+spec:
+  ports:
+  - name: "http"
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: web
+---
+# Source: escvmscheduler/templates/mysqldb-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: mysqldb
+  name: mysqldb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysqldb
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysqldb
+    spec:
+      containers:
+      - env:
+        - name: MYSQL_DATABASE
+          value: "vm_scheduler"
+        - name: MYSQL_ROOT_PASSWORD
+          value: "setAsecurePassword"
+        image: mysql:5.7
+        imagePullPolicy: "IfNotPresent"
+        name: mysqldb
+        ports:
+        - containerPort: 3306
+        resources: {}
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: mysqldb-persistentvolumeclaim
+      restartPolicy: Always
+      serviceAccountName: ""
+      volumes:
+      - name: mysqldb-persistentvolumeclaim
+        persistentVolumeClaim:
+          claimName: mysqldb-persistentvolumeclaim
+---
+# Source: escvmscheduler/templates/nginx-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nginx
+  name: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.17.4-alpine
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        resources: {}
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+        - name: static-volume
+          mountPath: /app/staticfiles
+        - name: ssl-certificates
+          mountPath: /etc/ssl/certs
+          readOnly: true
+      restartPolicy: Always
+      serviceAccountName: ""
+      volumes:
+      - name: static-volume
+        persistentVolumeClaim:
+          claimName: static-volume
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+          items:
+          - key: nginx_conf
+            path: nginx.conf
+      - name: ssl-certificates
+        secret:
+          secretName: certificates-secret
+          items:
+          - key: nginx_ssl_crt
+            path: escvmscheduler-nginx-selfsigned.crt
+          - key: nginx_ssl_key
+            path: escvmscheduler-nginx-selfsigned.key
+---
+# Source: escvmscheduler/templates/web-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: web
+  name: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - env:
+        - name: ALLOWED_HOSTS
+          value: "localhost,0.0.0.0,127.0.0.1,vm-scheduler,yourdomain.com"
+        - name: DEBUG
+          value: "0"
+        - name: INITIAL_ADMIN_PASSWORD
+          value: "password"
+        - name: INITIAL_USER_PASSWORD
+          value: "password"
+        - name: LDAP_BASE_DN
+          value: "DC=example,DC=com"
+        - name: LDAP_BIND_DN
+          value: "cn=read-only-admin,dc=example,dc=com"
+        - name: LDAP_BIND_PASSWORD
+          value: "password"
+        - name: LDAP_IGNORE_CERT
+          value: "true"
+        - name: LDAP_SERVER_URI
+          value: "ldap://ldap.forumsys.com:389"
+        - name: LDAP_SUPERUSER_GROUP_DN
+          value: "ou=mathematicians,dc=example,dc=com"
+        - name: LDAP_WITH_LOCAL_AUTH
+          value: "true"
+        - name: MYSQL_ROOT_PASSWORD
+          value: "setAsecurePassword"
+        - name: SECRET_KEY
+          value: "setArandomKey"
+        image: swisscomcloud/esc-vm-scheduler-web:latest
+        imagePullPolicy: "IfNotPresent"
+        name: web
+        ports:
+        - containerPort: 80
+        resources: {}
+        volumeMounts:
+        - name: static-volume
+          mountPath: /app/staticfiles
+        - name: ldap-certificate
+          mountPath: /etc/ssl/certs
+      restartPolicy: Always
+      serviceAccountName: ""
+      volumes:
+      - name: static-volume
+        persistentVolumeClaim:
+          claimName: static-volume
+      - name: ldap-certificate
+        configMap:
+          name: certificates-config
+          items:
+          - key: ldap_certificate
+            path: escvmscheduler_ldap_cert.pem

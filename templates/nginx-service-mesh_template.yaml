@@ -1,0 +1,1368 @@
+---
+# Source: nginx-service-mesh/templates/nats.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nats
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-mesh-controller
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-mesh-metrics
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/spire-agent.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/nats.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+data:
+  nats.conf: "pid_file: \"/var/run/nats/nats.pid\"\nhttp: 8222\ntls: {\n  ca_file: \"/etc/ssl/ca.crt\"\n  cert_file: \"/etc/ssl/tls.crt\"\n  key_file: \"/etc/ssl/tls.key\"\n  verify: true\n}\n"
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meshconfig
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+data:
+  transparent: "false"
+  meshconfig.json: "{\n  \"accessControlMode\": \"allow\",\n  \"clientMaxBodySize\": \"1m\",\n  \"enableUDP\": false,\n  \"environment\": \"kubernetes\",\n  \"mtls\": {\n    \"caKeyType\": \"ec-p256\",\n    \"caTTL\": \"720h\",\n    \"mode\": \"permissive\",\n    \"svidTTL\": \"1h\",\n    \"trustDomain\": \"example.org\"\n  },\n  \"namespace\": \"default\",\n  \"nginxErrorLogLevel\": \"warn\",\n  \"nginxLBMethod\": \"least_time\",\n  \"nginxLogFormat\": \"default\",\n  \"prometheusAddress\": \"\",\n  \"registry\": {\n    \"disablePublicImages\": false,\n    \"imageTag\": \"2.0.0\",\n    \"imagePullPolicy\": \"IfNotPresent\",\n    \"registryKeyName\": \"\",\n    \"server\": \"docker-registry.nginx.com/nsm\",\n    \"sidecarImage\": \"docker-registry.nginx.com/nsm/nginx-mesh-sidecar:2.0.0\",\n    \"sidecarInitImage\": \"docker-registry.nginx.com/nsm/nginx-mesh-init:2.0.0\"\n  },\n  \"telemetry\": {}\n}\n"
+---
+# Source: nginx-service-mesh/templates/spire-agent.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+data:
+  agent.conf: "agent {\n  data_dir = \"/run/spire\"\n  log_level = \"DEBUG\"\n  server_address = \"spire-server\"\n  server_port = \"8081\"\n  socket_path = \"/run/spire/sockets/agent.sock\"\n  trust_bundle_path = \"/run/spire/bundle/bundle.crt\"\n  trust_domain = \"example.org\"\n}\n\nplugins {\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n\t    cluster = \"nginx-mesh\"\n    }\n  }\n\n  KeyManager \"memory\" {\n    plugin_data {\n    }\n  }\n\n  WorkloadAttestor \"k8s\" {\n    plugin_data {\n      skip_kubelet_verification = true\n    }\n  }\n\n  WorkloadAttestor \"unix\" {\n      plugin_data {\n      }\n  }\n}\n\nhealth_checks {\n    listener_enabled = true\n    bind_address = \"0.0.0.0\"\n    bind_port = \"8080\"\n    live_path = \"/live\"\n    ready_path = \"/ready\"\n  }\n"
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bundle
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+data:
+  server.conf: "server {\n  bind_address = \"0.0.0.0\"\n  bind_port = \"8081\"\n  ca_key_type = \"ec-p256\"\n  ca_ttl = \"720h\"\n  data_dir = \"/run/spire/data\"\n  log_level = \"DEBUG\"\n  socket_path = \"/run/spire/sockets/spire-registration.sock\"\n  default_x509_svid_ttl = \"1h\"\n  trust_domain = \"example.org\"\n  ca_subject = {\n    country = [\"US\"],\n    organization = [\"NGINX\"],\n    common_name = \"\",\n  }\n}\n\nplugins {\n  DataStore \"sql\" {\n    plugin_data {\n      database_type = \"sqlite3\"\n      connection_string = \"/run/spire/data/datastore.sqlite3\"\n    }\n  }\n\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n      clusters = {\n        \"nginx-mesh\" = {\n          service_account_allow_list = [\"default:spire-agent\"]\n        }\n      }\n    }\n  }\n\n  Notifier \"k8sbundle\" {\n     plugin_data {\n       namespace = \"default\"\n       webhook_label = \"spiffe.io/webhook\"\n       api_service_label = \"spiffe.io/apiservice\"\n     }\n  }\n\n  KeyManager \"disk\" {\n    plugin_data {\n      keys_path = \"/run/spire/data/keys.json\"\n    }\n  }\n\n  \n\n}\n\nhealth_checks {\n  listener_enabled = true\n  bind_address = \"0.0.0.0\"\n  bind_port = \"8082\"\n  live_path = \"/live\"\n  ready_path = \"/ready\"\n}\n"
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-workload-registrar
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+data:
+  k8s-workload-registrar.conf: "log_level = \"debug\"\ntrust_domain = \"example.org\"\nserver_socket_path = \"/run/spire/sockets/spire-registration.sock\"\ncluster = \"nginx-mesh\"\npod_controller = true\nadd_svc_dns_name = true\nmode = \"crd\"\nwebhook_enabled = true\nwebhook_cert_dir = \"/tmp/k8s-webhook-server/serving-certs\"\nidentity_template_label = \"spiffe.io/spiffeid\"\ndns_name_templates = [\"{{ .Pod.Name}}\", \"{{ .Pod.ServiceAccount }}.{{ .Pod.Namespace }}.svc\"]\n"
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services", "endpoints"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["secrets", "pods"]
+  verbs: ["create", "get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "update"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "deployments", "daemonsets"]
+  verbs: ["list", "watch"]
+- apiGroups: ["split.smi-spec.io"]
+  resources: ["trafficsplits"]
+  verbs: ["*"]
+- apiGroups: ["access.smi-spec.io"]
+  resources: ["traffictargets"]
+  verbs: ["*"]
+- apiGroups: ["specs.smi-spec.io"]
+  resources: ["httproutegroups", "tcproutes"]
+  verbs: ["*"]
+- apiGroups: ["specs.smi.nginx.com"]
+  resources: ["ratelimits", "circuitbreakers"]
+  verbs: ["*"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  resourceNames: ["sidecar-injector-webhook-cfg.internal.builtin.nsm.nginx"]
+  verbs: ["get", "update"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations"]
+  resourceNames: ["validating-webhook-cfg.internal.builtin.nsm.nginx"]
+  verbs: ["get", "update"]
+- apiGroups: ["nsm.nginx.com"]
+  resources: ["meshconfigclasses", "meshconfigs"]
+  verbs: ["get", "list", "watch"]
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nginx-mesh-metrics.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+---
+# Source: nginx-service-mesh/templates/spire-agent.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "nodes/proxy"]
+  verbs: ["get"]
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["spire-bundle"]
+  verbs: ["get", "patch"]
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+- apiGroups: ["apiregistration.k8s.io"]
+  resources: ["apiservices"]
+  verbs: ["get", "list", "patch", "watch"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  verbs: ["get", "list", "patch", "watch"]
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-workload-registrar.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: [""]
+  resources: ["endpoints", "pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["spiffeid.spiffe.io"]
+  resources: ["spiffeids"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["spiffeid.spiffe.io"]
+  resources: ["spiffeids/status"]
+  verbs: ["get", "patch", "update"]
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: nginx-mesh-controller
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-mesh-controller-svc.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: nginx-mesh-controller
+    namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-mesh-metrics.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nginx-mesh-metrics.internal.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: nginx-mesh-metrics
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-mesh-metrics-svc.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: nginx-mesh-metrics
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/spire-agent.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent.security.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: spire-agent
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server.security.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: spire-server
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-workload-registrar.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-workload-registrar.security.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: spire-server
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+rules:
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "deployments", "daemonsets"]
+  resourceNames: ["spire-server", "spire-agent"]
+  verbs: ["get", "patch"]
+- apiGroups: ["nsm.nginx.com"]
+  resources: ["meshconfigs/status"]
+  resourceNames: ["nginx-mesh-config"]
+  verbs: ["update", "patch"]
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nginx-mesh-controller.internal.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: nginx-mesh-controller
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nginx-mesh-controller-svc.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: nginx-mesh-controller
+    namespace: default
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nginx-mesh-metrics-svc.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: nginx-mesh-metrics
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/nats.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-server
+  labels:
+    app.kubernetes.io/name: nats-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  selector:
+    app.kubernetes.io/name: nats-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+  clusterIP: None
+  ports:
+  - name: client
+    port: 4222
+  - name: monitor
+    port: 8222
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mesh-controller
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  ports:
+  - name: version
+    port: 8082
+  selector:
+    app.kubernetes.io/name: nginx-mesh-controller
+    app.kubernetes.io/part-of: nginx-service-mesh
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mesh-webhook
+  labels:
+    app.kubernetes.io/name: nginx-mesh-controller
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  ports:
+  - name: admission
+    port: 443
+    targetPort: 9443
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: nginx-mesh-controller
+    app.kubernetes.io/part-of: nginx-service-mesh
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mesh-metrics-svc
+  labels:
+    app.kubernetes.io/name: nginx-mesh-metrics
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  ports:
+  - name: http
+    port: 443
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: nginx-mesh-metrics
+    app.kubernetes.io/part-of: nginx-service-mesh
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  ports:
+  - name: api
+    protocol: TCP
+    port: 8081
+    targetPort: 8081
+  selector:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-workload-registrar
+  labels:
+    app.kubernetes.io/name: k8s-workload-registrar
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  ports:
+  - name: webhook
+    protocol: TCP
+    port: 443
+    targetPort: 9443
+  selector:
+    app.kubernetes.io/name: spire-server
+---
+# Source: nginx-service-mesh/templates/spire-agent.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  labels:
+    app.kubernetes.io/name: spire-agent
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-agent
+      app.kubernetes.io/part-of: nginx-service-mesh
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-agent
+        app.kubernetes.io/part-of: nginx-service-mesh
+    spec:
+      serviceAccountName: spire-agent
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+      - name: init
+        image: curlimages/curl
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # passing dummy value forces telnet connection to exit on success with code 48
+          while $(curl -t 'DUMMY=1' -s telnet://spire-server:8081); [ $? -ne 48 ]; do
+            sleep 1
+          done
+      containers:
+      - name: spire-agent
+        image: gcr.io/spiffe-io/spire-agent:1.5.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config
+        - /run/spire/config/agent.conf
+        volumeMounts:
+        - name: spire-config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: spire-bundle
+          mountPath: /run/spire/bundle
+          readOnly: true
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+        - name: spire-token
+          mountPath: /var/run/secrets/tokens
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: 8080
+          failureThreshold: 2
+          initialDelaySeconds: 15
+          periodSeconds: 60
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: spire-config
+        configMap:
+          name: spire-agent
+      - name: spire-bundle
+        configMap:
+          name: spire-bundle
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: DirectoryOrCreate
+      - name: spire-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: spire-server
+              expirationSeconds: 7200
+              path: spire-agent
+---
+# Source: nginx-service-mesh/templates/nats.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-server
+  labels:
+    app.kubernetes.io/name: nats-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats-server
+      app.kubernetes.io/part-of: nginx-service-mesh
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats-server
+        app.kubernetes.io/part-of: nginx-service-mesh
+        spiffe.io/spiffeid: "true"
+    spec:
+      serviceAccountName: nats
+      volumes:
+      - name: config-volume
+        configMap:
+          name: nats-config
+      - name: pid
+        emptyDir: {}
+      - name: tls
+        emptyDir: {}
+      - name: spire-agent-socket
+        hostPath:
+          path: "/run/spire/sockets"
+          type: DirectoryOrCreate
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 60
+      initContainers:
+      - name: nginx-mesh-cert-reloader-init
+        image: docker-registry.nginx.com/nsm/nginx-mesh-cert-reloader:2.0.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 2102
+          capabilities:
+            drop:
+            - all
+            add:
+            - NET_ADMIN
+            - KILL
+        volumeMounts:
+        - name: tls
+          mountPath: /etc/ssl
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+      containers:
+      - name: nginx-mesh-cert-reloader
+        image: docker-registry.nginx.com/nsm/nginx-mesh-cert-reloader:2.0.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -pid
+        - /var/run/nats/nats.pid
+        - -is-daemon
+        volumeMounts:
+        - name: pid
+          mountPath: /var/run/nats
+        - name: tls
+          mountPath: /etc/ssl
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+      - name: nats-server
+        image: nats:2.9-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 8222
+          name: monitor
+        command:
+        - nats-server
+        - --config
+        - /etc/nats-config/nats.conf
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 2102
+          capabilities:
+            drop:
+            - all
+            add:
+            - NET_ADMIN
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_ADVERTISE
+          value: "$(POD_NAME).nats-server.$(POD_NAMESPACE).svc"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nats-config
+        - name: pid
+          mountPath: /var/run/nats
+        - name: tls
+          mountPath: /etc/ssl
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - /nats-server -sl=ldm=/var/run/nats/nats.pid && /bin/sleep 60
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-mesh-controller
+  labels:
+    app.kubernetes.io/name: nginx-mesh-controller
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-mesh-controller
+      app.kubernetes.io/part-of: nginx-service-mesh
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-mesh-controller
+        app.kubernetes.io/part-of: nginx-service-mesh
+        spiffe.io/spiffeid: "true"
+    spec:
+      serviceAccountName: nginx-mesh-controller
+      containers:
+      - name: nginx-mesh-controller
+        image: docker-registry.nginx.com/nsm/nginx-mesh-controller:2.0.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - --meshconfig=/etc/config/meshconfig.json
+        - --tlsDir=/tmp/webhooks
+        - --mesh-ctlr-name=nsm.nginx.com/nginx-mesh-controller
+        - --meshconfigclass=default-meshconfig-class
+        - -logtostderr
+        - -v=3
+        env:
+        - name: MY_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 2102
+          capabilities:
+            drop:
+            - all
+            add:
+            - NET_ADMIN
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 30
+        volumeMounts:
+        - name: meshconfig
+          mountPath: /etc/config
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+      volumes:
+      - name: meshconfig
+        configMap:
+          name: meshconfig
+          items:
+          - key: meshconfig.json
+            path: meshconfig.json
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: DirectoryOrCreate
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-mesh-metrics
+  labels:
+    app.kubernetes.io/name: nginx-mesh-metrics
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-mesh-metrics
+      app.kubernetes.io/part-of: nginx-service-mesh
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-mesh-metrics
+        app.kubernetes.io/part-of: nginx-service-mesh
+        spiffe.io/spiffeid: "true"
+    spec:
+      serviceAccountName: nginx-mesh-metrics
+      containers:
+      - name: nginx-mesh-metrics
+        image: docker-registry.nginx.com/nsm/nginx-mesh-metrics:2.0.0
+        imagePullPolicy: IfNotPresent
+        args:
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 2102
+          capabilities:
+            drop:
+            - all
+            add:
+            - NET_ADMIN
+        readinessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /liveness
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /liveness
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 30
+        ports:
+        - name: metrics
+          containerPort: 8080
+        volumeMounts:
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+      volumes:
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: DirectoryOrCreate
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: spire-server
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spire-server
+      app.kubernetes.io/part-of: nginx-service-mesh
+  serviceName: spire-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spire-server
+        app.kubernetes.io/part-of: nginx-service-mesh
+    spec:
+      serviceAccountName: spire-server
+      shareProcessNamespace: true
+      containers:
+      - name: spire-server
+        image: gcr.io/spiffe-io/spire-server:1.5.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config
+        - /run/spire/config/server.conf
+        ports:
+        - name: spire-server
+          protocol: TCP
+          containerPort: 8081
+        volumeMounts:
+        - name: spire-config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: spire-data
+          mountPath: /run/spire/data
+          readOnly: false
+        - name: spire-server-socket
+          mountPath: /run/spire/sockets
+          readOnly: false
+        livenessProbe:
+          httpGet:
+            port: 8082
+            path: /live
+          failureThreshold: 2
+          initialDelaySeconds: 15
+          periodSeconds: 60
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            port: 8082
+            path: /ready
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      - name: k8s-workload-registrar
+        image: gcr.io/spiffe-io/k8s-workload-registrar:1.5.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config
+        - /run/spire/config/k8s-workload-registrar.conf
+        ports:
+        - name: webhook
+          protocol: TCP
+          containerPort: 9443
+        env:
+          - name: MY_POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        volumeMounts:
+        - name: k8s-workload-registrar-config
+          mountPath: /run/spire/config
+          readOnly: true
+        - name: spire-server-socket
+          mountPath: /run/spire/sockets
+          readOnly: true
+      volumes:
+      - name: spire-config
+        configMap:
+          name: spire-server
+      - name: spire-server-socket
+        emptyDir: {}
+      - name: k8s-workload-registrar-config
+        configMap:
+          name: k8s-workload-registrar
+  volumeClaimTemplates:
+  - metadata:
+      name: spire-data
+      namespace: default
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-metrics.yaml
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.metrics.smi-spec.io
+  labels:
+    app.kubernetes.io/name: nginx-mesh-metrics
+    app.kubernetes.io/part-of: nginx-service-mesh
+    spiffe.io/apiservice: "true"
+spec:
+  service:
+    name: nginx-mesh-metrics-svc
+    namespace: default
+  group: metrics.smi-spec.io
+  version: v1alpha1
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: nsm.nginx.com/v1alpha2
+kind: MeshConfig
+metadata:
+  name: nginx-mesh-config
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  meshConfigClassName: default-meshconfig-class
+  accessControlMode: allow
+  clientMaxBodySize: 1m
+  mtls:
+    caKeyType: ec-p256
+    caTTL: 720h
+    mode: permissive
+    svidTTL: 1h
+  nginxErrorLogLevel: warn
+  nginxLBMethod: least_time
+  nginxLogFormat: default
+  prometheusAddress: 
+  telemetry: {}
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: nsm.nginx.com/v1alpha2
+kind: MeshConfigClass
+metadata:
+  name: default-meshconfig-class
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+spec:
+  controllerName: nsm.nginx.com/nginx-mesh-controller
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: sidecar-injector-webhook-cfg.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+    spiffe.io/webhook: "true"
+webhooks:
+- name: nginx-mesh-controller.sidecar.injector
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
+      - default
+    matchLabels:
+      injector.nsm.nginx.com/auto-inject: enabled
+  objectSelector:
+    matchExpressions:
+    - key: injector.nsm.nginx.com/auto-inject
+      operator: NotIn
+      values:
+      - disabled
+    - key: injector.nsm.nginx.com/status
+      operator: NotIn
+      values:
+      - injected
+  clientConfig:
+    service:
+      name: nginx-mesh-webhook
+      namespace: default
+      path: /inject
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"] 
+- name: nginx-mesh-controller-obj.sidecar.injector
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
+      - default
+  objectSelector:
+    matchLabels:
+      injector.nsm.nginx.com/auto-inject: enabled
+    matchExpressions:
+    - key: injector.nsm.nginx.com/status
+      operator: NotIn
+      values:
+      - injected
+  clientConfig:
+    service:
+      name: nginx-mesh-webhook
+      namespace: default
+      path: /inject
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"] 
+- name: nginx-mesh-controller.ingress.injector
+  objectSelector:
+    matchLabels:
+      nsm.nginx.com/enable-ingress: "true"
+  clientConfig:
+    service:
+      name: nginx-mesh-webhook
+      namespace: default
+      path: /inject
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]     
+- name: nginx-mesh-controller.egress.injector
+  objectSelector:
+    matchLabels:
+      nsm.nginx.com/enable-egress: "true"
+  clientConfig:
+    service:
+      name: nginx-mesh-webhook
+      namespace: default
+      path: /inject
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+---
+# Source: nginx-service-mesh/templates/nginx-mesh-controller.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-cfg.internal.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+    spiffe.io/webhook: "true"
+webhooks:
+- name: nginx-mesh-controller.policy.validator
+  clientConfig:
+    service:
+      name: nginx-mesh-webhook
+      namespace: default
+      path: /validate
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: ["split.smi-spec.io"]
+    apiVersions: ["*"]
+    operations: ["CREATE", "UPDATE", "DELETE"]
+    resources: ["trafficsplits"]
+  - apiGroups: ["specs.smi-spec.io"]
+    apiVersions: ["*"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["httproutegroups"]
+  - apiGroups: ["specs.smi.nginx.com"]
+    apiVersions: ["*"]
+    operations: ["CREATE", "UPDATE", "DELETE"]
+    resources: ["circuitbreakers", "ratelimits"]
+  - apiGroups: ["nsm.nginx.com"]
+    apiVersions: ["*"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["meshconfigs"]
+---
+# Source: nginx-service-mesh/templates/spire-server.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: k8s-workload-registrar.security.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+    spiffe.io/webhook: "true"
+webhooks:
+- name: k8s-workload-registrar.default.svc
+  clientConfig:
+    service:
+      name: k8s-workload-registrar
+      namespace: default
+      path: "/validate-spiffeid-spiffe-io-v1beta1-spiffeid"
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  rules:
+  - apiGroups: ["spiffeid.spiffe.io"]
+    apiVersions: ["v1beta1"]
+    operations: ["CREATE", "UPDATE", "DELETE"]
+    resources: ["spiffeids"]
+    scope: Namespaced
+---
+# Source: nginx-service-mesh/templates/post-delete-hook.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: post-delete
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/pre-delete-hook.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pre-delete
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+imagePullSecrets:
+- name: nginx-mesh-registry-key
+---
+# Source: nginx-service-mesh/templates/post-delete-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: post-delete.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["delete"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["list"]
+- apiGroups: ["spiffeid.spiffe.io"]
+  resources: ["spiffeids"]
+  verbs: ["get", "list", "patch", "update"]
+---
+# Source: nginx-service-mesh/templates/post-delete-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: post-delete.builtin.nsm.nginx
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: post-delete.builtin.nsm.nginx
+subjects:
+- kind: ServiceAccount
+  name: post-delete
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/pre-delete-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pre-delete
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["meshconfig"]
+  verbs: ["get", "patch"]
+- apiGroups: ["nsm.nginx.com"]
+  resources: ["meshconfigs"]
+  resourceNames: ["nginx-mesh-config"]
+  verbs: ["get", "list"]
+---
+# Source: nginx-service-mesh/templates/pre-delete-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pre-delete
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pre-delete
+subjects:
+- kind: ServiceAccount
+  name: pre-delete
+  namespace: default
+---
+# Source: nginx-service-mesh/templates/post-delete-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: remove-spiffeids
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "0"
+spec:
+  template:
+    metadata:
+      name: remove-spiffeids
+    spec:
+      restartPolicy: Never
+      serviceAccountName: post-delete
+      containers:
+      - name: remove-spiffeids
+        image: bitnami/kubectl
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 101 #nginx
+        command:
+        - /bin/sh
+        - -c
+        - |
+          for ns in $(kubectl get ns --no-headers -o custom-columns=":metadata.name"); do
+            if [ $(kubectl get spiffeids -n $ns 2>/dev/null | wc -l) -ne 0 ]; then
+              kubectl patch spiffeid $(kubectl get spiffeids -n $ns | awk '{print $1}' | tail -n +2) --type='merge' -p '{"metadata":{"finalizers":null}}' -n $ns
+            fi
+          done
+---
+# Source: nginx-service-mesh/templates/pre-delete-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: turn-proxies-transparent
+  labels:
+    app.kubernetes.io/part-of: nginx-service-mesh
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight": "0"
+spec:
+  template:
+    metadata:
+      name: turn-proxies-transparent
+    spec:
+      restartPolicy: Never
+      serviceAccountName: pre-delete
+      containers:
+      - name: turn-proxies-transparent
+        image: bitnami/kubectl
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 101 #nginx
+        command:
+        - /bin/sh
+        - -c
+        - |
+          kubectl -n default patch configmap/meshconfig --type merge -p '{"data":{"transparent": "true"}}'
+          kubectl -n default wait --timeout 15s --for=jsonpath='{.status.transparent}'=true meshconfigs/nginx-mesh-config
+          exit 0

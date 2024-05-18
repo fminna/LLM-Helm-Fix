@@ -1,0 +1,271 @@
+---
+# Source: drill/charts/zookeeper/templates/zk-rbac-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: "default"
+  name: zk-sa
+---
+# Source: drill/templates/drill-rbac-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: "default"
+  name: drill-sa
+---
+# Source: drill/templates/drill-config-overrides-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: "default"
+  name: drill-config-overrides-cm
+data:
+  drill-override.conf: |
+    
+    drill.exec.options.exec.errors.verbose: true
+    
+  drill-env.sh: |
+    
+    echo "Running drill-env.sh..."
+    # Display some info about the runtime
+    echo PATH=$PATH
+    echo User=`whoami`
+    export DRILL_PID_DIR="/opt/drill"
+    
+    #...
+---
+# Source: drill/charts/zookeeper/templates/zk-rbac-r.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: "default"
+  name: zk-role
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+---
+# Source: drill/templates/drill-rbac-r.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: "default"
+  name: drill-role
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+---
+# Source: drill/charts/zookeeper/templates/zk-rbac-rb.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: "default"
+  name: zk-rb
+subjects:
+  - kind: ServiceAccount
+    name: zk-sa
+    namespace: "default"
+roleRef:
+  kind: Role
+  name: zk-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: drill/templates/drill-rbac-rb.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: "default"
+  name: drill-rb
+subjects:
+  - kind: ServiceAccount
+    name: drill-sa
+    namespace: "default"
+roleRef:
+  kind: Role
+  name: drill-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: drill/charts/zookeeper/templates/zk-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: "default"
+  name: zk-service
+spec:
+  ports:
+    - name: client
+      port: 2181
+    - name: server
+      port: 2888
+    - name: leader-election
+      port: 3888
+  selector:
+    app: zk-quorum
+---
+# Source: drill/templates/drill-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: "default"
+  name: drill-service
+spec:
+  ports:
+    - name: http
+      port: 8047
+    - name: userport
+      port: 31010
+    - name: controlport
+      port: 31011
+    - name: dataport
+      port: 31012
+  selector:
+    app: drill-app
+---
+# Source: drill/charts/zookeeper/templates/zk-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  namespace: "default"
+  name: zk
+spec:
+  serviceName: zk-service
+  replicas: 1
+  selector: 
+    matchLabels: 
+      app: zk-quorum
+  template:
+    metadata:
+      labels:
+        app: zk-quorum
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - zk-quorum
+              topologyKey: "kubernetes.io/hostname"
+      serviceAccountName: zk-sa
+      containers:
+        - name: zk-pod
+          imagePullPolicy: Always
+          image: merlos/zookeeper:3.9.1-multi-arch
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 2888
+              name: server
+            - containerPort: 3888
+              name: leader-election
+---
+# Source: drill/templates/drill-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  namespace: "default"
+  name: drillbit
+spec:
+  serviceName: drill-service
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector: 
+    matchLabels: 
+      app: drill-app
+  template:
+    metadata:
+      labels:
+        app: drill-app
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - drill-app
+              topologyKey: "kubernetes.io/hostname"
+      serviceAccountName: drill-sa
+      containers:
+        - name: drill-pod
+          imagePullPolicy: Always
+          image: merlos/drill:1.21.1-multi-arch
+          ports:
+            - containerPort: 8047
+              name: http
+            - containerPort: 31010
+              name: userport
+            - containerPort: 31011
+              name: controlport
+            - containerPort: 31012
+              name: dataport
+          env:
+            - name: KUBERNETES_CONTAINER
+              value: "true"
+            - name: POD_NAME
+              value: "drillbit"
+            - name: DRILL_ZK_ROOT
+              value: drill
+            - name: DRILL_MAX_MEMORY
+              value: 5Gi
+            - name: DRILL_HTTP_PORT
+              value: "8047"
+            - name: DRILL_USER_SERVER_PORT
+              value: "31010"
+          livenessProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "/opt/drill/bin/isLive.sh"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds:  10
+            failureThreshold: 10
+          readinessProbe:
+            exec:
+              command:
+              - "sh"
+              - "-c"
+              - "/opt/drill/bin/isReady.sh"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds:  10
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - "sh"
+                  - "-c"
+                  - "/opt/drill/bin/preStop.sh"
+          volumeMounts:
+            - mountPath: /opt/drill/conf/drill-override.conf
+              name: drill-config-overrides-cm
+              subPath: drill-override.conf
+            - mountPath: /opt/drill/conf/drill-env.sh
+              name: drill-config-overrides-cm
+              subPath: drill-env.sh
+        
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: drill-config-overrides-cm
+          configMap:
+            name: drill-config-overrides-cm
+            defaultMode: 0766
+    
+      initContainers:
+        - name: zk-available
+          image: busybox
+          command: ['sh', '-c', 'until nc -z zk-service 2181; do echo Waiting for ZK to come up; sleep 5; done; ']

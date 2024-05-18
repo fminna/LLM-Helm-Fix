@@ -1,0 +1,355 @@
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: v1
+data:
+  prometheus_config.config: |-
+    prometheus_config {
+      enable: true,
+      path: "/monitoring/metrics"
+    }
+kind: ConfigMap
+metadata:
+  name: promconfig
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: v1
+data:
+  models.config: |-
+    model_config_list {
+      config {
+        name: 'test_model'
+        base_path: 's3://models/saved_model'
+        model_platform: "tensorflow",
+        model_version_policy: {all: {}}
+      }
+    }
+kind: ConfigMap
+metadata:
+  name: modelconfig
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-release-name
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - port: 9000
+      protocol: TCP
+  selector:
+      app.kubernetes.io/name: minio
+      app.kubernetes.io/instance: release-name
+  type: ClusterIP
+  sessionAffinity: None
+---
+# Source: pet-battle-nsff/templates/tfserving-deployment.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: tensorflowserving-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: tfserving
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '8501'
+    prometheus.io/path: '/monitoring/metrics'   
+spec:
+  ports:
+    - protocol: TCP
+      port: 8501
+      targetPort: 8501
+      name: serving
+    - protocol: TCP
+      port: 8500
+      targetPort: 8500
+      name: api 
+  selector:
+      app.kubernetes.io/name: tfserving
+      app.kubernetes.io/instance: release-name
+  type: ClusterIP
+  sessionAffinity: None
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: pet-battle-nsff-0.0.2
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.0.1"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+      - name: minio
+        image: docker.io/minio/minio:latest
+        imagePullPolicy: IfNotPresent
+        resources: {}
+        args:
+        - server
+        - /storage
+        - --config-dir=/config
+        env:
+        - name: MINIO_ACCESS_KEY
+          value: "minio"
+        - name: MINIO_SECRET_KEY
+          value: "minio123"
+        ports:
+        - containerPort: 9000
+        volumeMounts:
+        - name: storage
+          mountPath: "/storage"
+        - name: config
+          mountPath: "/config"
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: minio-release-name
+      - name: config
+        emptyDir: {}
+---
+# Source: pet-battle-nsff/templates/tfserving-deployment.yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: tensorflowserving-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: tfserving
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tfserving
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: pet-battle-nsff-0.0.2
+        app.kubernetes.io/name: tfserving
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.0.1"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+        - name: tensorflowserving
+          env:
+            - name: S3_LOCATION
+              value: minio-release-name:9000
+            - name: AWS_ACCESS_KEY_ID
+              value: minio
+            - name: AWS_SECRET_ACCESS_KEY
+              value: minio123
+            - name: AWS_REGION
+              value: us-east-1
+            - name: S3_REGION
+              value: us-east-1
+            - name: S3_ENDPOINT
+              value: minio-release-name:9000
+            - name: S3_USE_HTTPS
+              value: "0"
+            - name: S3_VERIFY_SSL
+              value: "0"
+            - name: AWS_LOG_LEVEL
+              value: "3"
+          ports:
+            - containerPort: 8500
+              protocol: TCP
+            - containerPort: 8501
+              protocol: TCP  
+          imagePullPolicy: IfNotPresent
+          image: 'tensorflow/serving'
+          args: ["tensorflow_model_server --model_config_file=s3://models/models.config --monitoring_config_file=s3://models/prometheus_config.config --rest_api_port=8501"]
+          command: ["/bin/sh", "-c"]
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      securityContext: {}
+      schedulerName: default-scheduler
+  strategy:
+    type: Recreate
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  template:
+    metadata:
+      name: minio-setup
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: config
+        emptyDir: {}
+      - configMap:
+          defaultMode: 420
+          name: modelconfig
+        name: modelconfig
+      - configMap:
+          defaultMode: 420
+          name: promconfig
+        name: promconfig
+      containers:
+      - name: mc
+        image: minio/mc:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - "mc --config-dir=/config config host add velero http://minio-release-name:9000 minio minio123 && mc --config-dir=/config mb --ignore-existing velero/models/ && mc --config-dir=/config cp /tmp/models.config velero/models && mc --config-dir=/config cp /tmp/prometheus_config.config velero/models"
+        volumeMounts:
+        - name: config
+          mountPath: "/config"
+        - mountPath: /tmp/models.config
+          name: modelconfig
+          subPath: models.config
+        - mountPath: /tmp/prometheus_config.config
+          name: promconfig
+          subPath: prometheus_config.config
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-release-name-dataload
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  template:
+    metadata:
+      name: minio-setup
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: config
+        emptyDir: {}
+      containers:
+      - name: nsfw
+        image: quay.io/eformat/pet-battle-nsfw-model-data:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MINIO_ACCESS_KEY
+          value: "minio"
+        - name: MINIO_SECRET_KEY
+          value: "minio123"
+        - name: MINIO_SERVICE_HOST
+          value: "minio-release-name:9000"
+---
+# Source: pet-battle-nsff/templates/minio.yaml
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: minio-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    openshift.io/host.generated: 'true'
+spec:
+  host: null
+  subdomain: ''
+  to:
+    kind: Service
+    name: minio-release-name
+    weight: 100
+  port:
+    targetPort: 9000
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  wildcardPolicy: None
+---
+# Source: pet-battle-nsff/templates/tfserving-deployment.yaml
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: tensorflowserving-release-name
+  labels:
+    helm.sh/chart: pet-battle-nsff-0.0.2
+    app.kubernetes.io/name: tfserving
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    openshift.io/host.generated: 'true'
+spec:
+  host: null
+  subdomain: ''
+  to:
+    kind: Service
+    name: tensorflowserving-release-name
+    weight: 100
+  port:
+    targetPort: 8501
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  wildcardPolicy: None

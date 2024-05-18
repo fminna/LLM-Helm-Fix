@@ -1,0 +1,190 @@
+---
+# Source: wordpress-site/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/part-of: wordpress
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+---
+# Source: wordpress-site/templates/memcached-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-memcached
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/component: cache
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: wordpress
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - port: 11211
+    name: memcached
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/part-of: wordpress
+---
+# Source: wordpress-site/templates/memcached-statefullset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-memcached
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/component: cache
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: wordpress
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: cache
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: memcached
+      app.kubernetes.io/part-of: wordpress
+  serviceName: release-name-memcached
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: cache
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: memcached
+        app.kubernetes.io/part-of: wordpress
+    spec:
+      containers:
+      - name: memcached
+        command:
+          - memcached
+        args:
+          - "-m"
+          - "128"
+        image: docker.io/library/memcached:1.5.12
+        ports:
+        - containerPort: 11211
+          name: memcached
+      - name: memcached-exporter
+        image: quay.io/prometheus/memcached-exporter:v0.5.0
+        ports:
+        - containerPort: 9150
+          name: prometheus
+---
+# Source: wordpress-site/templates/mysql.yaml
+apiVersion: mysql.presslabs.org/v1alpha1
+kind: MysqlCluster
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: wordpress
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  secretName: release-name-db
+  mysqlConf:
+    
+    {}
+---
+# Source: wordpress-site/templates/wordpress.yaml
+apiVersion: wordpress.presslabs.org/v1alpha1
+kind: Wordpress
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/part-of: wordpress
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  
+  domains:
+    []
+  tlsSecretRef: release-name-tls
+  code:
+    readOnly: false
+    contentSubPath: wp-content/
+  env:
+    - name: MEMCACHED_DISCOVERY_HOST
+      value: release-name-memcached
+    - name: DB_HOST
+      value: release-name-mysql-master
+    - name: DB_USER
+      valueFrom:
+        secretKeyRef:
+          name: release-name-db
+          key: USER
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: release-name-db
+          key: PASSWORD
+    - name: DB_NAME
+      valueFrom:
+        secretKeyRef:
+          name: release-name-db
+          key: DATABASE
+
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+          - key: node-role.stack.bitpoke.org/wordpress
+            operator: Exists
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: wordpress
+              app.kubernetes.io/instance: release-name
+              app.kubernetes.io/part-of: wordpress
+  tolerations:
+    - key: "cloud.google.com/gke-preemptible"
+      operator: "Exists"
+  ingressAnnotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    certmanager.k8s.io/cluster-issuer: stack-default-certificate-issuer
+    cert-manager.io/cluster-issuer: stack-default-certificate-issuer
+    certmanager.k8s.io/acme-challenge-type: http01
+---
+# Source: wordpress-site/templates/mysql-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-db
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/part-of: wordpress
+    helm.sh/chart: wordpress-site-0.12.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+type: Opaque
+data:
+  ROOT_PASSWORD: "dzlPNGlLbFFBVFJTQ1N1bw=="
+  USER: "d29yZHByZXNz"
+  PASSWORD: "cEFWbmZ5cTVLSk9NWmlaUg=="
+  DATABASE: "d29yZHByZXNz"

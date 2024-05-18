@@ -1,0 +1,140 @@
+---
+# Source: tuf/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tuf
+  namespace: default
+---
+# Source: tuf/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tuf
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+# Source: tuf/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tuf
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tuf
+subjects:
+  - kind: ServiceAccount
+    name: tuf
+---
+# Source: tuf/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tuf-server
+  namespace: default
+spec:
+  ports:
+  - name: 8080-tcp
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/component: "tuf"
+    app.kubernetes.io/name: tuf
+    app.kubernetes.io/instance: release-name
+  type: ClusterIP
+---
+# Source: tuf/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-tuf-tuf
+  namespace: default
+  labels:
+    helm.sh/chart: tuf-0.1.12
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "tuf"
+    app.kubernetes.io/name: tuf
+    app.kubernetes.io/instance: release-name
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: "tuf"
+      app.kubernetes.io/name: tuf
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: tuf-0.1.12
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: "tuf"
+        app.kubernetes.io/name: tuf
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: tuf
+      containers:
+      - image: ghcr.io/sigstore/scaffolding/server@sha256:496b443c82be2c4a14a6e3dfbfa9ccae5b6eaedd7a3aca58b84ddae9492d9906
+        name: tuf
+        ports:
+          - containerPort: 8080
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        volumeMounts:
+          - name: tuf-secrets
+            mountPath: "/var/run/tuf-secrets"
+            readOnly: true
+      volumes:
+      - name: tuf-secrets
+        projected:
+          sources: 
+          - secret:
+              name: ctlog-public-key
+              items:
+              - key: public
+                path: ctfe.pub
+          - secret:
+              name: fulcio-server-secret
+              items:
+              - key: cert
+                path: fulcio_v1.crt.pem
+          - secret:
+              name: rekor-public-key
+              items:
+              - key: key
+                path: rekor.pub
+          - secret:
+              name: tsa-cert-chain
+              items:
+              - key: cert-chain
+                path: tsa.certchain.pem
+---
+# Source: tuf/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tuf-server
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "tuf.localhost"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tuf-server
+                port:
+                  number: 80

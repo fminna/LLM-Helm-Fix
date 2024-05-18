@@ -1,0 +1,177 @@
+---
+# Source: pro-builder/templates/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: pro-builder
+    chart: pro-builder-0.4.13
+    component: pro-builder
+    heritage: Helm
+    release: release-name
+  name: pro-builder
+  namespace: "default"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: pro-builder
+---
+# Source: pro-builder/templates/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/buildkitd: unconfined
+  labels:
+    app: pro-builder
+    component: pro-builder
+    chart: pro-builder-0.4.13
+    heritage: Helm
+    release: release-name
+    app.kubernetes.io/name: pro-builder
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.4.13
+    app.kubernetes.io/component: pro-builder
+    app.kubernetes.io/part-of: openfaas
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: pro-builder-0.4.13
+  name: pro-builder
+  namespace: "default"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pro-builder
+      component: pro-builder
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+      labels:
+        app: pro-builder
+        component: pro-builder
+    spec:
+      volumes:
+        - name: client-certs
+          secret:
+            secretName: buildkit-client-certs
+        - name: daemon-certs
+          secret:
+            secretName: buildkit-daemon-certs
+        - name: registry-secret
+          secret:
+            defaultMode: 420
+            secretName: registry-secret
+        - name: payload-secret
+          secret:
+            defaultMode: 420
+            secretName: payload-secret
+        - name: license
+          secret:
+            defaultMode: 420
+            secretName: openfaas-license
+        - name: builder-workspace
+          emptyDir: {}
+        - name: buildkit-workspace
+          emptyDir: {}
+      containers:
+      - name: pro-builder
+        image: ghcr.io/openfaasltd/pro-builder:0.3.11
+        imagePullPolicy: IfNotPresent
+        args:
+          - "-license-file=/var/secrets/license/license"
+          - "--tlscert=/var/secrets/certs/client.crt"
+          - "--tlskey=/var/secrets/certs/client.key"
+          - "--tlscacert=/var/secrets/certs/ca.crt"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          timeoutSeconds: 2
+        env:
+          - name: buildkit_server_name
+            value: "127.0.0.1"
+          - name: enable_lchown
+            value: "false"
+          - name: insecure
+            value: "false"
+          - name: buildkit_url  
+            value: "tcp://127.0.0.1:1234"
+          - name: "disable_hmac"
+            value: "false"
+          - name: "max_inflight"
+            value: "0"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          failureThreshold: 2
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          failureThreshold: 1
+        resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+        volumeMounts:
+        - name: registry-secret
+          readOnly: true
+          mountPath: "/home/app/.docker/"
+        - name: payload-secret
+          readOnly: true
+          mountPath: "/var/openfaas/secrets/"
+        - name: license
+          readOnly: true
+          mountPath: "/var/secrets/license"
+        - name: builder-workspace
+          mountPath: /tmp/
+          readOnly: false
+        - name: client-certs
+          readOnly: true
+          mountPath: /var/secrets/certs
+      - name: buildkit
+        args:
+          - "--addr=tcp://127.0.0.1:1234"
+          - "--tlscert=/var/secrets/certs/server.crt"
+          - "--tlskey=/var/secrets/certs/server.key"
+          - "--tlscacert=/var/secrets/certs/ca.crt"
+          - "--oci-worker-no-process-sandbox"
+        image: moby/buildkit:v0.13.1-rootless
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 1234
+          protocol: TCP
+        resources:
+            requests:
+              cpu: 2000m
+              memory: 2Gi
+        securityContext:
+            privileged: false
+            runAsGroup: 1000
+            runAsUser: 1000
+            seccompProfile:
+              type: Unconfined
+        volumeMounts:
+        - name: daemon-certs
+          readOnly: true
+          mountPath: /var/secrets/certs
+        - name: buildkit-workspace
+          mountPath: /tmp/
+          readOnly: false

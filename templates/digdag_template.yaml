@@ -1,0 +1,739 @@
+---
+# Source: digdag/charts/postgresql-ha/templates/pgpool/custom-users-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql-ha-pgpool-custom-users
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: pgpool
+type: Opaque
+data:
+  usernames: "ZGlnZGFn"
+  passwords: "ZGlnZGFn"
+---
+# Source: digdag/charts/postgresql-ha/templates/pgpool/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql-ha-pgpool
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: pgpool
+type: Opaque
+data:
+  admin-password: "ZmxoUU10ZThNWg=="
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql-ha-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postgresql
+type: Opaque
+data:
+  postgresql-password: "bDdNRExMQWFpSA=="
+  repmgr-password: "cmVwbWdy"
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/hooks-scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-postgresql-ha-postgresql-hooks-scripts
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postgresql
+data:
+  pre-stop.sh: |-
+    #!/bin/bash
+    set -o errexit
+    set -o pipefail
+    set -o nounset
+
+    # Debug section
+    exec 3>&1
+    exec 4>&2
+
+    # Load Libraries
+    . /opt/bitnami/scripts/liblog.sh
+    . /opt/bitnami/scripts/libpostgresql.sh
+    . /opt/bitnami/scripts/librepmgr.sh
+
+    # Auxiliary functions
+    is_new_primary_ready() {
+        return_value=1
+        currenty_primary_node="$(repmgr_get_primary_node)"
+        currenty_primary_host="$(echo $currenty_primary_node | awk '{print $1}')"
+
+        info "$currenty_primary_host != $REPMGR_NODE_NETWORK_NAME"
+        if [[ $(echo $currenty_primary_node | wc -w) -eq 2 ]] && [[ "$currenty_primary_host" != "$REPMGR_NODE_NETWORK_NAME" ]]; then
+            info "New primary detected, leaving the cluster..."
+            return_value=0
+        else
+            info "Waiting for a new primary to be available..."
+        fi
+        return $return_value
+    }
+
+    export MODULE="pre-stop-hook"
+
+    if [[ "${BITNAMI_DEBUG}" == "true" ]]; then
+        info "Bash debug is on"
+    else
+        info "Bash debug is off"
+        exec 1>/dev/null
+        exec 2>/dev/null
+    fi
+
+    # Load PostgreSQL & repmgr environment variables
+    . /opt/bitnami/scripts/postgresql-env.sh
+
+    postgresql_enable_nss_wrapper
+
+    # Prepare env vars for managing roles
+    primary_node="$(repmgr_get_primary_node)"
+    primary_host="$(echo $primary_node | awk '{print $1}')"
+
+    # Stop postgresql for graceful exit.
+    postgresql_stop
+
+    if [[ "$primary_host" == "$REPMGR_NODE_NETWORK_NAME" ]]; then
+        info "Primary node need to wait for a new primary node before leaving the cluster"
+        retry_while is_new_primary_ready 10 5
+    else
+        info "Standby node doesn't need to wait, leaving the cluster."
+    fi
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/initdb-scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-postgresql-ha-postgresql-initdb-scripts
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postgresql
+data:
+    create-db.sql: |-
+      CREATE USER digdag WITH PASSWORD 'digdag' SUPERUSER;
+      CREATE DATABASE digdag_db OWNER digdag;
+---
+# Source: digdag/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-digdag
+  labels:
+    helm.sh/chart: digdag-0.5.2
+    app.kubernetes.io/name: digdag
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.10.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "workflow"
+data:
+  digdag.properties: |-
+    server.bind=0.0.0.0
+    server.port=65432
+    database.type=postgresql
+    database.maximumPoolSize=64
+    database.user=digdag
+    database.password=digdag
+    database.host=release-name-postgresql-ha-pgpool
+    database.port=5432
+    database.database=digdag_db
+    database.ssl=false
+    database.migrate=false
+    digdag.secret-encryption-key=MTZfYnl0ZXNfcGhyYXNlIQ==
+    executor.task_ttl=10d
+    executor.attempt_ttl=30d
+---
+# Source: digdag/charts/postgresql-ha/templates/pgpool/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-ha-pgpool
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: pgpool
+
+  annotations:
+    {}
+
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql-ha
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: pgpool
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-ha-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: postgresql-ha
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: postgresql
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-ha-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: postgresql-ha
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: postgresql
+---
+# Source: digdag/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-digdag
+  labels:
+    helm.sh/chart: digdag-0.5.2
+    app.kubernetes.io/name: digdag
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.10.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "workflow"
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 65432
+      targetPort: 65432
+  selector:
+    app.kubernetes.io/name: digdag
+    app.kubernetes.io/instance: release-name
+---
+# Source: digdag/charts/postgresql-ha/templates/pgpool/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-postgresql-ha-pgpool
+  labels: 
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: pgpool
+spec:
+  replicas: 2
+  selector:
+    matchLabels: 
+      app.kubernetes.io/name: postgresql-ha
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: pgpool
+  template:
+    metadata:
+      labels: 
+        app.kubernetes.io/name: postgresql-ha
+        helm.sh/chart: postgresql-ha-6.5.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: pgpool
+    spec:
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql-ha
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: pgpool
+                namespaces:
+                  - default
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      # Auxiliary vars to populate environment variables
+      containers:
+        - name: pgpool
+          image: docker.io/bitnami/pgpool:4.2.1-debian-10-r12
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: PGPOOL_POSTGRES_CUSTOM_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-pgpool-custom-users
+                  key: usernames
+            - name: PGPOOL_POSTGRES_CUSTOM_PASSWORDS
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-pgpool-custom-users
+                  key: passwords
+            - name: PGPOOL_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PGPOOL_BACKEND_NODES
+              value: 0:release-name-postgresql-ha-postgresql-0.release-name-postgresql-ha-postgresql-headless.$(PGPOOL_NAMESPACE).svc.cluster.local:5432,1:release-name-postgresql-ha-postgresql-1.release-name-postgresql-ha-postgresql-headless.$(PGPOOL_NAMESPACE).svc.cluster.local:5432,
+            - name: PGPOOL_SR_CHECK_USER
+              value: "repmgr"
+            - name: PGPOOL_SR_CHECK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-postgresql
+                  key: repmgr-password
+            - name: PGPOOL_SR_CHECK_DATABASE
+              value: "postgres"
+            - name: PGPOOL_ENABLE_LDAP
+              value: "no"
+            - name: PGPOOL_POSTGRES_USERNAME
+              value: "postgres"
+            - name: PGPOOL_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-postgresql
+                  key: postgresql-password
+            - name: PGPOOL_ADMIN_USERNAME
+              value: "admin"
+            - name: PGPOOL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-pgpool
+                  key: admin-password
+            - name: PGPOOL_ENABLE_LOAD_BALANCING
+              value: "yes"
+            - name: PGPOOL_ENABLE_LOG_CONNECTIONS
+              value: "yes"
+            - name: PGPOOL_ENABLE_LOG_HOSTNAME
+              value: "yes"
+            - name: PGPOOL_ENABLE_LOG_PER_NODE_STATEMENT
+              value: "no"
+            - name: PGPOOL_NUM_INIT_CHILDREN
+              value: "100"
+            - name: PGPOOL_MAX_POOL
+              value: "1"
+            - name: PGPOOL_CHILD_LIFE_TIME
+              value: "0"
+            - name: PGPOOL_ENABLE_TLS
+              value: "no"
+          envFrom:
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - /opt/bitnami/scripts/pgpool/healthcheck.sh
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -ec
+                - PGPASSWORD=${PGPOOL_POSTGRES_PASSWORD} psql -U "postgres" -d "postgres" -h /opt/bitnami/pgpool/tmp -tA -c "SELECT 1" >/dev/null
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+      volumes:
+---
+# Source: digdag/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-digdag
+  labels:
+    helm.sh/chart: digdag-0.5.2
+    app.kubernetes.io/name: digdag
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.10.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "workflow"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: digdag
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: digdag
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: default
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      - name: wait-for-it
+        image: "ghcr.io/skyoo2003/wait-for-it:0.0.1"
+        imagePullPolicy: IfNotPresent
+        args:
+          - --timeout=0
+          - 'release-name-postgresql-ha-pgpool:5432'
+          - --
+          - echo
+          - PostgreSQL wait completed
+      containers:
+      - name: digdag
+        securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+        image: "ghcr.io/skyoo2003/digdag:0.0.1"
+        imagePullPolicy: IfNotPresent
+        args:
+          - server
+          - --config
+          - /digdag/config/digdag.properties
+        ports:
+        - name: http
+          containerPort: 65432
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /api/version
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /api/workflows?count=1
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        resources:
+            {}
+        volumeMounts:
+        - name: digdag
+          mountPath: /digdag/config
+          readOnly: true
+      volumes:
+      - name: digdag
+        configMap:
+          name: release-name-digdag
+---
+# Source: digdag/charts/postgresql-ha/templates/postgresql/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql-ha-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql-ha
+    helm.sh/chart: postgresql-ha-6.5.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postgresql
+spec:
+  serviceName: release-name-postgresql-ha-postgresql-headless
+  replicas: 2
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql-ha
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql-ha
+        helm.sh/chart: postgresql-ha-6.5.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: postgresql
+    spec:
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql-ha
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: postgresql
+                namespaces:
+                  - default
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      containers:
+        - name: postgresql
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /pre-stop.sh
+          image: docker.io/bitnami/postgresql-repmgr:11.10.0-debian-10-r55
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          # Auxiliary vars to populate environment variables
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            # PostgreSQL configuration
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "postgres"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "true"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit, repmgr"
+            - name: POSTGRESQL_MAX_CONNECTIONS
+              value: "120"
+            # Repmgr configuration
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REPMGR_UPGRADE_EXTENSION
+              value: "no"
+            - name: REPMGR_PGHBA_TRUST_ALL
+              value: "no"
+            - name: REPMGR_MOUNTED_CONF_DIR
+              value: "/bitnami/repmgr/conf"
+            - name: REPMGR_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: REPMGR_PARTNER_NODES
+              value: release-name-postgresql-ha-postgresql-0.release-name-postgresql-ha-postgresql-headless.$(REPMGR_NAMESPACE).svc.cluster.local,release-name-postgresql-ha-postgresql-1.release-name-postgresql-ha-postgresql-headless.$(REPMGR_NAMESPACE).svc.cluster.local,
+            - name: REPMGR_PRIMARY_HOST
+              value: "release-name-postgresql-ha-postgresql-0.release-name-postgresql-ha-postgresql-headless.$(REPMGR_NAMESPACE).svc.cluster.local"
+            - name: REPMGR_NODE_NAME
+              value: "$(MY_POD_NAME)"
+            - name: REPMGR_NODE_NETWORK_NAME
+              value: "$(MY_POD_NAME).release-name-postgresql-ha-postgresql-headless.$(REPMGR_NAMESPACE).svc.cluster.local"
+            - name: REPMGR_LOG_LEVEL
+              value: "NOTICE"
+            - name: REPMGR_CONNECT_TIMEOUT
+              value: "5"
+            - name: REPMGR_RECONNECT_ATTEMPTS
+              value: "3"
+            - name: REPMGR_RECONNECT_INTERVAL
+              value: "5"
+            - name: REPMGR_USERNAME
+              value: "repmgr"
+            - name: REPMGR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql-ha-postgresql
+                  key: repmgr-password
+            - name: REPMGR_DATABASE
+              value: "repmgr"
+          envFrom:
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'PGPASSWORD=$POSTGRES_PASSWORD psql -w -U "postgres" -d "postgres"  -h 127.0.0.1 -c "SELECT 1"'
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'PGPASSWORD=$POSTGRES_PASSWORD psql -w -U "postgres" -d "postgres"  -h 127.0.0.1 -c "SELECT 1"'
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: custom-init-scripts
+              mountPath: /docker-entrypoint-initdb.d/
+            - name: data
+              mountPath: /bitnami/postgresql
+            - name: hooks-scripts
+              mountPath: /pre-stop.sh
+              subPath: pre-stop.sh
+      volumes:
+        - name: hooks-scripts
+          configMap:
+            name: release-name-postgresql-ha-postgresql-hooks-scripts
+            defaultMode: 0755
+        - name: custom-init-scripts
+          configMap:
+            name: release-name-postgresql-ha-postgresql-initdb-scripts
+        - name: data
+          emptyDir: {}
+---
+# Source: digdag/templates/job-migrator.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-digdag-migrator
+  labels:
+    helm.sh/chart: digdag-0.5.2
+    app.kubernetes.io/name: digdag
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.10.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "workflow"
+    app.kubernetes.io/component: digdag-migrator
+spec:
+  ttlSecondsAfterFinished: 0
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: digdag-0.5.2
+        app.kubernetes.io/name: digdag
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.10.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: "workflow"
+        app.kubernetes.io/component: digdag-migrator
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-it
+        image: "ghcr.io/skyoo2003/wait-for-it:0.0.1"
+        imagePullPolicy: IfNotPresent
+        args:
+          - --timeout=0
+          - 'release-name-postgresql-ha-pgpool:5432'
+          - --
+          - echo
+          - PostgreSQL wait completed
+      containers:
+      - name: digdag-migrator
+        image: "ghcr.io/skyoo2003/digdag:0.0.1"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: DIGDAG_HOST
+          value: "release-name-digdag"
+        - name: DIGDAG_PORT
+          value: "65432"
+        args:
+        - "migrate"
+        - "run"
+        - "--config"
+        - "/digdag/config/digdag.properties"
+        volumeMounts:
+        - name: digdag
+          mountPath: /digdag/config
+          readOnly: true
+      volumes:
+      - name: digdag
+        configMap:
+          name: release-name-digdag

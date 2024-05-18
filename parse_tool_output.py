@@ -24,63 +24,70 @@ import pandas as pd
 from query_llm import parse_yaml_template, get_resource_snippet
 
 
-def save_to_csv(chart_name: str, checks_list: list, stats=False):
+def save_to_csv(chart_name: str, checks_list: list, tool: str=False):
     """ Save the results to a CSV file.
-    """
+    # """
 
     # Open csv file
-    # df = pd.read_csv("results/rq1_results.csv")
+    df = pd.read_csv("results/rq1_results.csv")
     # print(df.head())
 
-    # if chart_name in df["Chart"].values:
-    #     return
+    if chart_name in df["Chart"].values and tool in df["Tool"].values:
+        return
 
-    # for check in checks_list:
+    for check in checks_list:
 
-    #     new_row = [
-    #         chart_name, \
-    #         check["tool"], \
-    #         check["check_id"], \
-    #         check["std_check_id"], \
-    #         check["description"], \
-    #         check["resource"], \
-    #         check["original_yaml"]
-    #     ]
+        snippet_length = len(str(check["original_yaml"]))
 
-    #     df.loc[len(df)] = new_row
+        if snippet_length < 10:
+            template = parse_yaml_template(chart_name)
+            template_str = "".join(str(doc) for doc in template)
+            snippet_length = len(template_str)
+            print(check["check_id"])
 
-    # # Save the CSV file
-    # df.to_csv("results/rq1_results.csv", index=False)
+        new_row = [
+            chart_name, \
+            check["tool"], \
+            check["check_id"], \
+            check["std_check_id"], \
+            check["description"], \
+            check["resource"], \
+            check["original_yaml"], \
+            snippet_length
+        ]
+
+        df.loc[len(df)] = new_row
+
+    # Save the CSV file
+    df.to_csv("results/rq1_results.csv", index=False)
 
     #####################
 
     added_checks = []
+    df = pd.read_csv("results/rq1_stats.csv")
+    df["Occurrences"] = df["Occurrences"].astype(int)
 
-    if stats:
-        df = pd.read_csv("results/rq1_stats.csv")
-        df["Occurrences"] = df["Occurrences"].astype(int)
+    for check in checks_list:
+        if check["tool"] in df["Tool"].values and check["check_id"] in df["Alert_ID"].values:
+            df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Occurrences"] += 1
 
-        for check in checks_list:
-            if check["tool"] in df["Tool"].values and check["check_id"] in df["Alert_ID"].values:
-                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Occurrences"] += 1
-
-                if check["check_id"] not in added_checks:
-                    df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Charts"] += f", {chart_name}"
-                    df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "#_Charts"] += 1
-                    added_checks.append(check["check_id"])
-
-            else:
-                new_row = [
-                    check["tool"], \
-                    check["check_id"], \
-                    check["std_check_id"], \
-                    check["description"], \
-                    chart_name, \
-                    1, \
-                    1
-                ]
+            if check["check_id"] not in added_checks:
+                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Charts"] += f", {chart_name}"
+                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "#_Charts"] += 1
                 added_checks.append(check["check_id"])
-                df.loc[len(df)] = new_row
+
+        else:
+            new_row = [
+                check["tool"], \
+                check["check_id"], \
+                check["std_check_id"], \
+                check["description"], \
+                chart_name, \
+                1, \
+                1
+            ]
+            added_checks.append(check["check_id"])
+            df.loc[len(df)] = new_row
 
         df.to_csv("results/rq1_stats.csv", index=False)
 
@@ -177,7 +184,7 @@ def get_ckv_resource_path(check: str, template: dict) -> str:
     return paths
 
 
-def parse_checkov(chart_name: str, stats: bool):
+def parse_checkov(chart_name: str):
     """ Parse the output of the Checkov tool.
     """
 
@@ -224,7 +231,7 @@ def parse_checkov(chart_name: str, stats: bool):
     # print(checks_list.keys)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "checkov")
 
 
 def get_datree_path(occurrence):
@@ -261,7 +268,7 @@ def get_datree_path(occurrence):
         return paths
 
 
-def parse_datree(chart_name: str, stats: bool):
+def parse_datree(chart_name: str):
     """ Parse the output of the Datree tool.
     """
 
@@ -309,13 +316,21 @@ def parse_datree(chart_name: str, stats: bool):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "datree")
 
 
 def get_kics_path(file, template, check_id):
-    resource_path = file["resource_type"] + "/" + \
-                        file["resource_name"]
-    obj_path = file["search_key"]
+    """ Returns the path to the object in the template.
+    """
+
+    resource_path = ""
+    obj_path = ""
+
+    if "resource_type" in file and "resource_name" in file:
+        resource_path = file["resource_type"] + "/" + \
+                            file["resource_name"]
+    if "search_key" in file:
+        obj_path = file["search_key"]
 
     no_path_checks = ["check_26", "check_36", "check_48", "check_49", "check_53", \
                         "check_56", "check_65", "check_13", "check_47", "check_15"]
@@ -412,7 +427,7 @@ def find_resource_idx(template: dict, resource_path: str, obj_path: str, obj_nam
     return ""
 
 
-def parse_kics(chart_name: str, stats: bool):
+def parse_kics(chart_name: str):
     """ Parse the output of the KICS tool.
     """
 
@@ -461,7 +476,7 @@ def parse_kics(chart_name: str, stats: bool):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "kics")
 
 
 def get_kubel_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -534,7 +549,7 @@ def get_kubelinter_path(check, template):
     return paths
 
 
-def parse_kubelinter(chart_name: str, stats: bool):
+def parse_kubelinter(chart_name: str):
     """ Parse the output of the Kubelinter tool.
     """
 
@@ -586,7 +601,7 @@ def parse_kubelinter(chart_name: str, stats: bool):
             # print(checks_list)
 
             # Save results to CSV
-            save_to_csv(chart_name, checks_list, stats)
+            save_to_csv(chart_name, checks_list, "kubelinter")
 
 
 def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -663,7 +678,7 @@ def get_kubeaudit_path(check, template):
     return paths
 
 
-def parse_kubeaudit(chart_name: str, stats: bool):
+def parse_kubeaudit(chart_name: str):
     """ Parse the output of the Kubeaudit tool.
     """
 
@@ -726,7 +741,7 @@ def parse_kubeaudit(chart_name: str, stats: bool):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "kubeaudit")
 
 
 def get_kubescape_path(rule, control, paths):
@@ -757,7 +772,7 @@ def get_kubescape_path(rule, control, paths):
     return paths
 
 
-def parse_kubescape(chart_name: str, stats: bool):
+def parse_kubescape(chart_name: str):
     """ Parse the output of the kubescape tool.
     """
 
@@ -846,7 +861,7 @@ def parse_kubescape(chart_name: str, stats: bool):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "kubescape")
 
 
 def get_resource_namespace(template: dict, kind: str, name: str) -> str:
@@ -995,7 +1010,7 @@ def get_terrascan_path(check, template):
     return paths
 
 
-def parse_terrascan(chart_name: str, stats: bool):
+def parse_terrascan(chart_name: str):
     """ Parse the output of the terrascan tool.
     """
 
@@ -1043,37 +1058,26 @@ def parse_terrascan(chart_name: str, stats: bool):
     # print(checks_list)
 
     # Save results to CSV
-    save_to_csv(chart_name, checks_list, stats)
+    save_to_csv(chart_name, checks_list, "terrascan")
 
 
-def parse_output(chart_name: str, tool_name: str, stats=False):
+def parse_output():
     """ Parse the output of a chart analyzer tool.
     """
 
-    if tool_name == "checkov":
-        parse_checkov(chart_name, stats)
+    df = pd.read_csv("results/chart_stats.csv")
+    templates = df[df["Template"] == "OK"]["Charts"].values
 
-    elif tool_name == "datree":
-        parse_datree(chart_name, stats)
+    for chart_name in templates:
+        print(f"Processing {chart_name}...")
 
-    elif tool_name == "kics":
-        parse_kics(chart_name, stats)
-
-    elif tool_name == "kubelinter":
-        parse_kubelinter(chart_name, stats)
-
-    elif tool_name == "kubeaudit":
-        parse_kubeaudit(chart_name, stats)
-
-    elif tool_name == "kubescape":
-        parse_kubescape(chart_name, stats)
-
-    elif tool_name == "terrascan":
-        parse_terrascan(chart_name, stats)
-
-    else:
-        print("Tool not supported! Exiting...")
-        sys.exit(1)
+        parse_checkov(chart_name)
+        parse_datree(chart_name)
+        parse_kics(chart_name)
+        parse_kubelinter(chart_name)
+        parse_kubeaudit(chart_name)
+        parse_kubescape(chart_name)
+        parse_terrascan(chart_name)
 
 
 class CheckovLookup:

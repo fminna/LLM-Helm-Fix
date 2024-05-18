@@ -1,0 +1,149 @@
+---
+# Source: pgbench/templates/pgbench_job.yaml
+#
+# Copyright The CloudNativePG Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-pgbench
+  namespace: default
+  labels:
+    helm.sh/chart: pgbench-0.1.0
+    app.kubernetes.io/managed-by: Helm
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: wait-for-cnpg
+        image: ghcr.io/cloudnative-pg/postgresql:14.5
+        env:
+          
+          - name: PGHOST
+            value: release-name-pgbench-rw
+          - name: PGUSER
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: username
+          - name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: password
+        command:
+        - sh
+        - -c
+        - until psql -c "SELECT 1"; do echo 'Waiting for release-name-pgbench-rw' sleep 15; done
+      
+      - name: pgbench-init
+        image: ghcr.io/cloudnative-pg/postgresql:14.5
+        env:
+          
+          - name: PGHOST
+            value: release-name-pgbench-rw
+          - name: PGUSER
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: username
+          - name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: password
+        command:
+        - pgbench
+        args:
+        - --initialize
+        - --scale
+        - "1"
+      containers:
+      - name: pgbench
+        image: ghcr.io/cloudnative-pg/postgresql:14.5
+        env:
+          
+          - name: PGHOST
+            value: release-name-pgbench-rw
+          - name: PGUSER
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: username
+          - name: PGPASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pgbench-app
+                key: password
+        command:
+        - pgbench
+        args:
+        - --time
+        - "30"
+        - --client
+        - "1"
+        - --jobs
+        - "1"
+        
+        
+      restartPolicy: Never
+      nodeSelector:
+        workload: pgbench
+---
+# Source: pgbench/templates/cnpg_cluster.yaml
+#
+# Copyright The CloudNativePG Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: release-name-pgbench
+  namespace: default
+  labels:
+    helm.sh/chart: pgbench-0.1.0
+    app.kubernetes.io/managed-by: Helm
+spec:
+  instances: 1
+
+  
+
+  postgresql:
+    parameters:
+      log_autovacuum_min_duration: 1s
+      log_checkpoints: "on"
+      log_lock_waits: "on"
+      log_min_duration_statement: "1000"
+      log_statement: ddl
+      log_temp_files: "1024"
+      maintenance_work_mem: 128MB
+      shared_buffers: 512MB
+  affinity:
+    nodeSelector:
+      workload: postgres
+  storage:
+    size: 1Gi

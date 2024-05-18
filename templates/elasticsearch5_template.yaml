@@ -1,0 +1,298 @@
+---
+# Source: elasticsearch5/templates/coordinating-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-elasticsearch5-coordinating-only
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+    role: "coordinating-only"
+spec:
+  type: "ClusterIP"
+  ports:
+  - name: http
+    port: 9200
+    targetPort: http
+  selector:
+    app: elasticsearch5
+    release: "release-name"
+    role: "coordinating-only"
+---
+# Source: elasticsearch5/templates/discovery-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  name: release-name-elasticsearch5-discovery
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+spec:
+  clusterIP: None
+  ports:
+  - port: 9300
+    name: transport
+    targetPort: transport
+  publishNotReadyAddresses: true
+  sessionAffinity: None
+  type: ClusterIP
+  selector:
+    app: elasticsearch5
+    release: "release-name"
+---
+# Source: elasticsearch5/templates/master-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-elasticsearch5-master
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+    role: "master"
+spec:
+  type: "ClusterIP"
+  ports:
+  - name: transport
+    port: 9300
+    targetPort: transport
+  selector:
+    app: elasticsearch5
+    release: "release-name"
+    role: "master"
+---
+# Source: elasticsearch5/templates/coordinating-deploy.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-elasticsearch5-coordinating-only
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+    role: "coordinating-only"
+spec:
+  selector:
+    matchLabels:
+      app: elasticsearch5
+      release: "release-name"
+      role: "coordinating-only"
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: elasticsearch5
+        release: "release-name"
+        role: "coordinating-only"
+    spec:
+      securityContext:
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: elasticsearch5
+                  release: "release-name"
+                  role: "coordinating-only"      
+      containers:
+      - name: "elasticsearch"
+        securityContext:
+          runAsUser: 1001
+        image: docker.io/ygqygq2/elasticsearch:5.6.16-debian-9-r0
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: ELASTICSEARCH_CLUSTER_NAME
+          value: "elastic-es5"
+        - name: ELASTICSEARCH_CLUSTER_HOSTS
+          value: release-name-elasticsearch5-discovery
+        - name: ELASTICSEARCH_HEAP_SIZE
+          value: "128m"
+        - name: ELASTICSEARCH_IS_DEDICATED_NODE
+          value: "yes"
+        - name: ELASTICSEARCH_NODE_TYPE
+          value: "coordinating"
+        ports:
+        - name: http
+          containerPort: 9200
+        - name: transport
+          containerPort: 9300
+        resources:
+          requests:
+            cpu: 25m
+            memory: 256Mi
+        volumeMounts:
+        - name: "data"
+          mountPath: "/bitnami/elasticsearch/data/"
+      volumes:
+      - name: "data"
+        emptyDir: {}
+---
+# Source: elasticsearch5/templates/data-statefulset.yaml
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: release-name-elasticsearch5-data
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+    role: "data"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: elasticsearch5
+      release: "release-name"
+      role: "data"
+  serviceName: "release-name-elasticsearch5-data"
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: elasticsearch5
+        chart: elasticsearch5-6.2.2
+        release: "release-name"
+        role: "data"
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: elasticsearch5
+                  release: "release-name"
+                  role: "data"
+      initContainers:
+      containers:
+      - name: "elasticsearch"
+        image: docker.io/ygqygq2/elasticsearch:5.6.16-debian-9-r0
+        imagePullPolicy: "IfNotPresent"
+        securityContext:
+          runAsUser: 1001
+        env:
+        - name: ELASTICSEARCH_CLUSTER_NAME
+          value: "elastic-es5"
+        - name: ELASTICSEARCH_CLUSTER_HOSTS
+          value: release-name-elasticsearch5-discovery
+        - name: ELASTICSEARCH_HEAP_SIZE
+          value: "1024m"
+        - name: ELASTICSEARCH_IS_DEDICATED_NODE
+          value: "yes"
+        - name: ELASTICSEARCH_NODE_TYPE
+          value: "data"
+        ports:
+        - name: transport
+          containerPort: 9300
+        resources:
+          requests:
+            cpu: 25m
+            memory: 1152Mi
+        volumeMounts:
+        - name: "data"
+          mountPath: "/bitnami/elasticsearch/data"
+          subPath: "data"
+      volumes:
+  volumeClaimTemplates:
+  - metadata:
+      name: "data"
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      
+      resources:
+        requests:
+          storage: "8Gi"
+---
+# Source: elasticsearch5/templates/master-statefulset.yaml
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: release-name-elasticsearch5-master
+  labels:
+    app: elasticsearch5
+    chart: elasticsearch5-6.2.2
+    heritage: "Helm"
+    release: "release-name"
+    role: "master"
+spec:
+  selector:
+    matchLabels:
+      app: elasticsearch5
+      release: "release-name"
+      role: "master"
+  serviceName: release-name-elasticsearch5-master
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: elasticsearch5
+        chart: elasticsearch5-6.2.2
+        release: "release-name"
+        role: "master"
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: elasticsearch5
+                  release: "release-name"
+                  role: "master"
+      containers:
+      - name: "elasticsearch"
+        image: docker.io/ygqygq2/elasticsearch:5.6.16-debian-9-r0
+        imagePullPolicy: "IfNotPresent"
+        securityContext:
+          runAsUser: 1001
+        env:
+        - name: ELASTICSEARCH_CLUSTER_NAME
+          value: "elastic-es5"
+        - name: ELASTICSEARCH_CLUSTER_HOSTS
+          value: release-name-elasticsearch5-discovery
+        - name: ELASTICSEARCH_CLUSTER_MASTER_HOSTS
+          value: release-name-elasticsearch5-master-0 release-name-elasticsearch5-master-1 
+        - name: ELASTICSEARCH_HEAP_SIZE
+          value: "128m"
+        - name: ELASTICSEARCH_IS_DEDICATED_NODE
+          value: "yes"
+        - name: ELASTICSEARCH_NODE_TYPE
+          value: "master"
+        ports:
+        - name: transport
+          containerPort: 9300
+        resources:
+          requests:
+            cpu: 25m
+            memory: 256Mi
+        volumeMounts:
+        - name: "data"
+          mountPath: "/bitnami/elasticsearch/data"
+      volumes:
+      - name: "data"
+        emptyDir: {}

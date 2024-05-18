@@ -1,0 +1,119 @@
+---
+# Source: crate/templates/service.yaml
+# For performance reasons, you may want to split the service into two services.
+# One called crate-discovery to handle the discovery typically on port 4300 and
+# another one for the rest of functions (admin, postgres, etc). This is because
+# Performance Issues have been seen with the discovery service behind load
+# balancers. See: https://github.com/helm/charts/pull/8432
+apiVersion: v1
+kind: Service
+metadata:
+  name: crate
+  labels:
+    app: crate
+spec:
+  # A Headless Service is used for CrateDB node discovery.
+  # Returns the IP adresses of the associated CrateDB Pods.
+  clusterIP: None
+  ports:
+    - name: psql
+      port: 5432
+    - name: transport
+      port: 4300
+    - name: ui
+      port: 4200
+  selector:
+    app: crate
+---
+# Source: crate/templates/statefulset.yaml
+apiVersion: "apps/v1"
+kind: StatefulSet
+metadata:
+  name: crate
+spec:
+  serviceName: "crate-db"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: crate
+  template:
+    metadata:
+      labels:
+        app: crate
+        app.kubernetes.io/name: crate-deployment
+        app.kubernetes.io/part-of: crate-db
+        app.kubernetes.io/version: 5.0.0
+        app.kubernetes.io/managed-by: helm
+      annotations:
+        pod.alpha.kubernetes.io/initialized: "true"
+    spec:
+      initContainers:
+        - name: init-sysctl
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+          securityContext:
+            privileged: true
+      containers:
+        - name: crate
+          image: crate:5.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - -Ccluster.initial_master_nodes=crate-0,crate-1
+            - -Ccluster.name=crate
+            - -Cdiscovery.seed_providers=srv
+            - -Cdiscovery.srv.query=_transport._tcp.crate.default.svc.cluster.local
+            - -Cnetwork.host="0.0.0.0"
+            - -Cnode.name="$POD_NAME"
+            - -Cgateway.expected_data_nodes=2
+            - -Cgateway.recover_after_data_nodes=2
+            - -Chttp.cors.allow-origin=*
+            - -Chttp.cors.enabled=false
+            - -Cpath.data=/data
+            - -Cprocessors="$MIN_VCPU_COUNT"
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 1
+              memory: 3Gi
+          ports:
+            - containerPort: 5432
+              name: psql
+            - containerPort: 4300
+              name: transport
+            - containerPort: 4200
+              name: ui
+          env:
+            - name: CRATE_HEAP_SIZE
+              value: 1g
+            - name: CLUSTER_NAME
+              value: 
+            - name: MIN_VCPU_COUNT
+              valueFrom:
+                resourceFieldRef:
+                  resource: requests.cpu
+                  divisor: 1
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "curl http://localhost:4200 2&>/dev/null | grep '\"ok\" : true'"]
+            initialDelaySeconds: 100
+            periodSeconds: 60
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"

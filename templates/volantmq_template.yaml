@@ -1,0 +1,204 @@
+---
+# Source: volantmq/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: release-name-volantmq-config
+    namespace: default
+    labels:
+      app: volantmq
+      chart: volantmq-0.1.2
+      release: release-name
+      heritage: Helm
+data:
+    volantmq-config.yaml: |-
+      system:
+        log:
+          console:
+            level: info # available levels: debug, info, warn, error, dpanic, panic, fatal
+        acceptor:
+          maxIncoming: 1000
+          preSpawn: 100
+      plugins:
+        enabled:
+          - health
+        config:
+          health:
+            - backend: health
+              config:
+                livenessEndpoint: live
+                readinessEndpoint: ready
+      auth:
+        anonymous: true
+        order:
+          - internal
+      mqtt:
+        version:
+          - v3.1.1
+        keepAlive:
+          period: 60
+          force: false
+        options:
+          connectTimeout: 2
+          offlineQoS0: true
+          sessionDups: false
+          retainAvail: true
+          subsOverlap: false
+          subsId: false
+          subsShared: false
+          subsWildcard: true
+          receiveMax: 65535
+          maxPacketSize: 268435455
+          maxTopicAlias: 65535
+          maxQoS: 2
+---
+# Source: volantmq/templates/test/test-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-volantmq-test
+  namespace: default
+  labels:
+    app: volantmq
+    chart: volantmq-0.1.2
+    release: release-name
+    heritage: Helm
+data:
+  run.sh: |-
+    @test "Test Health" {
+      url="http://release-name-volantmq.default:8080/health/live"
+      code=$(wget --server-response --spider --timeout 10 --tries 1 ${url} 2>&1 | awk '/^  HTTP/{print $2}')
+      [ "$code" == "200" ]
+    }
+---
+# Source: volantmq/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-volantmq
+  namespace: default
+  labels:
+    app: volantmq
+    chart: volantmq-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+---
+# Source: volantmq/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name:  release-name-volantmq
+  labels:
+    app: volantmq
+    chart: volantmq-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  
+  publishNotReadyAddresses: false
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: 1883
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: volantmq
+    release: release-name
+---
+# Source: volantmq/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-volantmq
+  namespace: default
+  labels:
+    app: volantmq
+    chart: volantmq-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: volantmq
+      release: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: f149353b4af28a480706ffae2ea84f5c27da357361ede389dbc934b3cd47e24f
+      labels:
+        app: volantmq
+        release: release-name
+    spec:
+      containers:
+        - name: release-name-volantmq
+          image: docker.io/volantmq/volantmq:v0.4.0-rc.6
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - name: mqtt
+              containerPort: 1883
+            - name: mqtt-tls
+              containerPort: 1884
+            - name: websocket
+              containerPort: 883
+            - name: websocket-tls
+              containerPort: 884
+            - name: metrics
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: metrics
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 3
+          env:
+            - name: VOLANTMQ_CONFIG
+              value: "/etc/config/volantmq-config.yaml"
+          volumeMounts:
+            - mountPath: /etc/config
+              name: config-volume
+      volumes:
+        - name: config-volume
+          configMap:
+              name: release-name-volantmq-config
+---
+# Source: volantmq/templates/test/test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-volantmq-test
+  labels:
+    app: volantmq
+    chart: volantmq-0.1.2
+    release: release-name
+    heritage: Helm
+  annotations:
+    helm.sh/hook: test-success
+    helm.sh/hook-delete-policy: hook-succeeded
+  namespace: default
+spec:
+  serviceAccountName: default
+  containers:
+    - name: release-name-test
+      image: "bats/bats:v1.1.0"
+      command: ["/opt/bats/bin/bats", "-t", "/tests/run.sh"]
+      volumeMounts:
+        - mountPath: /tests
+          name: tests
+          readOnly: true
+  volumes:
+  - name: tests
+    configMap:
+      name: release-name-volantmq-test
+  restartPolicy: Never

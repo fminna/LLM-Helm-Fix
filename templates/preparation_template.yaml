@@ -1,0 +1,140 @@
+---
+# Source: preparation/templates/secret.yaml
+apiVersion: v1
+data:
+  GH_TOKEN: ""
+kind: Secret
+metadata:
+  name: "gh-token"
+type: Opaque
+---
+# Source: preparation/templates/pod-reader-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: pod-reader
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Source: preparation/templates/default-pod-reader-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: default-pod-reader
+  # namespace: default
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-reader
+subjects:
+- kind: ServiceAccount
+  name: default
+  # namespace: default
+  namespace: default
+---
+# Source: preparation/templates/init-repo.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "init-repo"
+  annotations:
+    helm.sh/hook-weight: "10"
+
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init-repo
+        image: docker.io/svtechnmaa/svtech_debuger:v1.0.0
+        imagePullPolicy: 
+        command:
+          - bash
+          - -ec
+          - |
+              eval "list_repo=(`echo $REPO_LIST | tr "," " "`)"
+              for item in "${list_repo[@]}"; do
+                  name=`echo $item | sed  "s/:.*//"`
+                  if [[ "$item" =~ .*":".* ]]; then
+                      tag=`echo $item | sed  "s/^.*://"`
+                  else
+                      tag=""
+                  fi
+                  mkdir -p /opt/$name
+                  status=`ls -A /opt/$name | grep -v 'lost+found' | grep -v '.stfolder' | grep -v 'addition_toolkit' | wc -l`
+                  if [[ "$status" == "0" ]]; then
+                      echo "/opt/$name is Empty. Clone repo"
+                      cd /opt/$name && \
+                      git init
+                      git remote add origin https://${GH_USERNAME}:${GH_TOKEN}@github.com/moophat/${name}.git
+                      git pull origin master --depth=1
+                      if [ $? == 0 ]; then
+                          echo "Clone ${name} done !"
+                          echo "true" > completed
+                      fi
+
+                      if [[ "$tag" == "latest" ]]; then
+                          cd /opt/$name 
+                          # Get the commit ID of latest tag
+                          commit_id=$(git rev-list --tags --max-count=1 --remotes)
+                          # Fetch the latest tag
+                          git fetch --depth 1 origin tag `git ls-remote --tags --quiet |grep "$commit_id" | awk '{print $2}' | sed 's:.*/::'` --no-tags
+                          # Checkout the latest tag
+                          git checkout tags/$(git describe --tags $commit_id)
+                          echo "Checkout latest tag done!"
+                      elif [[ "$tag" != "latest" ]] && [[ "$tag" != "" ]] && [[ "$tag" != "None" ]]; then
+                          cd /opt/$name 
+                          # Fetch specific tag
+                          git fetch --depth 1 origin tag `git ls-remote --tags --quiet |grep "$tag" | awk '{print $2}' | sed 's:.*/::'` --no-tags
+                          # Checkout specific tag
+                          git checkout tags/$(git describe --tags `git rev-list --tags --max-count=1`)
+                          echo "Checkout $tag done!"
+                      fi
+             
+                      # Clearing the token from repository
+                      git remote remove origin
+                      git remote add origin https://github.com/moophat/${name}.git
+
+                  else
+                      echo "/opt/$name is not Empty. Ignore"
+                  fi
+              done
+        env:
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: gh-token
+                key: GH_TOKEN
+                optional: false
+          - name: GH_USERNAME
+            value: ""
+          - name: REPO_LIST
+            value: "SVTECH-Junos-Automation:latest"

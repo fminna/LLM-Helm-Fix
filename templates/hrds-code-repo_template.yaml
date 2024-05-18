@@ -1,0 +1,194 @@
+---
+# Source: hrds-code-repo/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hrds-code-repo
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7140
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 7141
+      targetPort: actuator
+      protocol: TCP
+      name: actuator
+  selector:
+    choerodon.io/release: "release-name"
+---
+# Source: hrds-code-repo/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/actuator/prometheus"
+      labels:
+        choerodon.io/version: "0.23.1"
+        choerodon.io/service: "hrds-code-repo"
+        choerodon.io/metrics-port: "7141"
+        choerodon.io/release: "release-name"
+    spec:
+      initContainers:
+      - name: skywalking-agent
+        image: registry.cn-shanghai.aliyuncs.com/c7n/skywalking-agent:6.5.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - cp -rfp /skywalking/agent/* /agent
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+      containers:
+      - name: release-name
+        image: registry.cn-shanghai.aliyuncs.com/c7n/hrds-code-repo:0.23.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+          value: "http://register-server:8000/eureka/"
+        - name: "GITLAB_PRIVATETOKEN"
+          value: "xxx"
+        - name: "GITLAB_URL"
+          value: "http://git.example.com"
+        - name: "MANAGEMENT_SERVER_PORT"
+          value: "7141"
+        - name: "SERVER_PORT"
+          value: "7140"
+        - name: "SPRING_CLOUD_CONFIG_ENABLED"
+          value: "false"
+        - name: "SPRING_CLOUD_CONFIG_URI"
+          value: "http://register-server:8000"
+        - name: "SPRING_DATASOURCE_PASSWORD"
+          value: "hzero"
+        - name: "SPRING_DATASOURCE_URL"
+          value: "jdbc:mysql://localhost:3306/hrds_code_repo?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+        - name: "SPRING_DATASOURCE_USERNAME"
+          value: "hzero"
+        - name: "SPRING_REDIS_DATABASE"
+          value: "0"
+        - name: "SPRING_REDIS_HOST"
+          value: "localhost"
+        - name: "SPRING_REDIS_PORT"
+          value: "6379"
+        ports:
+        - name: http
+          containerPort: 7140
+          protocol: TCP
+        - name: actuator
+          containerPort: 7141
+          protocol: TCP
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            memory: 2Gi
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+        livenessProbe:
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 7140
+              && curl -s --fail localhost:7141/actuator/health
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 7140
+              && curl -s --fail localhost:7141/actuator/health
+      volumes:
+      - name: skywalking-agent
+        emptyDir: {}
+---
+# Source: hrds-code-repo/templates/pre-init-db.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-db
+  annotations:
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      name: release-name-init-db
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rfp /var/choerodon/* /tools
+        image: registry.cn-shanghai.aliyuncs.com/c7n/dbtool:0.7.1
+        imagePullPolicy: IfNotPresent
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-db
+        image: registry.cn-shanghai.aliyuncs.com/c7n/hrds-code-repo:0.23.1
+        command:
+        - /bin/sh
+        - -c
+        - >
+          java -Ddata.init=true
+          -Ddata.update.exclusion=
+          -Dspring.datasource.url="jdbc:mysql://localhost:3306/?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+          -Dspring.datasource.username=xxx
+          -Dspring.datasource.password=xxx
+          -Dspring.datasource.driver-class-name=com.mysql.jdbc.Driver
+          -Dinstaller.datasources.platform.url="jdbc:mysql://localhost:3307/?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+          -Dinstaller.datasources.platform.username=username
+          -Dinstaller.datasources.platform.password=password
+          -Dinstaller.datasources.platform.driver-class-name=com.mysql.jdbc.Driver
+          -Dinstaller.jarPath=/choerodon/hrds-code-repo.jar
+          -Dlogging.level.root=info
+          -Dinstaller.mapping=script/db/service-mapping.xml
+          -jar /var/choerodon/choerodon-tool-liquibase.jar;
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar

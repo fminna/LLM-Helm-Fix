@@ -1,0 +1,209 @@
+---
+# Source: prometheus-cassandra-exporter/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cassandra-exporter-config
+  namespace: default
+  labels:
+    helm.sh/chart: prometheus-cassandra-exporter-2.4.0
+    app.kubernetes.io/name: cassandra-exporter
+    app.kubernetes.io/version: "2.3.4"
+    app.kubernetes.io/managed-by: Helm     
+data:
+  config.yml: |-
+    host: cassandra:7199
+    ssl: False
+    user: gems
+    password: cloud1688
+    listenPort: 8080
+    blacklist:
+       # To profile the duration of jmx call you can start the program with the following options
+       # > java -Dorg.slf4j.simpleLogger.defaultLogLevel=trace -jar cassandra_exporter.jar config.yml --oneshot
+       #
+       # To get intuition of what is done by cassandra when something is called you can look in cassandra
+       # https://github.com/apache/cassandra/tree/trunk/src/java/org/apache/cassandra/metrics
+       # Please avoid to scrape frequently those calls that are iterating over all sstables
+    
+       # Unaccessible metrics (not enough privilege)
+       - java:lang:memorypool:.*usagethreshold.*
+    
+       # Leaf attributes not interesting for us but that are presents in many path
+       - .*:999thpercentile
+       - .*:95thpercentile
+       - .*:fifteenminuterate
+       - .*:fiveminuterate
+       - .*:durationunit
+       - .*:rateunit
+       - .*:stddev
+       - .*:meanrate
+       - .*:mean
+       - .*:min
+    
+       # Path present in many metrics but uninterresting
+       - .*:viewlockacquiretime:.*
+       - .*:viewreadtime:.*
+       - .*:cas[a-z]+latency:.*
+       - .*:colupdatetimedeltahistogram:.*
+    
+       # Mostly for RPC, do not scrap them
+       - org:apache:cassandra:db:.*
+    
+       # columnfamily is an alias for Table metrics
+       # https://github.com/apache/cassandra/blob/8b3a60b9a7dbefeecc06bace617279612ec7092d/src/java/org/apache/cassandra/metrics/TableMetrics.java#L162
+       - org:apache:cassandra:metrics:columnfamily:.*
+    
+       # Should we export metrics for system keyspaces/tables ?
+       - org:apache:cassandra:metrics:[^:]+:system[^:]*:.*
+    
+       # Don't scrap us
+       - com:criteo:nosql:cassandra:exporter:.*
+    
+    maxScrapFrequencyInSec:
+      50:
+        - .*
+    
+      # Refresh those metrics only every hour as it is costly for cassandra to retrieve them
+      3600:
+        - .*:snapshotssize:.*
+        - .*:estimated.*
+        - .*:totaldiskspaceused:.*
+---
+# Source: prometheus-cassandra-exporter/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-exporter
+  namespace: default
+  labels:
+    helm.sh/chart: prometheus-cassandra-exporter-2.4.0
+    app.kubernetes.io/name: cassandra-exporter
+    app.kubernetes.io/version: "2.3.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: metrics 
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: cassandra-exporter
+---
+# Source: prometheus-cassandra-exporter/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cassandra-exporter
+  labels:
+    helm.sh/chart: prometheus-cassandra-exporter-2.4.0
+    app.kubernetes.io/name: cassandra-exporter
+    app.kubernetes.io/version: "2.3.4"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cassandra-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cassandra-exporter
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: prometheus-cassandra-exporter
+          securityContext:
+            {}
+          image: "registry.cn-beijing.aliyuncs.com/kubegemsapp/cassandra-exporter:2.3.4-debian-10-r435"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: exporter-config
+              mountPath: /opt/bitnami/cassandra-exporter/config.yml
+              subPath: config.yml
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 128Mi
+      volumes:
+        - name: exporter-config
+          configMap:
+            name: cassandra-exporter-config
+---
+# Source: prometheus-cassandra-exporter/templates/alertmanagerconfig.yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  creationTimestamp: null
+  labels:
+    alertmanagerconfig.kubegems.io/name: cassandra-exporter
+    alertmanagerconfig.kubegems.io/type: monitor
+  name: cassandra-exporter
+  namespace: default
+spec:
+  receivers:
+  - name: "null"
+  - name: gemcloud-default-webhook
+    webhookConfigs:
+    - httpConfig:
+        tlsConfig:
+          ca: {}
+          cert: {}
+          insecureSkipVerify: true
+      url: https://kubegems-local-agent.kubegems-local:8041/alert
+  route:
+    groupBy:
+    - gems_namespace
+    - gems_alertname
+    groupInterval: 30s
+    groupWait: 30s
+    receiver: "null"
+---
+# Source: prometheus-cassandra-exporter/templates/prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  creationTimestamp: null
+  labels:
+    prometheusrule.kubegems.io/name: cassandra-exporter
+    prometheusrule.kubegems.io/type: monitor
+  name: cassandra-exporter
+  namespace: default
+spec: {}
+---
+# Source: prometheus-cassandra-exporter/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cassandra-exporter
+  namespace: default
+  labels:
+    helm.sh/chart: prometheus-cassandra-exporter-2.4.0
+    app.kubernetes.io/name: cassandra-exporter
+    app.kubernetes.io/version: "2.3.4"
+    app.kubernetes.io/managed-by: Helm    
+spec:
+  selector:
+    matchLabels:
+      helm.sh/chart: prometheus-cassandra-exporter-2.4.0
+      app.kubernetes.io/name: cassandra-exporter
+      app.kubernetes.io/version: "2.3.4"
+      app.kubernetes.io/managed-by: Helm
+  endpoints:
+    - port: metrics
+      interval: 60s
+      scrapeTimeout: 10s
+      scheme: http
+      path: /metrics
+  namespaceSelector:
+    matchNames:
+      - default

@@ -1,0 +1,201 @@
+---
+# Source: istioconfig/templates/envoy_filter.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: aperture-envoy-filter
+spec:
+  configPatches:
+
+  - applyTo: NETWORK_FILTER # http connection manager is a filter in Envoy
+    match:
+      context: SIDECAR_INBOUND # apply only to ingress
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: MERGE
+      value:
+        name: "envoy.filters.network.http_connection_manager"
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+          access_log:
+            - name: envoy.access_loggers.open_telemetry
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.access_loggers.open_telemetry.v3.OpenTelemetryAccessLogConfig
+                common_config:
+                  log_name: ingress
+                  grpc_service:
+                    google_grpc:
+                      target_uri: aperture-agent.aperture-agent.svc.cluster.local:8080
+                      stat_prefix: aperture_access_log
+                  transport_api_version: V3
+                body:
+                  string_value: "%REQ(:METHOD)%"
+                # See https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md
+                # and https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#config-access-log
+                attributes:
+                  values:
+                    - key: aperture.source
+                      value:
+                        string_value: "envoy"
+                    - key: aperture.check_response
+                      value:
+                        string_value: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:aperture.check_response)%"
+                    - key: http.status_code
+                      value:
+                        string_value: "%RESPONSE_CODE%"
+                    - key: authz_duration
+                      value:
+                        string_value: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:ext_authz_duration)%"
+                    - key: BYTES_RECEIVED
+                      value:
+                        string_value: "%BYTES_RECEIVED%"
+                    - key: BYTES_SENT
+                      value:
+                        string_value: "%BYTES_SENT%"
+                    - key: DURATION
+                      value:
+                        string_value: "%DURATION%"
+                    - key: REQUEST_DURATION
+                      value:
+                        string_value: "%REQUEST_DURATION%"
+                    - key: REQUEST_TX_DURATION
+                      value:
+                        string_value: "%REQUEST_TX_DURATION%"
+                    - key: RESPONSE_DURATION
+                      value:
+                        string_value: "%RESPONSE_DURATION%"
+                    - key: RESPONSE_TX_DURATION
+                      value:
+                        string_value: "%RESPONSE_TX_DURATION%"
+
+  - applyTo: NETWORK_FILTER
+    match:
+      context: SIDECAR_OUTBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: MERGE
+      value:
+        name: "envoy.filters.network.http_connection_manager"
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+          access_log:
+            - name: envoy.access_loggers.open_telemetry
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.access_loggers.open_telemetry.v3.OpenTelemetryAccessLogConfig
+                common_config:
+                  log_name: egress
+                  grpc_service:
+                    google_grpc:
+                      target_uri: aperture-agent.aperture-agent.svc.cluster.local:8080
+                      stat_prefix: aperture_access_log
+                  transport_api_version: V3
+                body:
+                  string_value: "%REQ(:METHOD)%"
+                # See https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/semantic_conventions/http.md
+                # and https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#config-access-log
+                attributes:
+                  values:
+                    - key: aperture.source
+                      value:
+                        string_value: "envoy"
+                    - key: aperture.check_response
+                      value:
+                        string_value: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:aperture.check_response)%"
+                    - key: http.status_code
+                      value:
+                        string_value: "%RESPONSE_CODE%"
+                    - key: authz_duration
+                      value:
+                        string_value: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:ext_authz_duration)%"
+                    - key: BYTES_RECEIVED
+                      value:
+                        string_value: "%BYTES_RECEIVED%"
+                    - key: BYTES_SENT
+                      value:
+                        string_value: "%BYTES_SENT%"
+                    - key: DURATION
+                      value:
+                        string_value: "%DURATION%"
+                    - key: REQUEST_DURATION
+                      value:
+                        string_value: "%REQUEST_DURATION%"
+                    - key: REQUEST_TX_DURATION
+                      value:
+                        string_value: "%REQUEST_TX_DURATION%"
+                    - key: RESPONSE_DURATION
+                      value:
+                        string_value: "%RESPONSE_DURATION%"
+                    - key: RESPONSE_TX_DURATION
+                      value:
+                        string_value: "%RESPONSE_TX_DURATION%"
+
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+            subFilter:
+              name: "envoy.filters.http.router"
+    patch:
+      operation: INSERT_BEFORE
+      filterClass: AUTHZ # This filter will run *after* the Istio authz filter.
+      value:
+        name: envoy.filters.http.ext_authz
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+          transport_api_version: V3
+          with_request_body:
+            max_request_bytes: 8192
+            allow_partial_message: true
+            pack_as_bytes: false
+          failure_mode_allow: true
+          grpc_service:
+            google_grpc:
+              target_uri: aperture-agent.aperture-agent.svc.cluster.local:8080
+              stat_prefix: ext_authz
+            timeout: 0.25s
+            initial_metadata:
+              # Note: If there's more than one header in this list, make sure
+              # to update the OUTBOUND filter also.
+              - key: control-point
+                value: ingress
+
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_OUTBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+            subFilter:
+              name: "envoy.filters.http.router"
+    patch:
+      operation: INSERT_BEFORE
+      filterClass: AUTHZ
+      # Use the same configuration for egress, with different control-point header.
+      value:
+        name: envoy.filters.http.ext_authz
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+          transport_api_version: V3
+          with_request_body:
+            max_request_bytes: 8192
+            allow_partial_message: true
+            pack_as_bytes: false
+          failure_mode_allow: true
+          grpc_service:
+            google_grpc:
+              target_uri: aperture-agent.aperture-agent.svc.cluster.local:8080
+              stat_prefix: ext_authz
+            timeout: 0.25s
+            initial_metadata:
+              - key: control-point
+                value: egress

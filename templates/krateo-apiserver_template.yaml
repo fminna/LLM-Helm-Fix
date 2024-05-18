@@ -1,0 +1,159 @@
+---
+# Source: krateo-apiserver/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  namespace: default
+---
+# Source: krateo-apiserver/templates/rbac.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups:
+    - flowcontrol.apiserver.k8s.io
+  resources:
+    - prioritylevelconfigurations
+    - flowschemas
+  verbs:
+    - list
+    - watch
+- apiGroups:
+    - krateo.io
+  resources:
+    - definitions
+    - definitions/status
+  verbs:
+    - get
+    - list
+    - update
+---
+# Source: krateo-apiserver/templates/auth-delegator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krateo:system:auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: krateo-apiserver/templates/rbac-bind.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: krateo-apiserver/templates/auth-reader.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-auth-reader
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: krateo-apiserver/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  ports:
+    - protocol: TCP
+      port: 443
+      targetPort: 8443
+  selector:
+    k8s-app: release-name
+---
+# Source: krateo-apiserver/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    k8s-app: release-name
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: release-name
+    strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        k8s-app: release-name
+    spec:
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: release-name
+      volumes:
+        - emptyDir: {}
+          name: tmp-dir
+      containers:
+        - name: etcd
+          image: gcr.io/etcd-development/etcd:v3.5.9
+          imagePullPolicy: IfNotPresent
+        - name: krateo-apiserver
+          image: "ghcr.io/krateoplatformops/krateo-apiserver:0.0.2"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --etcd-servers=http://localhost:2379
+            - --cert-dir=/tmp/certs
+            - --secure-port=8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp-dir
+---
+# Source: krateo-apiserver/templates/apiservice.yaml
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  labels:
+    k8s-app: release-name
+  name: v1alpha1.krateo.io
+spec:
+  group: krateo.io
+  version: v1alpha1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: release-name
+    namespace: default

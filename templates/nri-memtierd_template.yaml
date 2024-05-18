@@ -1,0 +1,132 @@
+---
+# Source: nri-memtierd/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nri-memtierd-config.default
+  namespace: default
+  labels:
+    helm.sh/chart: nri-memtierd-v0.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: nri-memtierd
+    app.kubernetes.io/instance: release-name
+data:
+  config.yaml: |
+    classes:
+    - name: swap-idle-data
+      allowswap: true
+      memtierdconfig: |
+        policy:
+          name: age
+          config: |
+            intervalms: 10000
+            pidwatcher:
+              name: cgroups
+              config: |
+                cgroups:
+                  - $CGROUP2_ABS_PATH
+            swapoutms: 10000
+            tracker:
+              name: idlepage
+              config: |
+                pagesinregion: 512
+                maxcountperregion: 1
+                scanintervalms: 10000
+            mover:
+              intervalms: 20
+              bandwidth: 50
+    - name: track-working-set-size
+      allowswap: false
+      memtierdconfig: |
+        policy:
+          name: age
+          config: |
+            intervalms: 20000
+            pidwatcher:
+              name: cgroups
+              config: |
+                cgroups:
+                  - $CGROUP2_ABS_PATH
+            tracker:
+              name: idlepage
+              config: |
+                pagesinregion: 512
+                maxcountperregion: 1
+                scanintervalms: 20000
+        routines:
+          - name: statactions
+            config: |
+              intervalms: 60000
+              intervalcommand: ["policy", "-dump", "accessed", "0,1m,30m,2h,24h,0"]
+              intervalcommandrunner: memtier
+---
+# Source: nri-memtierd/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    helm.sh/chart: nri-memtierd-v0.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: nri-memtierd
+    app.kubernetes.io/instance: release-name
+  name: nri-memtierd
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nri-memtierd
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: nri-memtierd-v0.5.1
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: nri-memtierd
+        app.kubernetes.io/instance: release-name
+    spec:
+      nodeSelector:
+        kubernetes.io/os: "linux"
+      hostPID: true
+      containers:
+        - name: nri-memtierd
+          command:
+            - nri-memtierd
+            - --idx
+            - "45"
+            - --config
+            - /etc/nri/memtierd/config.yaml
+            - --cgroups-dir
+            - /sys/fs/cgroup
+            - -v
+          image: ghcr.io/containers/nri-plugins/nri-memtierd:v0.5.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 250m
+              memory: 100Mi
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - name: memtierd-config-vol
+            mountPath: /etc/nri/memtierd
+          - name: nrisockets
+            mountPath: /var/run/nri
+          - name: host-bitmap
+            mountPath: /sys/kernel/mm/page_idle/bitmap
+          - name: cgroups-vol
+            mountPath: /sys/fs/cgroup
+      volumes:
+      - name: memtierd-config-vol
+        configMap:
+          name: nri-memtierd-config.default
+      - name: nrisockets
+        hostPath:
+          path: /var/run/nri
+          type: DirectoryOrCreate
+      - name: host-bitmap
+        hostPath:
+          path: /sys/kernel/mm/page_idle/bitmap
+      - name: cgroups-vol
+        hostPath:
+          path: /sys/fs/cgroup
+          type: Directory

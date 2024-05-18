@@ -1,0 +1,288 @@
+---
+# Source: enterprise-gateway/templates/eg-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enterprise-gateway-sa
+  namespace: default
+  labels:
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+---
+# Source: enterprise-gateway/templates/kip-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kernel-image-puller-sa
+  namespace: default
+  labels:
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+---
+# Source: enterprise-gateway/templates/eg-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enterprise-gateway-controller
+  labels:
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "services", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications", "sparkapplications/status", "scheduledsparkapplications", "scheduledsparkapplications/status"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+---
+# Source: enterprise-gateway/templates/eg-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # Referenced by EG_KERNEL_CLUSTER_ROLE in the Deployment
+  name: kernel-controller
+  labels:
+    app: enterprise-gateway
+    component: kernel
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list", "create"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["list"]
+---
+# Source: enterprise-gateway/templates/kip-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kip-controller
+  labels:
+    app: enterprise-gateway
+    component: kernel-image-puller
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+---
+# Source: enterprise-gateway/templates/eg-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enterprise-gateway-controller
+  labels:
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: enterprise-gateway-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: enterprise-gateway-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: enterprise-gateway/templates/kip-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enterprise-gateway-kip
+  labels:
+    app: enterprise-gateway
+    component: kernel-image-puller
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+
+subjects:
+  - kind: ServiceAccount
+    name: kernel-image-puller-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: kip-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: enterprise-gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+
+  name: enterprise-gateway
+  namespace: default
+spec:
+  ports:
+    -
+      name: http
+      port: 8888
+      targetPort: 8888
+    -
+      name: http-response
+      port: 8877
+      targetPort: 8877
+  selector:
+    gateway-selector: enterprise-gateway
+  sessionAffinity: ClientIP
+  type: NodePort
+---
+# Source: enterprise-gateway/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kernel-image-puller
+  namespace: default
+  labels:
+    gateway-selector: enterprise-gateway
+    app: enterprise-gateway
+    component: kernel-image-puller
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      name: kernel-image-puller
+  template:
+    metadata:
+      labels:
+        name: kernel-image-puller
+        app: enterprise-gateway
+        component: kernel-image-puller
+        chart: enterprise-gateway-3.2.2
+        release: release-name
+        heritage: Helm
+    spec:
+      serviceAccountName: kernel-image-puller-sa
+      containers:
+      - name: kernel-image-puller
+        image: elyra/kernel-image-puller:3.2.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KIP_LOG_LEVEL
+          value: DEBUG
+        - name: KIP_GATEWAY_HOST
+          value: "http://enterprise-gateway.default:8888"
+        - name: KIP_VALIDATE_CERT
+          value: "false"
+        - name: KIP_INTERVAL
+          value: !!str 300
+        - name: KIP_PULL_POLICY
+          value: IfNotPresent
+        - name: KIP_CRI_ENDPOINT
+          value: "unix:///var/run/docker.sock"
+        - name: KIP_DEFAULT_CONTAINER_REGISTRY
+          value: docker.io
+        # Optional authorization token passed in all requests (should match EG_AUTH_TOKEN)
+        # fetcher to fetch image names, defaults to KernelSpecsFetcher
+        - name: KIP_IMAGE_FETCHER
+          value: "KernelSpecsFetcher"
+        # if CombinedImagesFetcher is used KIP_INTERNAL_FETCHERS defines the fetchers that get used internally
+        # if StaticListFetcher is used KIP_IMAGES defines the list of images pullers will fetch
+
+        volumeMounts:
+        - name: cri-socket
+          mountPath: !!str /var/run/docker.sock  # see env KIP_CRI_ENDPOINT
+          readOnly: true
+      volumes:
+      - name: cri-socket
+        hostPath:
+          path: /var/run/docker.sock
+---
+# Source: enterprise-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enterprise-gateway
+  namespace: default
+  labels:
+    gateway-selector: enterprise-gateway
+    app: enterprise-gateway
+    component: enterprise-gateway
+    chart: enterprise-gateway-3.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      gateway-selector: enterprise-gateway
+  template:
+    metadata:
+      labels:
+        gateway-selector: enterprise-gateway
+        app: enterprise-gateway
+        component: enterprise-gateway
+    spec:
+      # Created by this chart.
+      serviceAccountName: enterprise-gateway-sa
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: enterprise-gateway
+        image: elyra/enterprise-gateway:3.2.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: EG_PORT
+          
+          value: !!str 8888
+        - name: EG_RESPONSE_PORT
+          
+          value: !!str 8877
+        - name: EG_NAMESPACE
+          value: default
+        - name: EG_KERNEL_CLUSTER_ROLE
+          value: kernel-controller
+        - name: EG_SHARED_NAMESPACE
+          value: "False"
+        - name: EG_MIRROR_WORKING_DIRS
+          value: "False"
+        - name: EG_CULL_IDLE_TIMEOUT
+          value: !!str 3600
+        - name: EG_CULL_CONNECTED
+          value: "False"
+        - name: EG_LOG_LEVEL
+          value: DEBUG
+        - name: EG_KERNEL_LAUNCH_TIMEOUT
+          value: !!str 60
+        - name: EG_ALLOWED_KERNELS
+          value: '["r_kubernetes","python_kubernetes","python_tf_kubernetes","python_tf_gpu_kubernetes","scala_kubernetes","spark_r_kubernetes","spark_python_kubernetes","spark_scala_kubernetes","spark_python_operator"]'
+        - name: EG_DEFAULT_KERNEL_NAME
+          value: python_kubernetes
+        # Optional authorization token passed in all requests
+        - name: EG_INHERITED_ENVS
+          value: |-
+            PATH
+        ports:
+        
+        - containerPort: 8888
+        
+        - containerPort: 8877

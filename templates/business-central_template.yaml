@@ -1,0 +1,223 @@
+---
+# Source: business-central/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-business-central
+  labels:
+    helm.sh/chart: business-central-2.2.14
+    app.kubernetes.io/name: business-central
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "20.0.37253.40399"
+    app.kubernetes.io/managed-by: Helm
+data:
+  CheckHealth.ps1: |-
+    if ($env:UseSSL -eq "N") {
+      $healthcheckurl = ("http://localhost/" + $env:webserverinstance + "/")
+    } else {
+      $healthcheckurl = ("https://localhost/" + $env:webserverinstance + "/")
+    }
+
+    if ($healthcheckurl.StartsWith("https")) {
+        if (-not("dummy" -as [type])) {
+            add-type -TypeDefinition @"
+    using System;
+    using System.Net;
+    using System.Net.Security;
+    using System.Security.Cryptography.X509Certificates;
+    public static class Dummy {
+        public static bool ReturnTrue(object sender,
+            X509Certificate certificate,
+            X509Chain chain,
+            SslPolicyErrors sslPolicyErrors) { return true; }
+        public static RemoteCertificateValidationCallback GetDelegate() {
+            return new RemoteCertificateValidationCallback(Dummy.ReturnTrue);
+        }
+    }
+    "@
+        }
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = [dummy]::GetDelegate()
+    }
+
+    try {
+        # check webclient
+        $result = Invoke-WebRequest -Uri "${healthcheckurl}Health/System" -UseBasicParsing -TimeoutSec 10
+        if ($result.StatusCode -eq 200 -and ((ConvertFrom-Json $result.Content).result)) {
+            # Web Client Health Check Endpoint will test Web Client, Service Tier and Database Connection
+            exit 0
+        }
+    } catch {
+    }
+    
+    exit 1
+  SetupDatabase.ps1: |-
+    $oldVal = $myPath 
+    $myPath = $runPath
+    . (Join-Path $runPath $MyInvocation.MyCommand.Name)
+    $myPath = $oldVal
+---
+# Source: business-central/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-business-central
+  labels:
+    helm.sh/chart: business-central-2.2.14
+    app.kubernetes.io/name: business-central
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "20.0.37253.40399"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: web
+      protocol: TCP
+      name: web
+    - port: 443
+      targetPort: webtls
+      protocol: TCP
+      name: webtls
+    - port: 7047
+      targetPort: soap
+      protocol: TCP
+      name: soap
+    - port: 7048
+      targetPort: odata
+      protocol: TCP
+      name: odata
+    - port: 7049
+      targetPort: dev
+      protocol: TCP
+      name: dev
+    - port: 8080
+      targetPort: dl
+      protocol: TCP
+      name: dl
+  selector:
+    app.kubernetes.io/name: business-central
+    app.kubernetes.io/instance: release-name
+---
+# Source: business-central/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-business-central
+  labels:
+    helm.sh/chart: business-central-2.2.14
+    app.kubernetes.io/name: business-central
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "20.0.37253.40399"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: business-central
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: business-central
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: business-central
+          securityContext:
+            {}
+          image: "mcr.microsoft.com/businesscentral:10.0.17763.2686"
+          command:  # override to support containerd as well as docker
+          - powershell
+          - C:\Run\start.ps1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: ssh
+              containerPort: 22
+              protocol: TCP
+            - name: web
+              containerPort: 80
+              protocol: TCP
+            - name: webtls
+              containerPort: 443
+              protocol: TCP
+            - name: soap
+              containerPort: 7047
+              protocol: TCP
+            - name: odata
+              containerPort: 7048
+              protocol: TCP
+            - name: dev
+              containerPort: 7049
+              protocol: TCP
+            - name: snap
+              containerPort: 7083
+              protocol: TCP
+            - name: dl
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+          livenessProbe:
+            exec:
+              command:
+              - powershell
+              - C:\Run\CheckHealth.ps1
+            periodSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+              - powershell
+              - C:\Run\CheckHealth.ps1
+            periodSeconds: 5
+            failureThreshold: 5
+          startupProbe:
+            exec:
+              command:
+              - powershell
+              - C:\Run\CheckHealth.ps1
+            timeoutSeconds: 2
+            initialDelaySeconds: 30
+            # wait up to 600s for startup
+            periodSeconds: 10
+            failureThreshold: 60
+          env:
+            - name: ArtifactUrl
+              value: "https://bcartifacts.azureedge.net/sandbox/20.0.37253.40399/w1"
+            - name: password
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-business-central
+                  key: password
+            - name: Accept_eula
+              value: "Y"
+            - name: Accept_outdated
+              value: "Y"
+            - name: UseSSL
+              value: "N"
+          resources:
+            {}
+      volumes:
+      nodeSelector:
+        kubernetes.io/os: windows
+---
+# Source: business-central/templates/secret.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    helm.sh/chart: business-central-2.2.14
+    app.kubernetes.io/name: business-central
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "20.0.37253.40399"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    helm.sh/hook: pre-install,post-delete  
+  name: release-name-business-central
+type: Opaque
+data:
+  password: "WVRPV3JWZzJWTg=="

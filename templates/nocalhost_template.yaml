@@ -1,0 +1,666 @@
+---
+# Source: nocalhost/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nocalhost-api-config
+data:
+  config.yaml: |-
+    app:
+      run_mode: release                 # gin 开发模式, debug, release, test
+      addr: :8080                     # HTTP绑定端口
+      name: nocalhost                 # API Server Name
+      url: http://127.0.0.1:8080      # pingServer
+      max_ping_count: 10              # pingServer
+      jwt_secret: IjTccFjAFvqYeNe9vuTOxHH6hu6vd4eiDCXumkGxDufKjmu4VGVN4h0ibIZx9L6Lr3KimVFiH05TUE4HPeQhhm01RcCfutq5Vlx
+    log:
+      writers: stdout                 # 有2个可选项：file,stdout, 可以两者同时选择输出位置，有2个可选项：file,stdout。
+      logger_level: DEBUG             # 日志级别，DEBUG, INFO, WARN, ERROR, FATAL
+    mysql:
+      name: nocalhost
+      addr: nocalhost-mariadb:3306
+      username: root
+      password: root
+      show_log: true                  # 打印 SQL 日志
+      max_idle_conn: 10               # 最大闲置的连接数
+      max_open_conn: 60               # 最大打开的连接数, 需要小于数据库配置中的 max_connections 数
+      conn_max_life_time: 60          # 连接重用的最大时间，单位分钟
+---
+# Source: nocalhost/templates/nginx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nocalhost-nginx-config
+data:
+  nocalhost-nginx.conf: |-
+    server {
+        listen       80;
+        listen  [::]:80;
+        server_name  localhost;
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html index.htm;
+            try_files $uri /index.html;
+        }
+        location /v1 {
+            proxy_pass http://nocalhost-api:8080;
+        }
+        location /v2 {
+            proxy_pass http://nocalhost-api:8080;
+        }
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   /usr/share/nginx/html;
+        }
+    }
+---
+# Source: nocalhost/templates/api-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nocalhost-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: nocalhost-api
+---
+# Source: nocalhost/templates/web-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nocalhost-web
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: nocalhost-web
+---
+# Source: nocalhost/templates/api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nocalhost-api
+  labels:
+    app: nocalhost-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nocalhost-api
+  template:
+    metadata:
+      labels:
+        app: nocalhost-api
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: nocalhost-api
+          securityContext:
+            {}
+          image: "nocalhost-docker.pkg.coding.net/nocalhost/public/nocalhost-api:v0.6.29"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          command: [ "/app/nocalhost-api", "-c", "/app/config/config.yaml"]
+          volumeMounts:
+          - name: config-volume
+            mountPath: /app/config
+      volumes:
+        - name: config-volume
+          configMap:
+            name: nocalhost-api-config
+---
+# Source: nocalhost/templates/web-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nocalhost-web
+  labels:
+    app: nocalhost-web
+spec:
+  selector:
+    matchLabels:
+      app: nocalhost-web
+  template:
+    metadata:
+      labels:
+        app: nocalhost-web
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: nocalhost-web
+          securityContext:
+            {}
+          image: "nocalhost-docker.pkg.coding.net/nocalhost/public/nocalhost-web:v0.6.29"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+          - name: nocalhost-nginx-config
+            mountPath: /etc/nginx/conf.d/
+      volumes:
+        - name: nocalhost-nginx-config
+          configMap:
+            name: nocalhost-nginx-config
+---
+# Source: nocalhost/charts/mariadb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nocalhost-mariadb
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-9.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+---
+# Source: nocalhost/charts/mariadb/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nocalhost-mariadb
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-9.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+type: Opaque
+data:
+  mariadb-root-password: "cm9vdA=="
+  mariadb-password: "cVllaDM5S0g1Rw=="
+---
+# Source: nocalhost/charts/mariadb/templates/primary/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nocalhost-mariadb
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-9.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+data:
+  my.cnf: |-
+    [mysqld]
+    skip-name-resolve
+    explicit_defaults_for_timestamp
+    basedir=/opt/bitnami/mariadb
+    plugin_dir=/opt/bitnami/mariadb/plugin
+    port=3306
+    socket=/opt/bitnami/mariadb/tmp/mysql.sock
+    tmpdir=/opt/bitnami/mariadb/tmp
+    max_allowed_packet=16M
+    bind-address=0.0.0.0
+    pid-file=/opt/bitnami/mariadb/tmp/mysqld.pid
+    log-error=/opt/bitnami/mariadb/logs/mysqld.log
+    character-set-server=UTF8
+    collation-server=utf8_general_ci
+    
+    [client]
+    port=3306
+    socket=/opt/bitnami/mariadb/tmp/mysql.sock
+    default-character-set=UTF8
+    plugin_dir=/opt/bitnami/mariadb/plugin
+    
+    [manager]
+    port=3306
+    socket=/opt/bitnami/mariadb/tmp/mysql.sock
+    pid-file=/opt/bitnami/mariadb/tmp/mysqld.pid
+---
+# Source: nocalhost/templates/db-init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nocalhost-api-sql-init-config
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-10"
+data:
+  nocalhost.sql: |-
+    # ************************************************************
+    # Sequel Pro SQL dump
+    # Version 5438
+    #
+    # https://www.sequelpro.com/
+    # https://github.com/sequelpro/sequelpro
+    #
+    # Host: 127.0.0.1 (MySQL 5.5.5-10.5.8-MariaDB)
+    # Database: nocalhost
+    # Generation Time: 2020-11-26 06:57:56 +0000
+    # ************************************************************
+    
+    
+    /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+    /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+    /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+    /*!40101 SET NAMES utf8 */;
+    SET NAMES utf8mb4;
+    /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+    /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+    /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+    
+    
+    # Dump of table applications
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `applications`;
+    
+    CREATE TABLE `applications` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `context` text DEFAULT NULL,
+      `user_id` int(11) NOT NULL DEFAULT 0,
+      `created_at` datetime DEFAULT NULL,
+      `updated_at` datetime DEFAULT NULL,
+      `deleted_at` datetime DEFAULT NULL,
+      `public` tinyint(1) DEFAULT 1,
+      `status` tinyint(1) DEFAULT 1 COMMENT '1 enable, 0 disable',
+      PRIMARY KEY (`id`),
+      KEY `user_Id` (`user_id`),
+      KEY `status` (`status`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    
+    
+    # Dump of table applications_clusters
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `applications_clusters`;
+    
+    CREATE TABLE `applications_clusters` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `application_id` int(11) DEFAULT NULL,
+      `cluster_id` int(11) DEFAULT NULL,
+      `created_at` datetime DEFAULT NULL,
+      `deleted_at` datetime DEFAULT NULL,
+      `updated_at` datetime DEFAULT NULL,
+      PRIMARY KEY (`id`),
+      KEY `application_id` (`application_id`),
+      KEY `cluster_id` (`cluster_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    
+    
+    # Dump of table applications_users
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `applications_users`;
+    
+    CREATE TABLE `applications_users` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `application_id` int(11) DEFAULT NULL,
+      `user_id` int(11) DEFAULT NULL,
+      `created_at` datetime DEFAULT NULL,
+      `deleted_at` datetime DEFAULT NULL,
+      `updated_at` datetime DEFAULT NULL,
+      PRIMARY KEY (`id`),
+      KEY `application_id` (`application_id`),
+      KEY `user_id` (`user_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    
+    
+    
+    
+    # Dump of table clusters
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `clusters`;
+    
+    CREATE TABLE `clusters` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `name` varchar(32) NOT NULL DEFAULT '',
+      `marks` varchar(100) NOT NULL DEFAULT '',
+      `user_id` int(11) NOT NULL DEFAULT 0,
+      `server` varchar(500) NOT NULL DEFAULT '',
+      `kubeconfig` text NOT NULL,
+      `storage_class` varchar(100) NOT NULL DEFAULT '' COMMENT 'specify the k8s storage class',
+      `info` text DEFAULT NULL COMMENT 'cluster extra info, such as versions, nodes',
+      `deleted_at` timestamp NULL DEFAULT NULL,
+      `created_at` timestamp NULL DEFAULT NULL,
+      `updated_at` timestamp NULL DEFAULT NULL,
+      PRIMARY KEY (`id`),
+      KEY `user_id` (`user_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    
+    
+    # Dump of table clusters_users
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `clusters_users`;
+    
+    CREATE TABLE `clusters_users` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `application_id` int(11) NOT NULL,
+      `cluster_id` int(11) NOT NULL,
+      `user_id` int(11) NOT NULL,
+      `space_name` varchar(100) DEFAULT NULL COMMENT 'dev space name',
+      `kubeconfig` text DEFAULT NULL COMMENT 'service account',
+      `memory` int(11) DEFAULT NULL COMMENT 'memory limit',
+      `cpu` int(11) DEFAULT NULL COMMENT 'CPU limit',
+      `namespace` varchar(30) DEFAULT NULL,
+      `status` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0 not deployed, 1 deployed',
+      `created_at` datetime DEFAULT NULL,
+      `deleted_at` timestamp NULL DEFAULT NULL,
+      `updated_at` timestamp NULL DEFAULT NULL,
+      PRIMARY KEY (`id`),
+      KEY `cluster_id` (`cluster_id`),
+      KEY `user_id` (`user_id`),
+      KEY `application_id` (`application_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    
+    
+    # Dump of table pre_pull
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `pre_pull`;
+    
+    CREATE TABLE `pre_pull` (
+      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+      `images` varchar(1000) NOT NULL DEFAULT '',
+      `deleted_at` datetime DEFAULT NULL,
+      PRIMARY KEY (`id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    
+    LOCK TABLES `pre_pull` WRITE;
+    /*!40000 ALTER TABLE `pre_pull` DISABLE KEYS */;
+    
+    INSERT INTO `pre_pull` (`id`, `images`, `deleted_at`)
+    VALUES
+    	(1,'nocalhost-docker.pkg.coding.net/nocalhost/public/nocalhost-sidecar:latest',NULL),
+    	(2,'nocalhost-docker.pkg.coding.net/nocalhost/public/nocalhost-wait:latest',NULL),
+    	(3,'nocalhost-docker.pkg.coding.net/nocalhost/bookinfo/productpage:latest',NULL),
+    	(4,'nocalhost-docker.pkg.coding.net/nocalhost/bookinfo/reviews:latest',NULL),
+    	(5,'nocalhost-docker.pkg.coding.net/nocalhost/bookinfo/details:latest',NULL),
+    	(6,'nocalhost-docker.pkg.coding.net/nocalhost/bookinfo/ratings:latest',NULL);
+    
+    /*!40000 ALTER TABLE `pre_pull` ENABLE KEYS */;
+    UNLOCK TABLES;
+    
+    
+    # Dump of table users
+    # ------------------------------------------------------------
+    
+    DROP TABLE IF EXISTS `users`;
+    
+    CREATE TABLE `users` (
+      `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+      `uuid` varchar(100) NOT NULL DEFAULT '',
+      `username` varchar(255) NOT NULL DEFAULT '',
+      `name` varchar(20) DEFAULT NULL,
+      `password` varchar(60) NOT NULL DEFAULT '',
+      `avatar` varchar(255) NOT NULL DEFAULT '',
+      `phone` bigint(20) NOT NULL DEFAULT 0 ,
+      `email` varchar(100) NOT NULL DEFAULT '',
+      `is_admin` tinyint(4) NOT NULL DEFAULT 0,
+      `status` tinyint(4) NOT NULL DEFAULT 1 COMMENT '1 enable, 0 disable',
+      `deleted_at` timestamp NULL DEFAULT NULL,
+      `created_at` timestamp NULL DEFAULT NULL,
+      `updated_at` timestamp NULL DEFAULT NULL,
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `uniq_email` (`email`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    
+    LOCK TABLES `users` WRITE;
+    /*!40000 ALTER TABLE `users` DISABLE KEYS */;
+    
+    INSERT INTO `users` (`id`, `uuid`, `username`, `name`, `password`, `avatar`, `phone`, `email`, `is_admin`, `status`, `deleted_at`, `created_at`, `updated_at`)
+    VALUES
+    	(1,'36882544-3bf5-4065-86a7-9b2188d71a1b','Admin','Admin','$2a$10$XkuHQPH9jJ6GZ3GL9IR8U.7xN0gH6zSiO5fIQIfESZ8eagPo/Jnii','',0,'admin@admin.com',1,1,NULL,'2020-10-13 16:22:20','2020-10-13 16:22:20');
+    
+    /*!40000 ALTER TABLE `users` ENABLE KEYS */;
+    UNLOCK TABLES;
+    
+    
+    
+    /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+    /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+    /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+    /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+    /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+    /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+---
+# Source: nocalhost/charts/mariadb/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nocalhost-mariadb
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-9.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      protocol: TCP
+      targetPort: mysql
+      nodePort: null
+  selector: 
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: nocalhost/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-nocalhost-test-connection"
+  labels:
+    helm.sh/chart: nocalhost-0.6.29
+    app.kubernetes.io/name: nocalhost
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.6.29"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-nocalhost:80']
+  restartPolicy: Never
+---
+# Source: nocalhost/charts/mariadb/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nocalhost-mariadb
+  namespace: default
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-9.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: 
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  serviceName: nocalhost-mariadb
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/configuration: f973106d5228c0a6ee0e212afa9d4406fda84fe32afc0c0a0d48d411a9a886f3
+      labels:
+        app.kubernetes.io/name: mariadb
+        helm.sh/chart: mariadb-9.0.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+    spec:
+      
+      serviceAccountName: nocalhost-mariadb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mariadb
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - default
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: mariadb
+          image: nocalhost-docker.pkg.coding.net/nocalhost/public/mariadb:10.5.8-debian-10-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nocalhost-mariadb
+                  key: mariadb-root-password
+            - name: MARIADB_DATABASE
+              value: "nocalhost"
+          ports:
+            - name: mysql
+              containerPort: 3306
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  password_aux="${MARIADB_ROOT_PASSWORD:-}"
+                  if [[ -f "${MARIADB_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MARIADB_ROOT_PASSWORD_FILE")
+                  fi
+                  mysqladmin status -uroot -p"${password_aux}"
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  password_aux="${MARIADB_ROOT_PASSWORD:-}"
+                  if [[ -f "${MARIADB_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MARIADB_ROOT_PASSWORD_FILE")
+                  fi
+                  mysqladmin status -uroot -p"${password_aux}"
+          resources: 
+            limits: {}
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/mariadb
+            - name: config
+              mountPath: /opt/bitnami/mariadb/conf/my.cnf
+              subPath: my.cnf
+            - mountPath: /docker-entrypoint-initdb.d/
+              name: nocalhost-api-sql-config-volume
+      volumes:
+        - name: config
+          configMap:
+            name: nocalhost-mariadb
+        - configMap:
+            defaultMode: 493
+            name: nocalhost-api-sql-init-config
+          name: nocalhost-api-sql-config-volume
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: 
+          app.kubernetes.io/name: mariadb
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/component: primary
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"

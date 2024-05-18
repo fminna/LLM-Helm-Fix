@@ -1,0 +1,187 @@
+---
+# Source: v3-oracle/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-v3-oracle
+  labels:
+    app.kubernetes.io/name: v3-oracle
+    helm.sh/chart: v3-oracle-3.3.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: v3-oracle/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-v3-oracle
+  namespace: default
+  labels:
+    app.kubernetes.io/name: v3-oracle
+    helm.sh/chart: v3-oracle-3.3.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  IPFS_PINATA_API_KEY: ""
+  IPFS_PINATA_SECRET_KEY: ""
+  SENTRY_DSN: ""
+  IPFS_INFURA_CLIENT_USERNAME: ""
+  IPFS_INFURA_CLIENT_PASSWORD: ""
+  IPFS_WEB3STORAGE_TOKEN: ""
+---
+# Source: v3-oracle/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-v3-oracle
+  labels:
+    app.kubernetes.io/name: v3-oracle
+    helm.sh/chart: v3-oracle-3.3.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  LOG_LEVEL: "INFO"
+  NETWORK: "mainnet"
+  IPFS_LOCAL_CLIENT_ENDPOINT: ""
+  EXECUTION_ENDPOINT: ""
+  CONSENSUS_ENDPOINT: ""
+  CONSENSUS_CLIENT_TIMEOUT:  "30"
+  EXECUTION_CLIENT_TIMEOUT:  "30"
+  MEV_RELAY_TIMEOUT:  "10"
+  IPFS_FETCH_ENDPOINTS: "https://stakewise-v3.infura-ipfs.io,http://cloudflare-ipfs.com,https://gateway.pinata.cloud,https://ipfs.io"
+  IPFS_DATA_FETCH_TIMEOUT: "300"
+  DATABASE: "/data/oracle.db"
+  VALIDATORS_FETCH_CHUNK_SIZE: "100"
+  VALIDATORS_WITHDRAWALS_CHUNK_SIZE: "86400"
+  VALIDATORS_WITHDRAWALS_CONCURRENCY: "20"
+  DEFAULT_RETRY_TIME: "180"
+  CONSENSUS_BLOCK_CHUNK_SIZE: "100"
+  CONSENSUS_BLOCK_CONCURRENCY: "5"
+  EVENTS_BLOCKS_RANGE_INTERVAL: "43200"
+  METRICS_ENABLED: "False"
+  HEALTHZ_ENABLED: "False"
+---
+# Source: v3-oracle/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-v3-oracle
+  labels:
+    app.kubernetes.io/name: v3-oracle
+    helm.sh/chart: v3-oracle-3.3.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: v3-oracle
+    app.kubernetes.io/instance: release-name
+---
+# Source: v3-oracle/templates/statefulset.yaml
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: release-name-v3-oracle
+  labels:
+    app.kubernetes.io/name: v3-oracle
+    helm.sh/chart: v3-oracle-3.3.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: v3-oracle
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-v3-oracle
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: v3-oracle
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      serviceAccountName: release-name-v3-oracle
+      priorityClassName: ""
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: init-chown
+          image: "docker.io/busybox:1.34"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          command: ["chown", "-R", "1001:1001", "/data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: api
+          image: "europe-west4-docker.pkg.dev/stakewiselabs/public/v3-oracle:v1.1.0"
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--log-config", "uvicorn-log-config.json"]
+          env:
+            - name: PYTHONPATH
+              value: "."
+          envFrom:
+            - configMapRef:
+                name: release-name-v3-oracle
+            - secretRef:
+                name: release-name-v3-oracle
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: "1"
+              memory: 1Gi
+        - name: worker
+          image: "europe-west4-docker.pkg.dev/stakewiselabs/public/v3-oracle:v1.1.0"
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "src/worker.py"]
+          env:
+            - name: PYTHONPATH
+              value: "."
+          envFrom:
+            - configMapRef:
+                name: release-name-v3-oracle
+            - secretRef:
+                name: release-name-v3-oracle
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: "2"
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: v3-oracle
+          helm.sh/chart: v3-oracle-3.3.7
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/managed-by: Helm
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: 
+        resources:
+          requests:
+            storage: "3Gi"

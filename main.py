@@ -26,7 +26,7 @@ from chart_retrieval import scan_artifact_hub
 parser = argparse.ArgumentParser(description='Script to fix Helm Charts misconfigurations using LLMs.')
 
 # Define a --parse-output argument that must be passed with two string values. For example, --parse-output chart_name tool.
-parser.add_argument('--parse-output', nargs=2, type=str, help='Parse the output of a chart analyzer tool.')
+parser.add_argument('--parse-output', action='store_true', help='Parse the output of a chart analyzer tool.')
 parser.add_argument('--query-llm', nargs=1, type=str, help='Query a LLM for a fix.')
 parser.add_argument('--evaluate-fixes', action='store_true', help='Evaluate the LLM fixes.')
 parser.add_argument('--chart-retrieval', action='store_true', help='Retrieve a Helm Chart.')
@@ -40,8 +40,8 @@ def main():
     """
 
     if args.parse_output:
-        print("Parsing the output of a chart analyzer tool...\n")
-        parse_output(args.parse_output[0], args.parse_output[1])
+        print("Parsing the output of the chart analyzer tools...\n")
+        parse_output()
 
     elif args.query_llm:
         print("Querying the LLM for a fix...\n")

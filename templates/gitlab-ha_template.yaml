@@ -1,0 +1,457 @@
+---
+# Source: gitlab-ha/templates/core/core-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-gitlab-core
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+type: Opaque
+stringData:
+  GITLAB_HOST: "server.local"
+  GITLAB_SSH_PORT: "30022"
+  REDIS_HOST: "release-name-gitlab-redis"
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: "changeit"
+  DB_HOST: "release-name-gitlab-database"
+  DB_PORT: "5432"
+  DB_NAME: "gitlabhq_production"
+  DB_USER: "gitlab"
+  DB_PASS: "changeit"
+  RACK_ATTACK_ENABLED: "false"
+  GITLAB_GRAVATAR_HTTP_URL: "http://cdn.libravatar.org/avatar/%{hash}?s=%{size}&d=identicon"
+  GITLAB_GRAVATAR_HTTPS_URL: "https://seccdn.libravatar.org/avatar/%{hash}?s=%{size}&d=identicon"
+  GITLAB_BACKUP_EXPIRY: "604800"
+  GITLAB_BACKUP_SCHEDULE: "daily"
+  GITLAB_BACKUP_TIME: "01:00"
+  GITLAB_NOTIFY_ON_BROKEN_BUILDS: "true"
+  GITLAB_NOTIFY_PUSHER: "false"
+  GITLAB_SECRETS_DB_KEY_BASE: "bf2e47b68d6cafaef1d767e628b619365becf27571e10f196f98dc85e7771042b9203199d39aff91fcb6837c8ed83f2a912b278da50999bb11a2fbc0fba52964"
+  GITLAB_SECRETS_OTP_KEY_BASE: "b719fe119132c7810908bba18315259ed12888d4f5ee5430c42a776d840a396799b0a5ef0a801348c8a357f07aa72bbd58e25a84b8f247a25c72f539c7a6c5fa"
+  GITLAB_SECRETS_SECRET_KEY_BASE: "6e657410d57c71b4fc3ed0d694e7842b1895a8b401d812c17fe61caf95b48a6d703cb53c112bc01ebd197a85da81b18e29682040e99b4f26594772a4a2c98c6d"
+  GITLAB_TIMEZONE: "Beijing"
+  IMAP_ENABLED: "false"
+  OAUTH_ENABLED: "false"
+  SMTP_ENABLED: "false"
+  TZ: "Asia/Shanghai"
+  DB_ADAPTER: postgresql
+  GITLAB_DATA_DIR: "/home/git/data"
+  GITLAB_BACKUP_SCHEDULE: disable
+---
+# Source: gitlab-ha/templates/database/database-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "release-name-gitlab-database"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+type: Opaque
+stringData:
+  DB_EXTENSION: pg_trgm,btree_gist,plpgsql
+  DB_NAME: "gitlabhq_production"
+  DB_USER: "gitlab"
+  DB_PASS: "changeit"
+---
+# Source: gitlab-ha/templates/redis/redis-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "release-name-gitlab-redis"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+type: Opaque
+stringData:
+  REDIS_PASSWORD: "changeit"
+---
+# Source: gitlab-ha/templates/database/database-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-gitlab-database"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+spec:
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+  selector:
+    release: release-name
+    app: "gitlab"
+    component: database
+---
+# Source: gitlab-ha/templates/expose/svc-ingress.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-gitlab-ha
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+spec:
+  type: ClusterIP
+  ports:
+    - name: server
+      port: 80
+      targetPort: 80
+    - name: ssh
+      port: 30022
+      targetPort: 22
+  selector:
+    release: release-name
+    app: "gitlab"
+    component: gitlab
+---
+# Source: gitlab-ha/templates/expose/svc-ingress.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-gitlab-ha-ssh
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+spec:
+  type: NodePort
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 30022
+  selector:
+    release: release-name
+    app: "gitlab"
+    component: gitlab
+---
+# Source: gitlab-ha/templates/redis/redis-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-gitlab-redis
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+spec:
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+  selector:
+    release: release-name
+    app: "gitlab"
+    component: redis
+---
+# Source: gitlab-ha/templates/core/core-ss.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-gitlab-core"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+    component: gitlab
+spec:
+  replicas: 1
+  serviceName: release-name-gitlab-core
+  selector:
+    matchLabels:
+      release: release-name
+      app: "gitlab"
+      component: gitlab
+  template:
+    metadata:
+      labels:
+        heritage: Helm
+        release: release-name
+        chart: gitlab-ha
+        app: "gitlab"
+        component: gitlab
+      annotations:
+        checksum/secret: 2a2d18291dac246d08d9d594fc4704a06549d0d84efa6c1deefee491c319ac70
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: gitlab
+        image: "registry.cn-shanghai.aliyuncs.com/c7n/docker-gitlab:v15.11.9"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - secretRef:
+            name: release-name-gitlab-core
+        readinessProbe:
+          httpGet:
+            path: /help
+            scheme: HTTP
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        resources:
+          null
+        ports:
+        - name: ssh
+          containerPort: 22
+        - name: http
+          containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /home/git/data
+          subPath: 
+      volumes:
+      - name: data
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  release: release-name
+                  app: "gitlab"
+                  component: gitlab
+---
+# Source: gitlab-ha/templates/database/database-postgresql-ss.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-gitlab-database"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+    component: database
+spec:
+  replicas: 1
+  serviceName: "release-name-gitlab-database"
+  selector:
+    matchLabels:
+      release: release-name
+      app: "gitlab"
+      component: database
+  template:
+    metadata:
+      labels:
+        heritage: Helm
+        release: release-name
+        chart: gitlab-ha
+        app: "gitlab"
+        component: database
+      annotations:
+        checksum/secret: 1e350b7b48614f6287ee4342ffc2645228d0cb6f8e424a6b04dc0f878209e81c
+    spec:
+      containers:
+      - name: database
+        image: "registry.cn-shanghai.aliyuncs.com/c7n/postgresql:12-20200524"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - secretRef:
+            name: release-name-gitlab-database
+        ports:
+        - name: postgres
+          containerPort: 5432
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -h
+            - localhost
+            - -U
+            - postgres
+          initialDelaySeconds: 60
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -h
+            - localhost
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          null
+        volumeMounts:
+        - name: "database-data"
+          mountPath: /var/lib/postgresql
+          subPath: 
+      volumes:
+      - name: "database-data"
+        emptyDir: {}
+---
+# Source: gitlab-ha/templates/redis/redis-ss.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-gitlab-redis
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+    component: redis
+spec:
+  replicas: 1
+  serviceName: release-name-gitlab-redis
+  selector:
+    matchLabels:
+      release: release-name
+      app: "gitlab"
+      component: redis
+  template:
+    metadata:
+      labels:
+        heritage: Helm
+        release: release-name
+        chart: gitlab-ha
+        app: "gitlab"
+        component: redis
+      annotations:
+        checksum/secret: ef6eb10ab16600c99a891b5f6c66a3c12f6c749904dcecff4857432b6ab01667
+    spec:
+      containers:
+      - name: redis
+        image: "registry.cn-shanghai.aliyuncs.com/c7n/redis:6.2"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - secretRef:
+            name: release-name-gitlab-redis
+        ports:
+        - name: redis
+          containerPort: 6379
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          null
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/redis/data
+          subPath: 
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+# Source: gitlab-ha/templates/core/core-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "release-name-gitlab-core-backup-scheduled"
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: gitlab-ha
+    app: "gitlab"
+    component: gitlab-backup-scheduled
+spec:
+  concurrencyPolicy: Forbid
+  schedule: "00 01 * * *"
+  jobTemplate:
+    metadata:
+      labels:
+        heritage: Helm
+        release: release-name
+        chart: gitlab-ha
+        app: "gitlab"
+        component: gitlab-backup-scheduled
+    spec:
+      template: 
+        spec:
+          enableServiceLinks: false
+          restartPolicy: Never
+          containers:
+          - name: gitlab
+            image: "registry.cn-shanghai.aliyuncs.com/c7n/docker-gitlab:v15.11.9"
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/bash
+            - -c
+            - |
+              # /sbin/entrypoint.sh app:init >/dev/null
+              # /usr/bin/supervisord -nc /etc/supervisor/supervisord.conf >/dev/null &
+              # SUPERVISOR_PID=$!
+              /sbin/entrypoint.sh app:rake gitlab:backup:create RAILS_ENV=production SKIP=${GITLAB_BACKUP_SKIP}
+              # kill -15 $SUPERVISOR_PID >/dev/null
+              # if ps h -p $SUPERVISOR_PID > /dev/null ; then
+              # wait $SUPERVISOR_PID || true
+              # fi
+            envFrom:
+            - secretRef:
+                name: release-name-gitlab-core
+            volumeMounts:
+            - name: data
+              mountPath: /home/git/data
+              subPath: 
+          volumes:
+          - name: data
+            emptyDir: {}
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 1
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      release: release-name
+                      app: "gitlab"
+                      component: gitlab
+---
+# Source: gitlab-ha/templates/expose/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-gitlab-ha
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: gitlab-ha
+    helm.sh/chart: gitlab-ha-0.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  rules:
+    - host: server.local
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: release-name-gitlab-ha
+                port:
+                  name: server

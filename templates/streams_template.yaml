@@ -1,0 +1,585 @@
+---
+# Source: streams/templates/connect.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-connect-config
+  namespace: default
+  labels:
+    app: kafka-connect
+data:
+  CONNECT_GROUP_ID: '1'
+  CONNECT_REST_PORT: "8083"
+  CONNECT_BOOTSTRAP_SERVERS: 'kafka:9092'
+  CONNECT_REST_ADVERTISED_HOST_NAME: 'kafka-connect'
+  CONNECT_KEY_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
+  CONNECT_VALUE_CONVERTER: 'io.confluent.connect.avro.AvroConverter'
+  CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://kafka-schema:8081'
+  CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://kafka-schema:8081'
+  CONNECT_CONFIG_STORAGE_TOPIC: 'connect_configs'
+  CONNECT_OFFSET_STORAGE_TOPIC: 'connect_offsets'
+  CONNECT_STATUS_STORAGE_TOPIC: 'connect_statuses'
+  CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: '1'
+  CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: '1'
+  CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: '1'
+  CONNECT_PLUGIN_PATH: '/usr/share/java,/usr/share/confluent-hub-components'
+---
+# Source: streams/templates/kafka.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: default
+  labels:
+    app: kafka
+data:
+  CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+  KAFKA_NODE_ID: "1"
+  KAFKA_BROKER_ID: "1"
+  KAFKA_PROCESS_ROLES: "controller,broker"
+  KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+  KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+  KAFKA_LISTENERS: >
+    PLAINTEXT://:9092,
+    CONTROLLER://:9093,
+    EXTERNAL://:29092
+  KAFKA_ADVERTISED_LISTENERS: >
+    PLAINTEXT://kafka:9092,
+    EXTERNAL://localhost:29092
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"  # voter: node.id
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+  KAFKA_NUM_PARTITIONS: "2"
+  KAFKA_TOPIC_AUTO_CREATE: "true"
+---
+# Source: streams/templates/ksqlcli.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksqldb-queries
+  namespace: default
+  labels:
+    app: ksqldb
+data:
+  sources.sql: |-
+    -- OFFSET
+    SET 'auto.offset.reset' = 'earliest';
+    
+    -- SOURCE CONNECTORS
+    CREATE SOURCE CONNECTOR IF NOT EXISTS source_master_auth WITH (
+        'connector.class' = 'io.debezium.connector.postgresql.PostgresConnector',
+        'plugin.name' = 'pgoutput',
+        'slot.name' = 'auth',
+        'topic.prefix' = 'auth', -- globally unique
+        'database.server.name' = 'auth',
+        'database.hostname' = 'postgres-master',
+        'database.port' = '5432',
+        'database.user' = 'postgres',
+        'database.password' = 'password',
+        'database.dbname' = 'auth',
+        'table.include.list' = 'public.auths',
+        'column.include.list' = 'public.auths.id,public.auths.uuid,public.auths.email',
+        'transforms' = 'unwrap',
+        'transforms.unwrap.type' = 'io.debezium.transforms.ExtractNewRecordState'
+    );
+    
+    CREATE SOURCE CONNECTOR IF NOT EXISTS source_master_teams WITH (
+        'connector.class' = 'io.debezium.connector.postgresql.PostgresConnector',
+        'plugin.name' = 'pgoutput',
+        'slot.name' = 'teams',
+        'topic.prefix' = 'teams', -- globally unique
+        'database.server.name' = 'teams',
+        'database.hostname' = 'postgres-master',
+        'database.port' = '5432',
+        'database.user' = 'postgres',
+        'database.password' = 'password',
+        'database.dbname' = 'teams',
+        'table.include.list' = 'public.teams',
+        'transforms' = 'unwrap',
+        'transforms.unwrap.type' = 'io.debezium.transforms.ExtractNewRecordState'
+    );
+    
+    CREATE SOURCE CONNECTOR IF NOT EXISTS source_master_users WITH (
+        'connector.class' = 'io.debezium.connector.postgresql.PostgresConnector',
+        'plugin.name' = 'pgoutput',
+        'slot.name' = 'users',
+        'topic.prefix' = 'users', -- globally unique
+        'database.server.name' = 'users',
+        'database.hostname' = 'postgres-master',
+        'database.port' = '5432',
+        'database.user' = 'postgres',
+        'database.password' = 'password',
+        'database.dbname' = 'users',
+        'table.include.list' = 'public.users,public.user_profiles',
+        'transforms' = 'unwrap',
+        'transforms.unwrap.type' = 'io.debezium.transforms.ExtractNewRecordState'
+    );
+    
+    CREATE SOURCE CONNECTOR IF NOT EXISTS source_master_channels WITH (
+        'connector.class' = 'io.debezium.connector.postgresql.PostgresConnector',
+        'plugin.name' = 'pgoutput',
+        'slot.name' = 'channels',
+        'topic.prefix' = 'channels', -- globally unique
+        'database.server.name' = 'channels',
+        'database.hostname' = 'postgres-master',
+        'database.port' = '5432',
+        'database.user' = 'postgres',
+        'database.password' = 'password',
+        'database.dbname' = 'conversations',
+        'table.include.list' = 'public.channels,public.channel_members',
+        'transforms' = 'unwrap',
+        'transforms.unwrap.type' = 'io.debezium.transforms.ExtractNewRecordState'
+    );
+    
+  sinks.sql: |-
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_TEAMS;
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_USERS;
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_AUTHS;
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_CHANNELS;
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_CHANNEL_MEMBERS;
+    -- DROP CONNECTOR IF EXISTS SINK_SLAVE_USER_PROFILES;
+    
+    -- OFFSET
+    SET 'auto.offset.reset' = 'earliest';
+    
+    -- SINK CONNECTORS
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_auths WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'auth.public.auths',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+    
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_teams WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'teams.public.teams',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+    
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_users WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'users.public.users',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+    
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_user_profiles WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'users.public.user_profiles',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+    
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_channels WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'channels.public.channels',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+    
+    CREATE SINK CONNECTOR IF NOT EXISTS sink_slave_channel_members WITH (
+        'connector.class' = 'io.confluent.connect.jdbc.JdbcSinkConnector',
+        'topics' = 'channels.public.channel_members',
+        'tasks.max' = '1',
+        'connection.url' = 'jdbc:postgresql://postgres-slave/client',
+        'connection.user' = 'postgres',
+        'connection.password' = 'password',
+        'auto.create' = 'true',
+        'auto.evolve' = 'true',
+        'insert.mode' = 'upsert',
+        'delete.enabled' = 'true',
+        'pk.mode' = 'record_key',
+        'transforms' = 'dropPrefix',
+        'transforms.dropPrefix.type' = 'org.apache.kafka.connect.transforms.RegexRouter',
+        'transforms.dropPrefix.regex' = '(\\w+)\\.(\\w+)\\.(\\w+)',
+        'transforms.dropPrefix.replacement' = '$3'
+    );
+---
+# Source: streams/templates/ksqldb.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksqldb-config
+  namespace: default
+  labels:
+    app: ksqldb
+data:
+  KSQL_BOOTSTRAP_SERVERS: 'kafka:9092'
+  KSQL_HOST_NAME: 'ksqldb-server'
+  KSQL_LISTENERS: 'http://0.0.0.0:8088'
+  KSQL_KSQL_CONNECT_URL: 'http://kafka-connect:8083'
+  KSQL_KSQL_SCHEMA_REGISTRY_URL: 'http://kafka-schema:8081'
+  KSQL_PRODUCER_INTERCEPTOR_CLASSES: 'io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor'
+  KSQL_CONSUMER_INTERCEPTOR_CLASSES: 'io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor'
+  KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: '1'
+  KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: 'true'
+  KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: 'true'
+---
+# Source: streams/templates/schema.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-schema-config
+  namespace: default
+  labels:
+    app: kafka-schema
+data:
+  SCHEMA_REGISTRY_HOST_NAME: 'kafka-schema'
+  SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'PLAINTEXT://kafka:9092'
+  SCHEMA_REGISTRY_LISTENERS: 'http://0.0.0.0:8081,http://localhost:9081'
+  SCHEMA_REGISTRY_DEBUG: 'true'
+---
+# Source: streams/templates/connect.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-connect
+  namespace: default
+  labels:
+    app: kafka-connect
+spec:
+  selector:
+    app: kafka-connect
+  ports:
+    - name: kafka-connect
+      port: 8083
+      protocol: TCP
+---
+# Source: streams/templates/kafka.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: default
+  labels:
+    app: kafka
+spec:
+  clusterIP: None
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      protocol: TCP
+      targetPort: 9092
+---
+# Source: streams/templates/ksqldb.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksqldb-server
+  namespace: default
+  labels:
+    app: ksqldb-server
+spec:
+  clusterIP: None
+  selector:
+    app: ksqldb-server
+  ports:
+    - name: ksqldb-server
+      port: 8088
+      protocol: TCP
+---
+# Source: streams/templates/monitor.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: default
+  labels:
+    app: kafka-ui
+spec:
+  selector:
+    app: kafka-ui
+  ports:
+    - name: kafka-ui
+      port: 8080
+      protocol: TCP
+  type: NodePort
+---
+# Source: streams/templates/schema.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-schema
+  namespace: default
+  labels:
+    app: kafka-schema
+spec:
+  type: NodePort
+  selector:
+    app: kafka-schema
+  ports:
+    - name: kafka-schema
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+---
+# Source: streams/templates/connect.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-connect
+  namespace: default
+  labels:
+    app: kafka-connect
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-connect
+  template:
+    metadata:
+      labels:
+        app: kafka-connect
+    spec:
+      containers:
+        - name: kafka-connect
+          image: microslac/kafka-connect
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: kafka-connect-config
+---
+# Source: streams/templates/ksqlcli.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ksqldb-cli
+  namespace: default
+  labels:
+    app: ksqldb-cli
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ksqldb-cli
+  template:
+    metadata:
+      labels:
+        app: ksqldb-cli
+    spec:
+      initContainers:
+        - name: ksqldb-init
+          image: confluentinc/cp-ksqldb-cli:7.6.0
+          env:
+            - name: KSQLDB_SERVER
+              value: "http://ksqldb-server:8088"
+          command: [ "/bin/sh", "-c" ]
+          args:
+            - >
+              ksql --file /home/appuser/sources.sql -- $KSQLDB_SERVER &&
+              ksql --file /home/appuser/sinks.sql -- $KSQLDB_SERVER
+          volumeMounts:
+            - name: queries
+              subPath: sources.sql
+              mountPath: /home/appuser/sources.sql
+            - name: queries
+              subPath: sinks.sql
+              mountPath: /home/appuser/sinks.sql
+      containers:
+        - name: ksqldb-cli
+          image: confluentinc/cp-ksqldb-cli:7.6.0
+          env:
+            - name: KSQLDB_SERVER
+              value: "http://ksqldb-server:8088"
+          tty: true
+          stdin: true
+      volumes:
+        - name: queries
+          configMap:
+            name: ksqldb-queries
+---
+# Source: streams/templates/monitor.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: default
+  labels:
+    app: kafka-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+    spec:
+      containers:
+        - name: kafka-ui
+          image: provectuslabs/kafka-ui
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DYNAMIC_CONFIG_ENABLED
+              value: 'true'
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: primary
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS
+              value: 'kafka:9092'
+---
+# Source: streams/templates/schema.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-schema
+  namespace: default
+  labels:
+    app: kafka-schema
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-schema
+  template:
+    metadata:
+      labels:
+        app: kafka-schema
+    spec:
+      containers:
+        - name: kafka-schema
+          image: confluentinc/cp-schema-registry:7.6.0
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: kafka-schema-config
+---
+# Source: streams/templates/kafka.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: default
+  labels:
+    app: kafka
+spec:
+  selector:
+    matchLabels:
+      app: kafka
+  serviceName: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.0
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+            - containerPort: 29092
+          envFrom:
+            - configMapRef:
+                name: kafka-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: nfs
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"
+---
+# Source: streams/templates/ksqldb.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ksqldb-server
+  namespace: default
+  labels:
+    app: ksqldb-server
+spec:
+  selector:
+    matchLabels:
+      app: ksqldb-server
+  serviceName: ksqldb-server
+  template:
+    metadata:
+      labels:
+        app: ksqldb-server
+    spec:
+      containers:
+        - name: ksqldb-server
+          image: confluentinc/ksqldb-server:latest
+          ports:
+            - containerPort: 8088
+          envFrom:
+            - configMapRef:
+                name: ksqldb-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: nfs
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "5Gi"

@@ -1,0 +1,758 @@
+---
+# Source: vcluster-k8s/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vc-release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: vcluster-k8s/templates/workloadserviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vc-workload-release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: vcluster-k8s/templates/coredns.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-coredns
+  namespace: default
+data:
+  coredns.yaml: |-
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: coredns
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+      name: system:coredns
+    rules:
+      - apiGroups:
+          - ""
+        resources:
+          - endpoints
+          - services
+          - pods
+          - namespaces
+        verbs:
+          - list
+          - watch
+      - apiGroups:
+          - discovery.k8s.io
+        resources:
+          - endpointslices
+        verbs:
+          - list
+          - watch
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      annotations:
+        rbac.authorization.kubernetes.io/autoupdate: "true"
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+      name: system:coredns
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:coredns
+    subjects:
+      - kind: ServiceAccount
+        name: coredns
+        namespace: kube-system
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: coredns
+      namespace: kube-system
+    data:
+      Corefile: |-
+        .:1053 {
+            errors
+            health
+            ready
+            rewrite name regex .*\.nodes\.vcluster\.com kubernetes.default.svc.cluster.local
+            kubernetes cluster.local in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+            }
+            hosts /etc/NodeHosts {
+                ttl 60
+                reload 15s
+                fallthrough
+            }
+            prometheus :9153
+            forward . /etc/resolv.conf
+            cache 30
+            loop
+            loadbalance
+        }
+      
+        import /etc/coredns/custom/*.server
+      NodeHosts: ""
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: coredns
+      namespace: kube-system
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      replicas: 1
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+      selector:
+        matchLabels:
+          k8s-app: kube-dns
+      template:
+        metadata:
+          labels:
+            k8s-app: kube-dns
+        spec:
+          priorityClassName: "system-cluster-critical"
+          serviceAccountName: coredns
+          nodeSelector:
+            kubernetes.io/os: linux
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  k8s-app: kube-dns
+          containers:
+            - name: coredns
+              image: {{.IMAGE}}
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: 1000m
+                  memory: 170Mi
+                requests:
+                  cpu: 3m
+                  memory: 16Mi
+              args: [ "-conf", "/etc/coredns/Corefile" ]
+              volumeMounts:
+                - name: config-volume
+                  mountPath: /etc/coredns
+                  readOnly: true
+                - name: custom-config-volume
+                  mountPath: /etc/coredns/custom
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: {{.RUN_AS_USER}}
+                runAsGroup: {{.RUN_AS_GROUP}}
+                allowPrivilegeEscalation: false
+                capabilities:
+                  add:
+                    - NET_BIND_SERVICE
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              livenessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                  scheme: HTTP
+                initialDelaySeconds: 60
+                periodSeconds: 10
+                timeoutSeconds: 1
+                successThreshold: 1
+                failureThreshold: 3
+              readinessProbe:
+                httpGet:
+                  path: /ready
+                  port: 8181
+                  scheme: HTTP
+                initialDelaySeconds: 0
+                periodSeconds: 2
+                timeoutSeconds: 1
+                successThreshold: 1
+                failureThreshold: 3
+          dnsPolicy: Default
+          volumes:
+            - name: config-volume
+              configMap:
+                name: coredns
+                items:
+                  - key: Corefile
+                    path: Corefile
+                  - key: NodeHosts
+                    path: NodeHosts
+            - name: custom-config-volume
+              configMap:
+                name: coredns-custom
+                optional: true
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-dns
+      namespace: kube-system
+      annotations:
+        prometheus.io/port: "9153"
+        prometheus.io/scrape: "true"
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/cluster-service: "true"
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      selector:
+        k8s-app: kube-dns
+      type: ClusterIP
+      ports:
+        - name: dns
+          port: 53
+          targetPort: 1053
+          protocol: UDP
+        - name: dns-tcp
+          port: 53
+          targetPort: 1053
+          protocol: TCP
+        - name: metrics
+          port: 9153
+          protocol: TCP
+---
+# Source: vcluster-k8s/templates/init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-init-manifests
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  manifests: |-
+    ---
+---
+# Source: vcluster-k8s/templates/rbac/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "pods", "pods/attach", "pods/portforward", "pods/exec", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "patch", "update", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["endpoints", "events", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "replicasets", "deployments"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: vcluster-k8s/templates/rbac/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+subjects:
+  - kind: ServiceAccount
+    name: vc-release-name
+    namespace: default
+roleRef:
+  kind: Role
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: vcluster-k8s/templates/etcd-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-etcd
+  namespace: default
+  labels:
+    app: vcluster-etcd
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: etcd
+      port: 2379
+      targetPort: 2379
+      protocol: TCP
+    - name: peer
+      port: 2380
+      targetPort: 2380
+      protocol: TCP
+  selector:
+    app: vcluster-etcd
+    release: release-name
+---
+# Source: vcluster-k8s/templates/etcd-statefulset-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-etcd-headless
+  namespace: default
+  labels:
+    app: vcluster-etcd
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  publishNotReadyAddresses: true
+  ports:
+    - name: etcd
+      port: 2379
+      targetPort: 2379
+      protocol: TCP
+    - name: peer
+      port: 2380
+      targetPort: 2380
+      protocol: TCP
+  clusterIP: None
+  selector:
+    app: vcluster-etcd
+    release: "release-name"
+---
+# Source: vcluster-k8s/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+      nodePort: 
+      protocol: TCP
+    - name: kubelet
+      port: 10250
+      targetPort: 8443
+      nodePort: 
+      protocol: TCP
+  selector:
+    app: vcluster
+    release: release-name
+---
+# Source: vcluster-k8s/templates/syncer.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 1  
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate    
+  selector:
+    matchLabels:
+      app: vcluster
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: vcluster
+        release: release-name
+    spec:
+      terminationGracePeriodSeconds: 10
+      nodeSelector:
+        {}
+      tolerations:
+        []
+      serviceAccountName: vc-release-name
+      securityContext:
+        runAsGroup: 0
+        runAsUser: 0
+      volumes:        
+        - name: helm-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: certs
+          emptyDir: {}
+        - name: binaries
+          emptyDir: {}
+        - name: coredns
+          configMap:
+            name: release-name-coredns
+        - name: custom-config-volume
+          configMap:
+            name: coredns-custom
+            optional: true
+      initContainers:      
+      # this is needed because the k8s containers are distroless and thus we don't have any
+      # way of copying the binaries otherwise
+      - name: vcluster-copy
+        image: "ghcr.io/loft-sh/vcluster:0.19.5"
+        volumeMounts:
+          - mountPath: /binaries
+            name: binaries
+        command:
+          - /bin/sh
+        args:
+          - -c
+          - "cp /vcluster /binaries/vcluster"
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 8Gi
+            memory: 2Gi
+          requests:
+            cpu: 20m
+            ephemeral-storage: 200Mi
+            memory: 256Mi
+      - name: kube-controller-manager
+        image: "registry.k8s.io/kube-controller-manager:v1.29.0"
+        volumeMounts:
+          - mountPath: /binaries
+            name: binaries
+        command:
+          - /binaries/vcluster
+        args:
+          - cp
+          - /usr/local/bin/kube-controller-manager
+          - /binaries/kube-controller-manager
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 8Gi
+            memory: 2Gi
+          requests:
+            cpu: 20m
+            ephemeral-storage: 200Mi
+            memory: 256Mi
+      - name: kube-apiserver
+        image: "registry.k8s.io/kube-apiserver:v1.29.0"
+        volumeMounts:
+          - mountPath: /binaries
+            name: binaries
+        command:
+          - /binaries/vcluster
+        args:
+          - cp
+          - /usr/local/bin/kube-apiserver
+          - /binaries/kube-apiserver
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 8Gi
+            memory: 2Gi
+          requests:
+            cpu: 20m
+            ephemeral-storage: 200Mi
+            memory: 256Mi
+      containers:
+      - name: syncer
+        image: "ghcr.io/loft-sh/vcluster:0.19.5"
+        args:
+          - --name=release-name
+          - --request-header-ca-cert=/pki/front-proxy-ca.crt
+          - --client-ca-cert=/pki/ca.crt
+          - --server-ca-cert=/pki/ca.crt
+          - --server-ca-key=/pki/ca.key
+          - --kube-config=/pki/admin.conf
+          - --service-account=vc-workload-release-name                              
+          - --kube-config-context-name=my-vcluster
+          - --leader-elect=false          
+          - --sync=-ingressclasses
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          failureThreshold: 10
+          initialDelaySeconds: 60
+          periodSeconds: 2
+        startupProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          failureThreshold: 300
+          periodSeconds: 6
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          failureThreshold: 30
+          periodSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+        env:          
+          - name: VCLUSTER_DISTRO
+            value: k8s
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: VCLUSTER_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: CONFIG
+            value: |-
+              ---
+          - name: VCLUSTER_TELEMETRY_CONFIG
+            value: "{\"disabled\":false,\"instanceCreator\":\"helm\",\"machineID\":\"\",\"platformInstanceID\":\"\",\"platformUserID\":\"\"}"
+          - name: APISERVER_COMMAND
+            value: |-
+              command:
+                - /binaries/kube-apiserver
+                - '--advertise-address=127.0.0.1'
+                - '--bind-address=127.0.0.1'
+                - '--allow-privileged=true'
+                - '--authorization-mode=RBAC'
+                - '--client-ca-file=/pki/ca.crt'
+                - '--enable-bootstrap-token-auth=true'
+                - '--etcd-cafile=/pki/etcd/ca.crt'
+                - '--etcd-certfile=/pki/apiserver-etcd-client.crt'
+                - '--etcd-keyfile=/pki/apiserver-etcd-client.key'
+                - '--etcd-servers=https://release-name-etcd:2379'
+                - '--proxy-client-cert-file=/pki/front-proxy-client.crt'
+                - '--proxy-client-key-file=/pki/front-proxy-client.key'
+                - '--requestheader-allowed-names=front-proxy-client'
+                - '--requestheader-client-ca-file=/pki/front-proxy-ca.crt'
+                - '--requestheader-extra-headers-prefix=X-Remote-Extra-'
+                - '--requestheader-group-headers=X-Remote-Group'
+                - '--requestheader-username-headers=X-Remote-User'
+                - '--secure-port=6443'
+                - '--service-account-issuer=https://kubernetes.default.svc.cluster.local'
+                - '--service-account-key-file=/pki/sa.pub'
+                - '--service-account-signing-key-file=/pki/sa.key'
+                - '--tls-cert-file=/pki/apiserver.crt'
+                - '--tls-private-key-file=/pki/apiserver.key'
+                - '--watch-cache=false'
+                - '--endpoint-reconciler-type=none'
+          - name: CONTROLLER_COMMAND
+            value: |-
+              command:
+                - /binaries/kube-controller-manager
+                - '--authentication-kubeconfig=/pki/controller-manager.conf'
+                - '--authorization-kubeconfig=/pki/controller-manager.conf'
+                - '--bind-address=127.0.0.1'
+                - '--client-ca-file=/pki/ca.crt'
+                - '--cluster-name=kubernetes'
+                - '--cluster-signing-cert-file=/pki/ca.crt'
+                - '--cluster-signing-key-file=/pki/ca.key'
+                - '--controllers=*,-nodeipam,-nodelifecycle,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl'
+                - '--horizontal-pod-autoscaler-sync-period=60s'
+                - '--kubeconfig=/pki/controller-manager.conf'
+                - '--leader-elect=false'
+                - '--node-monitor-grace-period=180s'
+                - '--node-monitor-period=30s'
+                - '--pvclaimbinder-sync-period=60s'
+                - '--requestheader-client-ca-file=/pki/front-proxy-ca.crt'
+                - '--root-ca-file=/pki/ca.crt'
+                - '--service-account-private-key-file=/pki/sa.key'
+                - '--use-service-account-credentials=true'
+        volumeMounts:          
+          - name: helm-cache
+            mountPath: /.cache/helm
+          - name: tmp
+            mountPath: /tmp
+          - mountPath: /pki
+            name: certs
+          - mountPath: /binaries
+            name: binaries
+          - name: coredns
+            mountPath: /manifests/coredns
+            readOnly: true
+        resources:
+          limits:
+            cpu: 1000m
+            ephemeral-storage: 8Gi
+            memory: 2Gi
+          requests:
+            cpu: 20m
+            ephemeral-storage: 200Mi
+            memory: 256Mi
+---
+# Source: vcluster-k8s/templates/etcd-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-etcd
+  namespace: default
+  labels:
+    app: vcluster-etcd
+    chart: "vcluster-k8s-0.19.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-etcd-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: vcluster-etcd
+      release: release-name
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 5Gi
+  template:
+    metadata:
+      labels:
+        app: vcluster-etcd
+        release: release-name
+    spec:
+      terminationGracePeriodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          # if possible avoid scheduling more than one pod on one node
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vcluster-etcd
+                - key: release
+                  operator: In
+                  values:
+                  - release-name
+              topologyKey: "kubernetes.io/hostname"
+          # if possible avoid scheduling pod onto node that is in the same zone as one or more vcluster pods are running
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vcluster-etcd
+                - key: release
+                  operator: In
+                  values:
+                  - release-name
+              topologyKey: topology.kubernetes.io/zone
+      nodeSelector:
+        {}
+      tolerations:
+        []
+      automountServiceAccountToken: false
+      serviceAccountName: vc-release-name
+      volumes:
+        - name: certs
+          secret:
+            secretName: release-name-certs
+      containers:
+      - name: etcd
+        image: "registry.k8s.io/etcd:3.5.10-0"
+        command:
+          - etcd
+          - '--cert-file=/run/config/pki/etcd-server.crt'
+          - '--client-cert-auth=true'
+          - '--data-dir=/var/lib/etcd'
+          - '--advertise-client-urls=https://$(NAME).release-name-etcd-headless.default:2379'
+          - '--initial-advertise-peer-urls=https://$(NAME).release-name-etcd-headless.default:2380'
+          - '--initial-cluster=release-name-etcd-0=https://release-name-etcd-0.release-name-etcd-headless.default:2380'
+          - '--initial-cluster-token=release-name'
+          - '--initial-cluster-state=new'
+          - '--listen-client-urls=https://0.0.0.0:2379'
+          - '--listen-metrics-urls=http://0.0.0.0:2381'
+          - '--listen-peer-urls=https://0.0.0.0:2380'
+          - '--key-file=/run/config/pki/etcd-server.key'
+          - '--name=$(NAME)'
+          - '--peer-cert-file=/run/config/pki/etcd-peer.crt'
+          - '--peer-client-cert-auth=true'
+          - '--peer-key-file=/run/config/pki/etcd-peer.key'
+          - '--peer-trusted-ca-file=/run/config/pki/etcd-ca.crt'
+          - '--snapshot-count=10000'
+          - '--trusted-ca-file=/run/config/pki/etcd-ca.crt'
+        securityContext:
+          {}
+        env:
+        - name: NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/etcd
+          - mountPath: /run/config/pki
+            name: certs
+            readOnly: true
+        resources:
+          requests:
+            cpu: 20m
+            memory: 150Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 2381
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 15
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 8
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 2381
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 15
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 24

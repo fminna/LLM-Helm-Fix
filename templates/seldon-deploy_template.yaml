@@ -1,0 +1,863 @@
+---
+# Source: seldon-deploy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-seldon-deploy
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: seldon-deploy/templates/configmap_seldon-deploy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seldon-deploy-config
+data:
+  prometheusSeldonUrl: http://seldon-core-analytics-prometheus-seldon.seldon-system/api/v1/
+  prometheusSeldonResourceUrl: http://seldon-core-analytics-prometheus-seldon.seldon-system/api/v1/
+  prometheusKnativeUrl: http://seldon-core-analytics-prometheus-seldon.seldon-system/api/v1/
+  prometheusNamespaceMetricName: kubernetes_namespace
+  prometheusServiceMetricName: service
+  elasticsearchUrl: https://elasticsearch-opendistro-es-client-service.seldon-logs.svc.cluster.local:9200
+  argocdEnabled: "true"
+  skipVerifyGit: 'true'
+  skipVerifyHttpCalls: 'true'
+  seldonIngressService: istio-ingressgateway
+  ingressNamespace: istio-system
+  kfServingIngressService: istio-ingressgateway
+  kfServingCurlForm: "MODEL_NAME={{ .ModelName }}<br>\nCLUSTER_IP=$(kubectl -n {{ .IngressNamespace }} get service {{ .IngressServiceName }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')<br>\nSERVICE_HOSTNAME=$(kubectl -n {{ .Namespace }} get inferenceservice {{ .ModelName }} -o jsonpath='{.status.url}' | cut -d \"/\" -f 3)<br>\ncurl -k -H \"{{ .TokenHeader }}: {{ .Token }} \" -H \"Host: ${SERVICE_HOSTNAME}\" {{ .KfServingProtocol }}://$CLUSTER_IP/v1/models/$MODEL_NAME:predict -d '{{ .Payload }}'\n"
+  kfServingRequestForm: "{{ .KfServingProtocol }}://{{ .IngressServiceName }}/v1/models/{{ .ModelName }}:predict"
+  kfServingExplainForm: "{{ .KfServingProtocol }}://{{ .IngressServiceName }}/v1/models/{{ .ModelName }}:explain"
+  kfServingProtocol: "http"
+  seldonCurlForm: "CLUSTER_IP=$(kubectl -n {{ .IngressNamespace }} get service {{ .IngressServiceName }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')<br>\ncurl -k -H \"{{ .TokenHeader }}: {{ .Token }} \" -H \"Content-Type: application/json\" {{ .SeldonProtocol }}://$CLUSTER_IP/seldon/{{ .Namespace }}/{{ .ModelName }}/api/v0.1/predictions -d '{{ .Payload }}'\n"
+  seldonTensorflowCurlForm: "CLUSTER_IP=$(kubectl -n {{ .IngressNamespace }} get service {{ .IngressServiceName }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')<br>\ncurl -k -H \"{{ .TokenHeader }}: {{ .Token }} \" -H \"Content-Type: application/json\" {{ .SeldonProtocol }}://$CLUSTER_IP/seldon/{{ .Namespace }}/{{ .ModelName }}/v1/models/:predict -d '{{ .Payload }}'\n"
+  seldonKFServingV2CurlForm: "CLUSTER_IP=$(kubectl -n {{ .IngressNamespace }} get service {{ .IngressServiceName }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')<br>\ncurl -k -H \"{{ .TokenHeader }}: {{ .Token }} \" -H \"Content-Type: application/json\" {{ .SeldonProtocol }}://$CLUSTER_IP/seldon/{{ .Namespace }}/{{ .ModelName }}/v2/models/{{ .GraphModelName }}/infer -d '{{ .Payload }}'\n"  
+  seldonRequestForm: "{{ .SeldonProtocol }}://{{ .IngressServiceName }}/seldon/{{ .Namespace }}/{{ .ModelName }}/api/v0.1/predictions"
+  seldonTensorflowRequestForm: "{{ .SeldonProtocol }}://{{ .IngressServiceName }}/seldon/{{ .Namespace }}/{{ .ModelName }}/v1/models/{{ .GraphModelName }}:predict"
+  seldonV2RequestForm: "{{ .SeldonProtocol }}://{{ .IngressServiceName }}/seldon/{{ .Namespace }}/{{ .ModelName }}/v2/models/{{ .GraphModelName }}/infer"
+  seldonExplainForm: "http://{{ .ModelName }}-{{ .Predictor }}-explainer.{{ .Namespace }}:9000/v1/models/{{ .ModelName }}:explain"
+  seldonTensorflowExplainForm: "http://{{ .ModelName }}-{{ .Predictor }}-explainer.{{ .Namespace }}:9000/v1/models/{{ .GraphModelName }}:explain"
+  seldonV2ExplainForm: "http://{{ .ModelName }}-{{ .Predictor }}-explainer.{{ .Namespace }}:9000/v2/models/{{ .GraphModelName }}/explain"  
+  seldonProtocol: "http"
+---
+# Source: seldon-deploy/templates/clusterrole-seldon-deploy-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: seldon-deploy-role
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - workflows
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+  - apiGroups:
+      - 'apiextensions.k8s.io'
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - serving.kubeflow.org
+    resources:
+      - inferenceservices
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments/finalizers
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - destinationrules
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - destinationrules/status
+    verbs:
+      - get
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - virtualservices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - virtualservices/status
+    verbs:
+      - get
+  - apiGroups:
+      - v1
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - v1
+    resources:
+      - services/status
+    verbs:
+      - get
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - create
+      - update
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - serving.knative.dev
+    resources:
+      - services
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - eventing.knative.dev
+    resources:
+      - triggers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+# Source: seldon-deploy/templates/clusterrolebinding-seldon-deploy-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: seldon-deploy-clusterrolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: seldon-deploy-role
+subjects:
+  - kind: ServiceAccount
+    name: release-name-seldon-deploy
+    namespace: 'default'
+---
+# Source: seldon-deploy/templates/role-seldon-deploy-argocd-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: seldon-deploy-argocd
+  namespace: 'argocd'
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applications
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: seldon-deploy/templates/role-seldon-deploy-logs-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: seldon-deploy-logs
+  namespace: 'seldon-logs'
+rules:
+  - apiGroups:
+      - serving.knative.dev
+    resources:
+      - services
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - eventing.knative.dev
+    resources:
+      - triggers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+# Source: seldon-deploy/templates/role-seldon-deploy-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: seldon-deploy-role
+  namespace: 'default'
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - serving.kubeflow.org
+    resources:
+      - inferenceservices
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers/status
+    verbs:
+      - get
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments/finalizers
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - machinelearning.seldon.io
+    resources:
+      - seldondeployments/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - destinationrules
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - destinationrules/status
+    verbs:
+      - get
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - virtualservices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.istio.io
+    resources:
+      - virtualservices/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - v1
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - v1
+    resources:
+      - services/status
+    verbs:
+      - get
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - create
+      - update
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - 'apiextensions.k8s.io'
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: seldon-deploy/templates/rolebinding-seldon-deploy-argocd-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: seldon-deploy-argocd-rolebinding
+  namespace: 'argocd'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: seldon-deploy-argocd
+subjects:
+  - kind: ServiceAccount
+    name: release-name-seldon-deploy
+    namespace: 'default'
+---
+# Source: seldon-deploy/templates/rolebinding-seldon-deploy-logs-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: seldon-deploy-logs-rolebinding
+  namespace: 'seldon-logs'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: seldon-deploy-logs
+subjects:
+  - kind: ServiceAccount
+    name: release-name-seldon-deploy
+    namespace: 'default'
+---
+# Source: seldon-deploy/templates/rolebinding-seldon-deploy-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: seldon-deploy-rolebinding
+  namespace: 'default'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: seldon-deploy-role
+subjects:
+  - kind: ServiceAccount
+    name: release-name-seldon-deploy
+    namespace: 'default'
+---
+# Source: seldon-deploy/templates/request-logger.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: seldon-request-logger
+  namespace: seldon-logs
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    app: seldon-request-logger
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+---
+# Source: seldon-deploy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-seldon-deploy
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: seldon-deploy
+    app.kubernetes.io/instance: release-name
+---
+# Source: seldon-deploy/templates/webhook-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-seldon-deploy-webhook
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: webhook
+      protocol: TCP
+      name: webhook
+  selector:
+    app.kubernetes.io/name: seldon-deploy
+    app.kubernetes.io/instance: release-name
+---
+# Source: seldon-deploy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-seldon-deploy
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seldon-deploy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: seldon-deploy
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: seldon-deploy
+          image: "seldonio/seldon-deploy-server:0.0.0"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: metrics
+              containerPort: 8001
+              protocol: TCP
+            - name: webhook
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: SELDON_DEPLOY_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLIENT_ID
+              value: "deploy-server"
+            - name: CLIENT_SECRET
+              value: "deploy-secret"
+            - name: OIDC_PROVIDER
+              value: ""
+            - name: OIDC_SCOPES
+              value: "profile email groups"
+            - name: REDIRECT_URL
+              value: ""
+            - name: USERID_CLAIM_KEY
+              value: "preferred_username"
+            - name: "ENABLE_APP_AUTH"
+              value: "true"
+            - name: "ENABLE_APP_ANALYTICS"
+              value: "true"
+            - name: "ENABLE_READ_NAMESPACES"
+              value: "true"
+            - name: "LOADTEST_IMAGE"
+              value: "seldonio/hey-loadtester:0.2"
+            - name: "ALIBI_DETECT_SERVER_IMAGE"
+              value: "seldonio/alibi-detect-server:1.11.2"
+            - name: "BATCHJOBS_PROCESSOR_IMAGE"
+              value: "seldonio/seldon-core-s2i-python37:1.11.2"
+            - name: "BATCHJOBS_STORAGE_INITIALIZER_IMAGE"
+              value: "seldonio/rclone-storage-initializer:1.11.2"
+            - name: "BATCHJOBS_PVC_DEFAULT_SIZE"
+              value: "1Gi"
+            - name: "GITOPS_FORMAT"
+              value: "json"
+            - name: "ARGOCD_NAMESPACE"
+              value: "argocd"
+            - name: "REQUEST_LOGGER_NAMESPACE"
+              value: "seldon-logs"
+            - name: "GIT_USER"
+              valueFrom:
+                secretKeyRef:
+                  name: git-creds
+                  key: username
+            - name: "GIT_TOKEN"
+              valueFrom:
+                secretKeyRef:
+                  name: git-creds
+                  key: token
+                  optional: true
+            - name: "GIT_EMAIL"
+              valueFrom:
+                secretKeyRef:
+                  name: git-creds
+                  key: email
+            - name: "GIT_SSHKEY"
+              valueFrom:
+                secretKeyRef:
+                  name: git-creds
+                  key: id_rsa
+                  optional: true
+            - name: "GIT_SSHKEY_PASSPHRASE"
+              valueFrom:
+                secretKeyRef:
+                  name: git-creds
+                  key: passphrase
+                  optional: true
+            - name: "EXTERNAL_PROTOCOL"
+              value: "http"
+            - name: "INFERENCESERVICES"
+              value: "true"
+            - name: "SELDONDEPLOYMENTS"
+              value: "true"
+            - name: "EXTERNAL_PREFIX"
+              value: "/seldon-deploy/"
+            - name: "ELASTICSEARCH_USER"
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: "ELASTICSEARCH_PASS"
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+            - name: "BATCH_SERVICE_ACCOUNT"
+              value: workflow
+            - name: DEFAULT_USER_ID
+              value: '8888'
+          livenessProbe:
+            httpGet:
+              path: /seldon-deploy/api/status
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /seldon-deploy/api/status
+              port: http
+          resources:
+            limits:
+              cpu: 800m
+              memory: 800Mi
+            requests:
+              cpu: 100m
+              memory: 200Mi
+          volumeMounts:
+            - name: custom-theme
+              mountPath: "/seldon-deploy/custom-theme"
+            - name: ssh-known-hosts
+              mountPath: "/etc/ssh"
+      volumes:
+        - name: custom-theme
+          secret:
+            secretName: seldon-deploy-custom-theme
+            optional: true
+        - name: ssh-known-hosts
+          secret:
+            secretName: git-creds
+            optional: true
+            items:
+              - key: known_hosts
+                path: ssh_known_hosts
+      serviceAccount: release-name-seldon-deploy
+      serviceAccountName: release-name-seldon-deploy
+---
+# Source: seldon-deploy/templates/request-logger.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seldon-request-logger
+  namespace: seldon-logs
+  labels:
+    app: seldon-request-logger
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seldon-request-logger
+  template:
+    metadata:
+      labels:
+        app: seldon-request-logger
+    spec:
+      containers:
+        - name: user-container
+          image: "seldonio/seldon-request-logger:1.11.2"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ELASTICSEARCH_HOST
+              value: "elasticsearch-opendistro-es-client-service.seldon-logs.svc.cluster.local"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: ELASTICSEARCH_PROTOCOL
+              value: "https"
+            - name: "ELASTICSEARCH_USER"
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: "ELASTICSEARCH_PASS"
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+          resources:
+            limits:
+              cpu: 600m
+              memory: 500Mi
+            requests:
+              cpu: 100m
+              memory: 200Mi
+---
+# Source: seldon-deploy/templates/request-logger.yaml
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: seldon-request-logger-trigger
+  namespace: seldon-logs
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  broker: default
+  subscriber:
+    ref:
+      apiVersion: v1
+      kind: Service
+      name: seldon-request-logger
+---
+# Source: seldon-deploy/templates/virtualservice.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: release-name-seldon-deploy
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  gateways:
+    - istio-system/seldon-gateway
+  hosts:
+  - '*'
+  http:
+  - match:
+    - uri:
+        prefix: /seldon-deploy/
+    route:
+    - destination:
+        host: release-name-seldon-deploy
+        port:
+          number: 80
+---
+# Source: seldon-deploy/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-seldon-deploy-test-connection"
+  labels:
+    app.kubernetes.io/name: seldon-deploy
+    helm.sh/chart: seldon-deploy-1.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-seldon-deploy:80']
+  restartPolicy: Never

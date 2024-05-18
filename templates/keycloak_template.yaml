@@ -1,0 +1,299 @@
+---
+# Source: keycloak/templates/configmap.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    annotations:
+      expose.config.fabric8.io/apiserver-url-key: apiserver.url
+      expose.service-key.config.fabric8.io/keycloak: keycloak.url
+      expose.service-key.config.fabric8.io/jenkins: jenkins.url
+      expose-no-path.service-key.config.fabric8.io/auth: auth.url
+    labels:
+      app: keycloak
+      group: com.stakater.platform
+      provider: stakater
+      version: "4.5.0"
+      chart: "keycloak-1.0.13"
+      release: "release-name"
+      heritage: "Helm"
+    name: keycloak
+  data:
+    db.url: keycloak-db
+    db.port: "5432"
+    apiserver.url: http://kubernetes
+    jenkins.url: http://jenkins
+    keycloak.url: http://keycloak
+    auth.api.url: http://auth
+    #TODO: Update keycloak config and remove fabric8 traces
+    fabric8-realm.json: |-
+      {}
+---
+# Source: keycloak/templates/deployment.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: extensions/v1beta1
+  kind: Deployment
+  metadata:
+    annotations:
+      configmap.reloader.stakater.com/reload: keycloak
+      secret.reloader.stakater.com/reload: keycloak
+    labels:
+      app: keycloak
+      group: com.stakater.platform
+      provider: stakater
+      version: "4.5.0"
+      chart: "keycloak-1.0.13"
+      release: "release-name"
+      heritage: "Helm"
+    name: keycloak
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: keycloak
+        group: com.stakater.platform
+        provider: stakater
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        annotations:
+          pod.alpha.kubernetes.io/init-containers: null
+          pod.beta.kubernetes.io/init-containers: null
+        labels:
+          app: keycloak
+          group: com.stakater.platform
+          provider: stakater
+      spec:
+        initContainers:
+        - name: envvar-substitution
+          image: fabric8/envsubst-file:1.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+          - "fabric8-realm.json"
+          env:
+          - name: AUTH_URL
+            valueFrom:
+              configMapKeyRef:
+                name: keycloak
+                key: auth.api.url
+          - name: JENKINS_URL
+            valueFrom:
+              configMapKeyRef:
+                name: keycloak
+                key: jenkins.url
+          - name: KEYCLOAK_URL
+            valueFrom:
+              configMapKeyRef:
+                name: keycloak
+                key: keycloak.url
+          - name: KEYCLOAK_PRIVATEKEY
+            valueFrom:
+              secretKeyRef:
+                name: keycloak
+                key: kc.private.key
+          - name: KEYCLOAK_PUBLICKEY
+            valueFrom:
+              secretKeyRef:
+                name: keycloak
+                key: kc.public.key
+          - name: KEYCLOAK_CLIENTID_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: keycloak
+                key: kc.clientid.secret
+          - name: K8S_API_SERVER
+            valueFrom:
+              configMapKeyRef:
+                name: keycloak
+                key: apiserver.url
+          - name: HIDE_OPENSHIFT_BTN
+            value: "true"
+          - name: HIDE_GITHUB_BTN
+            value: "false"
+          volumeMounts:
+          - name: keycloak-config
+            mountPath: /workdir/fabric8-realm.json
+            subPath: config/fabric8-realm.json
+          - name: keycloak-subst-config
+            mountPath: /processed
+        - name: init-dependencyservice
+          image: fabric8/fabric8-dependency-wait-service:v6632df1
+          command: ['sh', '-c', 'fabric8-dependency-wait-service-linux-amd64 postgres://keycloak@keycloak-db:5432']
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: DEPENDENCY_POLL_INTERVAL
+            value: "1"
+          - name: DEPENDENCY_LOG_VERBOSE
+            value: "true"
+        containers:
+        - args:
+          - -b $(INTERNAL_POD_IP)
+          - -Djgroups.bind_addr=global
+          - -Djboss.node.name=$(INTERNAL_POD_IP)
+          - -Dkeycloak.migration.action=import
+          - -Dkeycloak.migration.provider=dir
+          - -Dkeycloak.migration.dir=/opt/jboss/keycloak/standalone/configuration/import/
+          - -Dkeycloak.migration.strategy=IGNORE_EXISTING
+          env:
+          - name: DB_VENDOR
+            value: postgres
+          - name: DB_ADDR
+            valueFrom:
+              secretKeyRef:
+                key: db.host
+                name: keycloak
+          - name: DB_USER
+            valueFrom:
+              secretKeyRef:
+                key: db.user
+                name: keycloak
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: db.password
+                name: keycloak
+          - name: OPERATING_MODE
+            value: standalone
+          - name: POSTGRES_PORT_5432_TCP_ADDR
+            valueFrom:
+              secretKeyRef:
+                key: db.host
+                name: keycloak
+          - name: INTERNAL_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: KEYCLOAK_USER
+            valueFrom:
+              secretKeyRef:
+                key: kc.user
+                name: keycloak
+          - name: KEYCLOAK_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: kc.password
+                name: keycloak
+          - name: KEYCLOAK_CLIENTID_SECRET
+            valueFrom:
+              secretKeyRef:
+                key: kc.clientid.secret
+                name: keycloak
+          - name: KEYCLOAK_PRIVATEKEY
+            valueFrom:
+              secretKeyRef:
+                key: kc.private.key
+                name: keycloak
+          - name: KEYCLOAK_PUBLICKEY
+            valueFrom:
+              secretKeyRef:
+                key: kc.public.key
+                name: keycloak
+          - name: HIDE_OPENSHIFT_BTN
+            value: "true"
+          - name: PROXY_ADDRESS_FORWARDING # Why? https://www.keycloak.org/docs/3.4/server_installation/index.html#identifying-client-ip-addresses
+            value: "true"
+          - name: HIDE_GITHUB_BTN
+            value: "false"
+          image: "jboss/keycloak:4.5.0.Final"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /auth
+              port: 8080
+            initialDelaySeconds: 180
+            timeoutSeconds: 60
+          name: keycloak
+          readinessProbe:
+            httpGet:
+              path: /auth
+              port: 8080
+            initialDelaySeconds: 180
+            timeoutSeconds: 60
+          volumeMounts:
+          - mountPath: /opt/jboss/keycloak/standalone/configuration/import
+            name: keycloak-subst-config
+          - mountPath: /opt/jboss/keycloak/themes/fabric8
+            name: keycloak-theme
+        volumes:
+        - emptyDir: {}
+          name: keycloak-subst-config
+        - configMap:
+            items:
+            - key: fabric8-realm.json
+              path: config/fabric8-realm.json
+            name: keycloak
+          name: keycloak-config
+        - gitRepo:
+            directory: login
+            repository: https://github.com/fabric8io/fabric8-keycloak-theme.git
+            revision: 61b08f0a2f4be2395bb0bbb6d16a8538f4f2b836
+          name: keycloak-theme
+---
+# Source: keycloak/templates/secrets.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    labels:
+      app: keycloak
+      group: com.stakater.platform
+      provider: stakater
+      version: "4.5.0"
+      chart: "keycloak-1.0.13"
+      release: "release-name"
+      heritage: "Helm"
+    name: keycloak
+  data:
+    db.host: 
+    db.name: 
+    db.user: 
+    db.password: 
+    kc.user: 
+    kc.password: 
+    kc.clientid.secret: 
+    kc.private.key: 
+    kc.public.key:
+---
+# Source: keycloak/templates/service.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      config.xposer.stakater.com/Domain: stackator.com
+      config.xposer.stakater.com/IngressNameTemplate: '{{.Service}}-{{.Namespace}}'
+      config.xposer.stakater.com/IngressURLTemplate: '{{.Service}}.{{.Namespace}}.{{.Domain}}'
+      config.xposer.stakater.com/TLS: "true"
+      xposer.stakater.com/annotations: |-
+        kubernetes.io/ingress.class: internal-ingress
+        ingress.kubernetes.io/force-ssl-redirect: true
+        certmanager.k8s.io/cluster-issuer: letsencrypt-production
+    labels:
+      expose: "true"
+      app: keycloak
+      group: com.stakater.platform
+      provider: stakater
+      version: "4.5.0"
+      chart: "keycloak-1.0.13"
+      release: "release-name"
+      heritage: "Helm"
+    name: keycloak
+  spec:
+    ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+    selector:
+      app: keycloak
+      group: com.stakater.platform
+      provider: stakater

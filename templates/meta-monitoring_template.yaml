@@ -1,0 +1,659 @@
+---
+# Source: meta-monitoring/charts/alloy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-alloy
+  namespace: default
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: meta-monitoring/templates/agent/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-configmap
+  namespace: default
+data:
+  config.river: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+      namespaces {
+        own_namespace = true
+        names = [ "loki" ]
+      }
+    }
+
+    discovery.relabel "rename_meta_labels" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+        separator = "/"
+        regex = "(.*)/(.*)/(.*)"
+        replacement = "${1}/${2}-${3}"
+        target_label = "job"
+      }
+      rule {
+        target_label = "cluster"
+        replacement = "meta-monitoring"
+      }
+    }
+    // Logs
+    remote.kubernetes.secret "logs_credentials" {
+      namespace = "default"
+      name = "logs"
+    }
+
+    loki.source.kubernetes "pods" {
+      clustering {
+        enabled = true
+      }
+      targets    = discovery.relabel.rename_meta_labels.output
+      forward_to = [ loki.process.filter.receiver ]
+    }
+    loki.process "filter" {
+      forward_to = [ loki.write.cloud.receiver ]
+      stage.match {
+        selector = "{cluster=\"meta-monitoring\", namespace=~\"loki|default\", pod=~\"loki.*\"} !~ \"caller=metrics.go|level=error|delete request for user added|Started processing delete request|delete request for user marked as processed\""
+        action   = "drop"
+      }
+    }
+    // Metrics
+    remote.kubernetes.secret "metrics_credentials" {
+      namespace = "default"
+      name = "metrics"
+    }
+
+    discovery.kubernetes "metric_pods" {
+      role = "pod"
+      namespaces {
+        own_namespace = true
+        names = [ "loki", "default" ]
+      }
+    }
+
+    discovery.relabel "only_http_metrics" {
+      targets = discovery.kubernetes.metric_pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+        separator = "/"
+        regex = "(.*)/(.*)/(.*)"
+        replacement = "${1}/${2}-${3}"
+        target_label = "job"
+      }
+      rule {
+        target_label = "cluster"
+        replacement = "meta-monitoring"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_port_number"]
+        action = "drop"
+        regex = "9095"
+      }
+    }
+
+    prometheus.scrape "pods" {
+      clustering {
+        enabled = true
+      }
+      targets    = discovery.relabel.only_http_metrics.output
+      forward_to = [ prometheus.relabel.filter.receiver ]
+    }
+
+    prometheus.relabel "filter" {
+      rule {
+        source_labels = ["__name__"]
+        regex = "(alloy_build_info|alloy_config_last_load_success_timestamp_seconds|alloy_config_last_load_successful|alloy_config_load_failures_total|alloy_component_controller_evaluating|alloy_component_dependencies_wait_seconds|alloy_component_dependencies_wait_seconds_bucket|alloy_component_evaluation_seconds|alloy_component_evaluation_seconds_bucket|alloy_component_evaluation_seconds_count|alloy_component_evaluation_seconds_sum|alloy_component_evaluation_slow_seconds|alloy_component_controller_running_components|alloy_resources_machine_rx_bytes_total|alloy_resources_machine_tx_bytes_total|alloy_resources_process_cpu_seconds_total|alloy_resources_process_resident_memory_bytes|prometheus_remote_write_wal_samples_appended_total|prometheus_remote_write_wal_storage_active_series|cluster_node_info|cluster_node_lamport_time|cluster_node_update_observers|cluster_node_gossip_health_score|cluster_node_gossip_proto_version|cluster_node_gossip_received_events_total|cluster_node_peers|cluster_transport_rx_bytes_total|cluster_transport_rx_packets_total|cluster_transport_rx_packets_failed_total|cluster_transport_stream_rx_bytes_total|cluster_transport_stream_rx_packets_failed_total|cluster_transport_stream_rx_packets_total|cluster_transport_stream_tx_bytes_total|cluster_transport_stream_tx_packets_total|cluster_transport_stream_tx_packets_failed_total|cluster_transport_streams|cluster_transport_tx_packets_total|cluster_transport_tx_packets_failed_total|cluster_transport_rx_packet_queue_length|cluster_transport_tx_packet_queue_length|container_cpu_usage_seconds_total|container_fs_writes_bytes_total|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_spec_cpu_period|container_spec_cpu_quota|container_spec_memory_limit_bytes|cortex_ingester_flush_queue_length|cortex_prometheus_rule_group_iterations_total|cortex_prometheus_rule_evaluation_failures_total|cortex_prometheus_rule_group_rules|cortex_prometheus_rule_group_last_duration_seconds|cortex_prometheus_rule_group_last_evaluation_timestamp_seconds|cortex_prometheus_rule_group_iterations_missed_total|exporter_send_failed_spans_ratio_total|exporter_sent_spans_ratio_total|go_gc_duration_seconds|go_gc_duration_seconds_count|go_goroutines|go_memstats_heap_inuse_bytes|kubelet_volume_stats_used_bytes|kubelet_volume_stats_capacity_bytes|kube_deployment_created|kube_persistentvolumeclaim_labels|kube_pod_container_info|kube_pod_container_resource_requests|kube_pod_container_status_last_terminated_reason|kube_pod_container_status_restarts_total|loki_boltdb_shipper_compact_tables_operation_duration_seconds|loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds|loki_boltdb_shipper_retention_marker_count_total|loki_boltdb_shipper_retention_marker_table_processed_duration_seconds_bucket|loki_boltdb_shipper_retention_marker_table_processed_duration_seconds_count|loki_boltdb_shipper_retention_marker_table_processed_duration_seconds_sum|loki_boltdb_shipper_retention_marker_table_processed_total|loki_boltdb_shipper_request_duration_seconds_bucket|loki_boltdb_shipper_request_duration_seconds_count|loki_boltdb_shipper_request_duration_seconds_sum|loki_boltdb_shipper_retention_sweeper_chunk_deleted_duration_seconds_bucket|loki_boltdb_shipper_retention_sweeper_chunk_deleted_duration_seconds_count|loki_boltdb_shipper_retention_sweeper_chunk_deleted_duration_seconds_sum|loki_boltdb_shipper_retention_sweeper_marker_files_current|loki_boltdb_shipper_retention_sweeper_marker_file_processing_current_time|loki_build_info|loki_chunk_store_deduped_chunks_total|loki_chunk_store_index_entries_per_chunk_bucket|loki_chunk_store_index_entries_per_chunk_count|loki_chunk_store_index_entries_per_chunk_sum|loki_compactor_delete_requests_processed_total|loki_compactor_delete_requests_received_total|loki_compactor_deleted_lines|loki_compactor_oldest_pending_delete_request_age_seconds|loki_compactor_pending_delete_requests_count|loki_discarded_samples_total|loki_discarded_bytes_total|loki_distributor_bytes_received_total|loki_distributor_lines_received_total|loki_distributor_structured_metadata_bytes_received_total|loki_index_request_duration_seconds_count|loki_ingester_chunk_age_seconds_bucket|loki_ingester_chunk_age_seconds_count|loki_ingester_chunk_age_seconds_sum|loki_ingester_chunk_bounds_hours_bucket|loki_ingester_chunk_bounds_hours_count|loki_ingester_chunk_bounds_hours_sum|loki_ingester_chunk_entries_bucket|loki_ingester_chunk_entries_count|loki_ingester_chunk_entries_sum|loki_ingester_chunk_size_bytes_bucket|loki_ingester_chunk_utilization_bucket|loki_ingester_chunk_utilization_sum|loki_ingester_chunks_flushed_total|loki_ingester_flush_queue_length|loki_ingester_memory_chunks|loki_ingester_memory_streams|loki_ingester_streams_created_total|loki_request_duration_seconds_bucket|loki_request_duration_seconds_count|loki_request_duration_seconds_sum|loki_ruler_wal_appender_ready|loki_ruler_wal_disk_size|loki_ruler_wal_prometheus_remote_storage_highest_timestamp_in_seconds|loki_ruler_wal_prometheus_remote_storage_queue_highest_sent_timestamp_seconds|loki_ruler_wal_prometheus_remote_storage_samples_pending|loki_ruler_wal_prometheus_remote_storage_samples_total|loki_ruler_wal_samples_appended_total|loki_ruler_wal_storage_created_series_total|loki_write_batch_retries_total|loki_write_dropped_bytes_total|loki_write_dropped_entries_total|loki_write_sent_bytes_total|loki_write_sent_entries_total|node_disk_read_bytes_total|node_disk_written_bytes_total|process_start_time_seconds|processor_batch_batch_send_size_ratio_bucket|processor_batch_metadata_cardinality_ratio|processor_batch_timeout_trigger_send_ratio_total|prometheus_remote_storage_bytes_total|prometheus_remote_storage_enqueue_retries_total|prometheus_remote_storage_highest_timestamp_in_seconds|prometheus_remote_storage_metadata_bytes_total|prometheus_remote_storage_queue_highest_sent_timestamp_seconds|prometheus_remote_storage_samples_dropped_total|prometheus_remote_storage_samples_failed_total|prometheus_remote_storage_samples_pending|prometheus_remote_storage_samples_retried_total|prometheus_remote_storage_samples_total|prometheus_remote_storage_sent_batch_duration_seconds_bucket|prometheus_remote_storage_sent_batch_duration_seconds_count|prometheus_remote_storage_sent_batch_duration_seconds_sum|prometheus_remote_storage_shard_capacity|prometheus_remote_storage_shards|prometheus_remote_storage_shards_desired|prometheus_remote_storage_shards_max|prometheus_remote_storage_shards_min|prometheus_remote_storage_succeeded_samples_total|prometheus_remote_write_wal_samples_appended_total|prometheus_remote_write_wal_storage_active_series|prometheus_sd_discovered_targets|prometheus_target_interval_length_seconds_count|prometheus_target_interval_length_seconds_sum|prometheus_target_scrapes_exceeded_sample_limit_total|prometheus_target_scrapes_sample_duplicate_timestamp_total|prometheus_target_scrapes_sample_out_of_bounds_total|prometheus_target_scrapes_sample_out_of_order_total|prometheus_target_sync_length_seconds_sum|prometheus_wal_watcher_current_segment|promtail_custom_bad_words_total|promtail_dropped_bytes_total|promtail_files_active_total|promtail_read_bytes_total|promtail_read_lines_total|promtail_request_duration_seconds_bucket|promtail_sent_entries_total|rpc_server_duration_milliseconds_bucket|receiver_accepted_spans_ratio_total|receiver_refused_spans_ratio_total|scrape_duration_seconds|traces_exporter_sent_spans|traces_exporter_send_failed_spans|traces_loadbalancer_backend_outcome|traces_loadbalancer_num_backends|traces_receiver_accepted_spans|traces_receiver_refused_spans|up)"
+        action = "keep"
+      }
+
+      rule {
+        source_labels = ["namespace"]
+        regex = "loki|default"
+
+        action = "keep"
+      }
+
+      forward_to = [ prometheus.remote_write.cloud.receiver ]
+    }
+
+    prometheus.scrape "kubeStateMetrics" {
+      clustering {
+        enabled = true
+      }
+      targets    = [ { "__address__" = "kube-state-metrics.kube-state-metrics.svc.cluster.local:8080" } ]
+      forward_to = [ prometheus.relabel.filter.receiver ]
+    }
+
+    // cAdvisor and Kubelet metrics
+    // Based on https://github.com/Chewie/loutretelecom-manifests/blob/main/manifests/addons/monitoring/config.river
+    discovery.kubernetes "all_nodes" {
+      role = "node"
+      namespaces {
+        own_namespace = true
+        names = [ "loki" ]
+      }
+    }
+
+    discovery.relabel "all_nodes" {
+      targets = discovery.kubernetes.all_nodes.targets
+      rule {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label = "node"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+        separator = "/"
+        regex = "(.*)/(.*)/(.*)"
+        replacement = "${1}/${2}-${3}"
+        target_label = "job"
+      }
+      rule {
+        target_label = "cluster"
+        replacement = "meta-monitoring"
+      }
+    }
+
+    prometheus.scrape "cadvisor" {
+      clustering {
+        enabled = true
+      }
+      targets    = discovery.relabel.all_nodes.output
+      forward_to = [ prometheus.relabel.filter.receiver ]
+
+      metrics_path = "/metrics/cadvisor"
+      scheme = "https"
+
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      tls_config {
+        ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      }
+    }
+
+    prometheus.scrape "kubelet" {
+      clustering {
+        enabled = true
+      }
+      targets    = discovery.relabel.all_nodes.output
+      forward_to = [ prometheus.relabel.filter.receiver ]
+
+      metrics_path = "/metrics"
+      scheme = "https"
+
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      tls_config {
+        ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      }
+    }
+
+    prometheus.exporter.unix "promexporter" {}
+
+    prometheus.scrape "node_exporter" {
+      clustering {
+        enabled = true
+      }
+      targets = prometheus.exporter.unix.promexporter.targets
+      forward_to = [prometheus.relabel.node_exporter.receiver]
+
+      job_name = "node-exporter"
+    }
+
+    prometheus.relabel "node_exporter" {
+      forward_to = [ prometheus.relabel.filter.receiver ]
+
+      rule {
+        replacement = env("HOSTNAME")
+        target_label = "nodename"
+      }
+      rule {
+        replacement = "node-exporter"
+        target_label = "job"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label = "node"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+        separator = "/"
+        regex = "(.*)/(.*)/(.*)"
+        replacement = "${1}/${2}-${3}"
+        target_label = "job"
+      }
+      rule {
+        target_label = "cluster"
+        replacement = "meta-monitoring"
+      }
+    }
+    // Traces
+    remote.kubernetes.secret "traces_credentials" {
+      namespace = "default"
+      name = "traces"
+    }
+
+    // Shamelessly copied from https://github.com/grafana/intro-to-mlt/blob/main/agent/config.river
+    otelcol.receiver.otlp "otlp_receiver" {
+      // We don't technically need this, but it shows how to change listen address and incoming port.
+      // In this case, the Agent is listening on all available bindable addresses on port 4317 (which is the
+      // default OTLP gRPC port) for the OTLP protocol.
+      grpc {}
+
+      // We define where to send the output of all ingested traces. In this case, to the OpenTelemetry batch processor
+      // named 'default'.
+      output {
+        traces = [otelcol.processor.batch.default.input]
+      }
+    }
+
+    otelcol.receiver.jaeger "jaeger" {
+      protocols {
+        thrift_http {}
+      }
+
+      output {
+        traces = [otelcol.processor.batch.default.input]
+      }
+    }
+
+    // The OpenTelemetry batch processor collects trace spans until a batch size or timeout is met, before sending those
+    // spans onto another target. This processor is labeled 'default'.
+    otelcol.processor.batch "default" {
+        // Wait until we've received 16K of data.
+        send_batch_size = 16384
+        // Or until 2 seconds have elapsed.
+        timeout = "2s"
+        // When the Agent has enough batched data, send it to the OpenTelemetry exporter named 'local'.
+        output {
+            traces = [ otelcol.exporter.otlphttp.cloud.input ]
+        }
+    }
+    loki.write "cloud" {
+      endpoint {
+        url = nonsensitive(remote.kubernetes.secret.logs_credentials.data["endpoint"])
+        basic_auth {
+          username = nonsensitive(remote.kubernetes.secret.logs_credentials.data["username"])
+          password = remote.kubernetes.secret.logs_credentials.data["password"]
+        }
+      }
+    }
+    prometheus.remote_write "cloud" {
+      endpoint {
+        url = nonsensitive(remote.kubernetes.secret.metrics_credentials.data["endpoint"])
+        basic_auth {
+          username = nonsensitive(remote.kubernetes.secret.metrics_credentials.data["username"])
+          password = remote.kubernetes.secret.metrics_credentials.data["password"]
+        }
+      }
+    }
+    otelcol.exporter.otlphttp "cloud" {
+        client {
+            endpoint = nonsensitive(remote.kubernetes.secret.traces_credentials.data["endpoint"])
+            auth = otelcol.auth.basic.creds.handler
+        }
+    }
+
+    otelcol.auth.basic "creds" {
+      username = nonsensitive(remote.kubernetes.secret.traces_credentials.data["username"])
+      password = remote.kubernetes.secret.traces_credentials.data["password"]
+    }
+---
+# Source: meta-monitoring/charts/alloy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-alloy
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # Rules which allow discovery.kubernetes to function.
+  - apiGroups:
+      - ""
+      - "discovery.k8s.io"
+      - "networking.k8s.io"
+    resources:
+      - endpoints
+      - endpointslices
+      - ingresses
+      - nodes
+      - nodes/proxy
+      - nodes/metrics
+      - pods
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  # Rules which allow loki.source.kubernetes and loki.source.podlogs to work.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/log
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "monitoring.grafana.com"
+    resources:
+      - podlogs
+    verbs:
+      - get
+      - list
+      - watch
+  # Rules which allow mimir.rules.kubernetes to work.
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - prometheusrules
+    verbs:
+      - get
+      - list
+      - watch
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+  # Rules for prometheus.kubernetes.*
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - podmonitors
+      - servicemonitors
+      - probes
+    verbs:
+      - get
+      - list
+      - watch
+  # Rules which allow eventhandler to work.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+  # needed for remote.kubernetes.*
+  - apiGroups: [""]
+    resources:
+      - "configmaps"
+      - "secrets"
+    verbs:
+      - get
+      - list
+      - watch
+  # needed for otelcol.processor.k8sattributes
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: meta-monitoring/charts/alloy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-alloy
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-alloy
+subjects:
+  - kind: ServiceAccount
+    name: release-name-alloy
+    namespace: default
+---
+# Source: meta-monitoring/charts/alloy/templates/cluster_service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-alloy-cluster
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: 'None'
+  selector:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+  ports:
+    # Do not include the -metrics suffix in the port name, otherwise metrics
+    # can be double-collected with the non-headless Service if it's also
+    # enabled.
+    #
+    # This service should only be used for clustering, and not metric
+    # collection.
+    - name: http
+      port: 12345
+      targetPort: 12345
+      protocol: "TCP"
+    - name: otel
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: thrifthttp
+      port: 14268
+      targetPort: 14268
+      protocol: TCP
+---
+# Source: meta-monitoring/charts/alloy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-alloy
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: http-metrics
+      port: 12345
+      targetPort: 12345
+      protocol: "TCP"
+    - name: otel
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: thrifthttp
+      port: 14268
+      targetPort: 14268
+      protocol: TCP
+---
+# Source: meta-monitoring/charts/alloy/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-alloy
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: statefulset
+    name: release-name-alloy
+  minReplicas: 3
+  maxReplicas: 30
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0
+  metrics:
+    # Changing the order of the metrics will cause ArgoCD to go into a sync loop
+    # memory needs to be first.
+    # More info in: https://github.com/argoproj/argo-cd/issues/1079
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 90
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 90
+---
+# Source: meta-monitoring/charts/alloy/templates/controllers/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-alloy
+  labels:
+    helm.sh/chart: alloy-0.1.1
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/instance: release-name
+    
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podManagementPolicy: Parallel
+  minReadySeconds: 10
+  serviceName: release-name-alloy
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: alloy
+      labels:
+        app.kubernetes.io/name: alloy
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-alloy
+      containers:
+        - name: alloy
+          image: docker.io/grafana/alloy:v1.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - /etc/alloy/config.river
+            - --storage.path=/tmp/alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --server.http.ui-path-prefix=/
+            - --cluster.enabled=true
+            - --cluster.join-addresses=release-name-alloy-cluster
+            - --stability.level=generally-available
+          env:
+            - name: ALLOY_DEPLOY_MODE
+              value: "helm"
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 12345
+              name: http-metrics
+            - containerPort: 4317
+              name: otel
+              protocol: TCP
+            - containerPort: 14268
+              name: thrifthttp
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+              scheme: HTTP
+            initialDelaySeconds: 10
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 4Gi
+            requests:
+              cpu: 1000m
+              memory: 600Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+        - name: config-reloader
+          image: ghcr.io/jimmidyson/configmap-reload:v0.12.0
+          args:
+            - --volume-dir=/etc/alloy
+            - --webhook-url=http://localhost:12345/-/reload
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+          resources:
+            requests:
+              cpu: 1m
+              memory: 5Mi
+      dnsPolicy: ClusterFirst
+      volumes:
+        - name: config
+          configMap:
+            name: agent-configmap

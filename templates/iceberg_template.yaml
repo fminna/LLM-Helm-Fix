@@ -1,0 +1,145 @@
+---
+# Source: iceberg/templates/iceberg-sg.yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: iceberg-sc
+provisioner: filestore.csi.storage.gke.io
+parameters:
+  network: us-east1-blue-iceberg-private-vpc
+allowVolumeExpansion: true
+#volumeBindingMode: WaitForFirstConsumer
+---
+# Source: iceberg/templates/iceberg-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iceberg-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iceberg-sc
+  resources:
+    requests:
+      storage: 2.5Ti
+---
+# Source: iceberg/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: iceberg
+spec:
+  selector:
+    app: iceberg
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# Source: iceberg/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iceberg
+  labels:
+    app: iceberg
+spec:
+  selector:
+    matchLabels:
+      app: iceberg
+  replicas: 1
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 1
+
+  template:
+    metadata:
+      labels:
+        app: iceberg
+
+    spec:
+      containers:
+        - name: iceberg
+          image: "us-east1-docker.pkg.dev/blue-shared-resources/dev/iceberg:1.16.0"
+          volumeMounts:
+            - mountPath: /var/iceberg/
+              name: iceberg
+          securityContext:
+            privileged: true
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: METADATA_PATH
+              value: /var/iceberg/metadata/
+            - name: WAREHOUSE_PATH
+              value: /var/iceberg/warehouse/
+            - name: SNAPSHOT_PATH
+              value: /var/iceberg/snapshot/
+            - name: LOGGING_PATH
+              value: /var/iceberg/logs/
+
+          command:
+            - jdk-17_linux-x64_bin.tar.gz/jdk-17.0.7/bin/java
+          args:
+            
+            - -Djava.library.path=/opt/hadoop-3.2.1/lib/native
+            
+            - -Dhadoop.root.logger=DEBUG,console
+            
+            - -DHADOOP_USER_NAME='iceberg@developer.gserviceaccount.com'
+            
+            - -jar
+            
+            - app.jar
+            
+            - -agentlib:jdwp=transport=dt_socket,address=*:5005,server=y,suspend=n
+            
+            - --spring.profiles.active=LOCAL
+            
+            - --logging.path=${LOGGING_PATH}
+            
+            - --iceberg.metadata.path=${METADATA_PATH}
+            
+            - --iceberg.warehouse.path=${WAREHOUSE_PATH}
+            
+            - --iceberg.snapshot.path=${SNAPSHOT_PATH}
+            
+
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: 4
+            limits:
+              memory: 8Gi
+              cpu: 4
+
+      volumes:
+        - name: iceberg
+          persistentVolumeClaim:
+            claimName: iceberg-pvc
+
+
+#          readinessProbe:
+#            exec:
+#              command:
+#                - cat
+#                - /tmp/healthy
+#            initialDelaySeconds: 5
+#            timeoutSeconds: 1
+#            periodSeconds: 5
+
+#          livenessProbe:
+#            exec:
+#              command:
+#                - cat
+#                - /var/iceberg/logs/log*.txt
+#            initialDelaySeconds: 45
+#            timeoutSeconds: 1
+#            periodSeconds: 5
+#          livenessProbe:
+#            httpGet:
+#              path: /health
+#              port: 8080

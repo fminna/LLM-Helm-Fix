@@ -1,0 +1,213 @@
+---
+# Source: dnsmasq/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: dnsmasq/templates/configmap-kubelan.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dnsmasq-kubelan
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  kubelan.yaml: |
+    log_level: DEBUG
+    services:
+      - release-name-dnsmasq
+    vxlan:
+      interface: kubelan
+      vni: 7331
+---
+# Source: dnsmasq/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  resolv.conf: |
+    nameserver 1.1.1.1
+    nameserver 8.8.8.8
+  dnsmasq.conf: |
+    interface=kubelan
+    bind-interfaces
+    port=53
+    resolv-file=/run/config/resolv.conf
+    dhcp-range=172.24.1.1,172.24.253.254,2h
+    dhcp-option=option:dns-server,172.24.254.1
+    dhcp-option=option:router,172.24.254.1
+    domain=dnsmasq
+---
+# Source: dnsmasq/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: ['discovery.k8s.io']
+    resources: ['endpointslices']
+    verbs: ['watch', 'list']
+---
+# Source: dnsmasq/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  kind: ClusterRole
+  name: release-name-dnsmasq
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: release-name-dnsmasq
+    namespace: default
+---
+# Source: dnsmasq/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 53
+      targetPort: dns
+      protocol: UDP
+      name: dns
+    - port: 53
+      targetPort: dns-tcp
+      protocol: TCP
+      name: dns-tcp
+  selector:
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+---
+# Source: dnsmasq/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-dnsmasq
+  labels:
+    helm.sh/chart: dnsmasq-0.1.5
+    app.kubernetes.io/name: dnsmasq
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-dnsmasq
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dnsmasq
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 8af77ffef3aa5781f4c77b411d3ce339b746995bfad497443662546f9c8eb600
+      labels:
+        app.kubernetes.io/name: dnsmasq
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-dnsmasq
+      containers:
+        - name: dnsmasq
+          image: "ghcr.io/devplayer0/dnsmasq:0.1.1"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DEBUG
+              value: 'no'
+            - name: ROUTER_NETWORK
+              value: '172.24.0.0/16'
+          livenessProbe:
+            exec:
+              command: [nslookup, one.one.one.one, '127.0.0.1']
+          resources:
+            {}
+          ports:
+            - name: dns
+              containerPort: 53
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+          volumeMounts:
+            - name: config
+              mountPath: /run/config
+        - name: kubelan
+          image: 'ghcr.io/devplayer0/kubelan:0.2.3'
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KL_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: KL_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            - name: IFACE_IP
+              value: '172.24.254.1/16'
+            - name: KL_HOOKS_UP
+              value: 'sh,-c,ip addr add $IFACE_IP dev $IFACE'
+          ports:
+            - name: http
+              containerPort: 8181
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+          volumeMounts:
+            - name: kubelan-config
+              mountPath: /run/config
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-dnsmasq
+        - name: kubelan-config
+          configMap:
+            name: release-name-dnsmasq-kubelan

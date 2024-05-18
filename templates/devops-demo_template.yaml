@@ -1,0 +1,512 @@
+---
+# Source: devops-demo/templates/secrets/demo-app.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: default
+  name: demo-app-secrets
+  labels:
+    app: demo_app
+
+data:
+  DB_USER: "dGVzdF91c2Vy"
+  DB_PASS: "MCZBbmI1dDBvWWpnWHZOb3hZMkw="
+---
+# Source: devops-demo/templates/secrets/postgres.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: 
+  name: postgres-secrets
+  labels:
+    app: postgres
+
+data:
+  POSTGRES_USER: "dGVzdF91c2Vy"
+  POSTGRES_PASSWORD: "MCZBbmI1dDBvWWpnWHZOb3hZMkw="
+---
+# Source: devops-demo/templates/configmaps/alerting.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: alerting-template
+  namespace: default
+data:
+  default.tmpl: |
+    title: |-
+     [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }} for {{ .CommonLabels.job }}
+     {{- if gt (len .CommonLabels) (len .GroupLabels) -}}
+       {{" "}}(
+       {{- with .CommonLabels.Remove .GroupLabels.Names }}
+         {{- range $index, $label := .SortedPairs -}}
+           {{ if $index }}, {{ end }}
+           {{- $label.Name }}="{{ $label.Value -}}"
+         {{- end }}
+       {{- end -}}
+       )
+     {{- end }}
+    text: >-
+     {{ range .Alerts -}}
+     *Alert:* {{ .Annotations.title }}{{ if .Labels.severity }} - {{ .Labels.severity }}{{ end }}
+     *Description:* {{ .Annotations.description }}
+
+     *Details:*
+       {{ range .Labels.SortedPairs }} • *{{ .Name }}:* {{ .Value }}
+       {{ end }}
+     {{ end }}
+---
+# Source: devops-demo/templates/configmaps/alertmanager.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: alertmanager-configs
+  namespace: default
+data:
+  config.yml: |-
+    global:
+    templates:
+    - '/etc/alertmanager/*.tmpl'
+    route:
+      receiver: slack
+      group_by: ['alertname', 'priority']
+      group_wait: 10s
+      repeat_interval: 
+
+    receivers:
+    - name: slack
+      slack_configs:
+      - api_url: CHANGEME
+        channel: #alerting
+        icon_url: https://avatars3.githubusercontent.com/u/3380462
+---
+# Source: devops-demo/templates/configmaps/demo-app.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: default
+  name: demo-app-configs
+  labels:
+    app: demo_app
+
+data:
+  DB_NAME: "test_db1"
+  DB_HOST: "postgresql-db.default.svc.cluster.local"
+  DB_PORT: "5432"
+---
+# Source: devops-demo/templates/configmaps/postgres.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: default
+  name: postgres-configs
+  labels:
+    app: postgres
+
+data:
+  POSTGRES_DB: "test_db1"
+  PG_DATA: "/data/pgdata"
+---
+# Source: devops-demo/templates/configmaps/prometheus.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: default
+  name: prometheus-configs
+  labels:
+    app: prometheus
+data:
+  prometheus.rules: |-
+    groups:
+    - name: Probe-HTTP
+      rules:
+      - alert: Probe-HTTP
+        expr: avg_over_time(http_server_requests_seconds_sum[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: slow HTTP
+          description: "HTTP requests on average took more than 0s"
+  prometheus.yml: |-
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    rule_files:
+      - prometheus.rules
+    alerting:
+      alertmanagers:
+        - kubernetes_sd_configs:
+          - role: service
+            selectors:
+            - role: "service"
+              label: "app=alertmanager" 
+    scrape_configs:
+      - job_name: "prometheus"
+        scrape_interval: 5s
+        static_configs:
+          - targets: ['localhost:9090']
+      - job_name: "scrape_api"
+        scrape_interval: 5s
+        metrics_path: /actuator/prometheus
+        kubernetes_sd_configs:
+        - role: pod
+          selectors:
+          - role: "pod"
+            label: "app=demo_app"
+---
+# Source: devops-demo/templates/persistentvolumes/postgres-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  namespace: default
+  name: postgres-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 25Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /mnt/data
+---
+# Source: devops-demo/templates/pvclaims/postgres.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: default
+  name: postgres-pv-claim
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 25Gi
+---
+# Source: devops-demo/templates/RBAC/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+# Source: devops-demo/templates/RBAC/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: devops-demo/templates/services/alertmanager.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+      alertmanager.io/scrape: 'true'
+      alertmanager.io/port: "9093"
+  namespace: default
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9093
+      targetPort: 9093
+      protocol: TCP
+      name: http
+  selector:
+    app: alertmanager
+---
+# Source: devops-demo/templates/services/demo-app.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: devops-demo
+  labels:
+    app: demo_app
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: demo_app
+---
+# Source: devops-demo/templates/services/postgres.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: postgresql-db
+  labels:
+    app: postgres
+spec:
+  type: NodePort
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: http
+  selector:
+    app: postgres
+---
+# Source: devops-demo/templates/services/prometheus.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port: "9090"
+  namespace: default
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: http
+  selector:
+    app: prometheus
+---
+# Source: devops-demo/templates/deployments/alertmanager.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default 
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - name: alertmanager
+        image: "prom/alertmanager:latest"
+        args:
+          - "--config.file=/etc/alertmanager/config.yml"
+          - "--storage.path=/alertmanager"
+        ports:
+        - containerPort: 9093
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: alertmanager-config
+          mountPath: /etc/alertmanager
+        - name: alertmanager-storage
+          mountPath: /alertmanager
+        - name: alertmanager-template
+          mountPath: /etc/alertmanager-templates
+        resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 500M
+      volumes:
+      - name:  alertmanager-config
+        configMap:
+          defaultMode: 420
+          name:  alertmanager-configs
+      - name:  alertmanager-template
+        configMap:
+          name:  alerting-template
+      - name: alertmanager-storage
+        emptyDir: {}
+---
+# Source: devops-demo/templates/deployments/demo-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default
+  name: devops-demo
+  labels:
+    app: demo_app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: demo_app
+  template:
+    metadata:
+      labels:
+        app: demo_app
+    spec:
+      containers:
+        - name: devops-demo
+          image: "ghcr.io/perceptolab/devops-demo-app:0.0.2"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+          - configMapRef:
+              name: demo-app-configs
+          - secretRef:
+              name: demo-app-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+---
+# Source: devops-demo/templates/deployments/prometheus.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default 
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: "prom/prometheus:latest"
+        args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus/"
+        ports:
+        - containerPort: 9090
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: prometheus-config
+          mountPath: /etc/prometheus
+        - name: prometheus-storage
+          mountPath: /prometheus
+        resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 500M
+      volumes:
+      - name:  prometheus-config
+        configMap:
+          defaultMode: 420
+          name:  prometheus-configs
+      - name: prometheus-storage
+        emptyDir: {}
+---
+# Source: devops-demo/templates/statefulsets/postgres.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  namespace: default
+  name: postgresql-db
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  serviceName: postgres
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: devops-demo
+        image: "postgres:latest"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: postgres-configs
+        - secretRef:
+            name: postgres-secrets
+        ports:
+        - name: postgresql-db
+          containerPort: 5432
+        volumeMounts:
+        - name: postgres-volume
+          mountPath: /data
+        resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 250m
+              memory: 265Mi
+      volumes:
+        - name: postgres-volume
+          persistentVolumeClaim:
+            claimName: postgres-pv-claim
+---
+# Source: devops-demo/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "devops-demo-test-connection"
+  labels:
+    .Values.demo_app.labels
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['devops-demo:80']
+  restartPolicy: Never

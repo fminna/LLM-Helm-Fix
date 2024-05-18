@@ -1,0 +1,133 @@
+---
+# Source: observabilitysec/templates/ns.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: obsec-challenge
+---
+# Source: observabilitysec/templates/rbac.yaml
+# by https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+# Service account the client will use to reset the deployment,
+# by default the pods running inside the cluster can do no such things.
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: observabilitysec-restart
+  namespace: obsec-challenge
+---
+# Source: observabilitysec/templates/rbac.yaml
+# allow getting status and patching only the one deployment you want
+# to restart
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: observabilitysec-restart
+  namespace: obsec-challenge
+rules:
+  - apiGroups: ["apps", "extensions"]
+    resources: ["deployments"]
+    resourceNames: ["observabilitysec"]
+    verbs: ["get", "patch", "list", "watch"] # "list" and "watch" are only needed
+                                             # if you want to use `rollout status`
+---
+# Source: observabilitysec/templates/rbac.yaml
+# bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: observabilitysec-restart
+  namespace: obsec-challenge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: observabilitysec-restart
+subjects:
+  - kind: ServiceAccount
+    name: observabilitysec-restart
+    namespace: obsec-challenge
+---
+# Source: observabilitysec/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: observabilitysec-service
+  namespace: obsec-challenge
+spec:
+  type: NodePort
+  selector:
+    app: observabilitysec
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+      nodePort: 30007
+---
+# Source: observabilitysec/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: observabilitysec
+  name: observabilitysec
+  namespace: obsec-challenge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: observabilitysec
+  template:
+    metadata:
+      labels:
+        app: observabilitysec
+    spec:
+      containers:
+      - image: jdvalencia422/observabilitysec:latest
+        name: observabilitysec
+---
+# Source: observabilitysec/templates/cronjob.yaml
+#by https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restart
+  namespace: obsec-challenge
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: observabilitysec-restart
+          containers:
+          - name: restart
+            image: bitnami/kubectl
+            imagePullPolicy: IfNotPresent
+            command:
+              - 'kubectl'
+              - 'rollout'
+              - 'restart'
+              - 'deployment/observabilitysec'
+              - '-n'
+              - 'obsec-challenge'
+          restartPolicy: Never
+---
+# Source: observabilitysec/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observabilitysec-ingress
+  namespace: obsec-challenge
+  labels:
+    app: observabilitysec
+spec:
+  rules:
+  - host: observabilitysec.info
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/challenge"
+        backend:
+          service:
+            name: observabilitysec-service
+            port:
+              number: 8080

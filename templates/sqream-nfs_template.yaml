@@ -1,0 +1,119 @@
+---
+# Source: sqream-nfs/templates/configmap.yaml
+# configmap that tell our nfs server where to use shares.
+# our custom made NFS should have:
+# /exports folder for local-ssd
+# and /leveldb folder for pvc of leveldb
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nfs-server
+  namespace: sqream
+data:
+  exports: |-
+    /exports *(rw,sync,insecure,no_root_squash)
+---
+# Source: sqream-nfs/templates/nfs-temp-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-temp
+spec:
+  capacity:
+    storage: 5000Gi # 16 local-ssd = 375*16=6000
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: nfs-server.sqream.svc.cluster.local
+    path: "/exports"
+  mountOptions:
+    - nfsvers=3.2 #4.2
+---
+# Source: sqream-nfs/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: nfs-server
+  namespace: sqream
+spec:
+  ports:
+    - name: nfs
+      port: 2049
+      protocol: TCP
+      targetPort: 2049
+    - name: mountd
+      port: 20048
+      protocol: TCP
+      targetPort: 20048
+    - name: rpcbind
+      port: 111
+      protocol: TCP
+      targetPort: 111
+  selector:
+      app.kubernetes.io/name: sqream-nfs
+      app.kubernetes.io/instance: release-name
+---
+# Source: sqream-nfs/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+  labels:
+    helm.sh/chart: sqream-nfs-0.1.0
+    app.kubernetes.io/name: sqream-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sqream-nfs
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sqream-nfs
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+      - name: sqream-nfs
+        image: "us.gcr.io/blue-shared-resources/docker-volume-nfs:latest:latest"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: nfs
+          containerPort: 2049
+          protocol: TCP
+        - name: mountd
+          containerPort: 20048
+          protocol: TCP
+        - name: rpcbind
+          containerPort: 111
+          protocol: TCP
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /exports
+            name: nfs-temp-shared
+          - name: nfs-server-conf
+            mountPath: /etc/exports.d/
+#          - mountPath: /leveldb
+#            name: nfs-leveldb-shared
+      volumes:
+        - name: nfs-temp-shared
+          emptyDir: {}
+        - name: nfs-server-conf
+          configMap:
+            name: nfs-server
+#        - name: nfs-leveldb-shared
+#          persistentVolumeClaim:
+#            claimName: nfs-leveldb-pd
+      tolerations:
+        - effect: NoSchedule
+          key: dedicated
+          operator: Equal
+          value: nfs
+      nodeSelector:
+        cloud.google.com/gke-nodepool: nfs

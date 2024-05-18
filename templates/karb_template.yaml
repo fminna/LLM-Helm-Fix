@@ -1,0 +1,260 @@
+---
+# Source: karb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: default
+  name: karb-operator-account
+---
+# Source: karb/templates/serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: karb-global-role
+rules:
+  # To be able to detect new namespaces if they are recreated or new
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [list, watch]
+
+  # Also needed to watch new resources. Else we would only get new resources on reload
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [list, watch]
+---
+# Source: karb/templates/serviceaccount.yaml
+# We are only binding this ClusterRole to RoleBinding, not
+# ClusterRoleBinding. This trick makes us not having to define
+# a dedicated Role per namespace as it is the RoleBinding that
+# will pin the role to the namespace.
+# ie, this ClusterRole is used as a normal Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: karb-role
+rules:
+  # So we can find and watch the pods
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch]
+
+  # We need this to run backup inside pods
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get]
+
+  # Posting the events about the handlers progress/errors.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+---
+# Source: karb/templates/serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: karb-rolebinding-global
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: karb-global-role
+subjects:
+  - kind: ServiceAccount
+    name: karb-operator-account
+    namespace: default
+---
+# Source: karb/templates/serviceaccount.yaml
+# Generate one RoleBinding for each namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: default
+  name: karb-rolebinding-namespaced
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: karb-role
+subjects:
+  - kind: ServiceAccount
+    name: karb-operator-account
+    namespace: default
+---
+# Source: karb/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: karb-admission-svc
+  namespace: default
+  labels:    
+    helm.sh/chart: karb-1.0.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backup-operator
+    app.kubernetes.io/part-of: karb
+    app.kubernetes.io/name: karb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.0"
+spec:
+  ports:
+    - name: http
+      port: 443
+      targetPort: 8443
+    - name: metric
+      port: 9090
+      targetPort: 9090
+  selector:    
+    app.kubernetes.io/name: karb
+    app.kubernetes.io/instance: release-name
+---
+# Source: karb/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:    
+    helm.sh/chart: karb-1.0.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: backup-operator
+    app.kubernetes.io/part-of: karb
+    app.kubernetes.io/name: karb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.0"
+  name: release-name-karb
+  namespace: default
+spec:
+  replicas: 1  # Should be 1 on kopf operators!
+  revisionHistoryLimit: 10
+  strategy:
+    # Should be set to Recreate on kopf operators!
+    type: Recreate
+  selector:
+    matchLabels:      
+      app.kubernetes.io/name: karb
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:        
+        helm.sh/chart: karb-1.0.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: backup-operator
+        app.kubernetes.io/part-of: karb
+        app.kubernetes.io/name: karb
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.3.0"
+    spec:
+      serviceAccountName: karb-operator-account
+      automountServiceAccountToken: true
+      containers:
+      - name: karb
+        image: "ghcr.io/xeor/karb:main"
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/kopf", "run"]
+        args:
+          - --liveness=http://0.0.0.0:8080/healthz
+          - --verbose
+          - --namespace
+          - default
+          - /src/main.py
+        env:
+        - name: NFS_SERVER
+          value: your-nas.lan
+        - name: NFS_ROOT_PATH
+          value: /data/backup/karb
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 0
+          timeoutSeconds: 1
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                start_time=$(stat -c %Y /proc/1/stat); current_time=$(date +%s); uptime=$(($current_time - $start_time)); test $uptime -gt 5
+          initialDelaySeconds: 6
+          periodSeconds: 5
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          {}
+        volumeMounts:
+          - mountPath: /karb-data-root
+            name: backup-volume
+          - name: cert-volume
+            mountPath: "/etc/certs"
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65534
+          runAsNonRoot: true
+          runAsUser: 65534
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+        - name: backup-volume
+          nfs:
+            path: /data/backup/karb
+            server: your-nas.lan
+        - name: cert-volume
+          secret:
+            secretName: karb-admission-certificate-secret
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+      tolerations:
+        []
+---
+# Source: karb/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: karb-admission-certificate
+  namespace: default
+spec:
+  secretName: karb-admission-certificate-secret
+  dnsNames:
+    - karb-admission-svc.default.svc
+  issuerRef:
+    name: self-signer
+---
+# Source: karb/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: self-signer
+  namespace: default
+spec:
+  selfSigned: {}
+---
+# Source: karb/templates/webhookconfiguration.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: karb-admission
+  annotations:
+    cert-manager.io/inject-ca-from: default/karb-admission-certificate
+webhooks:
+  - name: karb-admission.boa.nu
+    admissionReviewVersions:
+      - "v1"
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: "Namespaced"
+    sideEffects: None
+    failurePolicy: Ignore
+    clientConfig:
+      service:
+        name: karb-admission-svc
+        namespace: default
+        path: "/mutate"

@@ -1,0 +1,259 @@
+---
+# Source: sophora-export-job/templates/configmap-template.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-sophora-export-job
+  labels:
+    helm.sh/chart: sophora-export-job-1.1.1
+    app.kubernetes.io/name: sophora-export-job
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4"
+    app.kubernetes.io/managed-by: Helm
+data:
+  exporter-config-template.json: |-
+    {
+      "sophoraServer": {
+        "host": ,
+        "username": "${SERVER_SOPHORAUSERNAME}",
+        "password": "${SERVER_SOPHORAPASSWORD}"
+      },
+      "exportDir": "/data-export",
+      "daemonMode": false,
+      "deltaExport": false,
+      "exportDocumentsWithTimestamp": true,
+      "stringToReferenceProperties": 
+        {},
+      "maxRecursionDepthPerFile": 0,
+      "includeLiveVersionInXml": "true",
+      "documents": 
+        []
+    }
+  wait-for-exporter-to-finish.sh: |-
+    #!/bin/sh
+    
+    jobStart=$(date +%s%3N)
+    
+    RETRIES=100
+    
+    count_files() {
+      count=$(find /data-export | grep -c ".xml")
+      echo "$count"
+    }
+    
+    currentFileCount=$(count_files)
+    while [ "$currentFileCount" -lt 1 ]
+    do
+      if [ "$RETRIES" -lt 1 ]; then
+        exit 1
+      fi
+      RETRIES=$((RETRIES-1))
+      echo "Still waiting for exporter to export at least one file. ${RETRIES} tries left"
+      sleep 10
+      currentFileCount=$(count_files)
+    done
+    
+    # wait while exporter is running
+    while [[ -n "$(pgrep java)" ]]; do
+      pgrep java
+      echo "Waiting for exporter to finish..."
+      sleep 10
+    done
+    exporterDoneTime=$(date +%s%3N)
+    exportDurationMillis=$((exporterDoneTime-jobStart))
+    exportDuration=$(awk -v millis=$exportDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+    exportedFiles=$(count_files)
+    # Write metrics to file
+    cat <<EOT >> /metrics/metrics.txt
+    # HELP sophora_export_job_start the start unix timestamp of the export job
+    # TYPE sophora_export_job_start gauge
+    sophora_export_job_start $jobStart
+    # HELP sophora_export_job_export_duration_seconds
+    # TYPE sophora_export_job_export_duration_seconds gauge
+    sophora_export_job_export_duration_seconds $exportDuration
+    # HELP sophora_export_job_exported_documents
+    # TYPE sophora_export_job_exported_documents gauge
+    sophora_export_job_exported_documents $exportedFiles
+    EOT
+    
+    echo "$jobStart" >> /metrics/job_start.txt
+    
+  upload-to-s3.sh: |-
+    #!/bin/sh
+    
+    # see https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
+    # this script requires env variables CRON_JOB, ZIP_FILE_NAME_DATE_FORMAT, S3_NAME, S3_FILE_PATH_WITHOUT_EXTENSION, S3_ENDPOINT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and STORE_UPLOAD_PER_WEEKDAY to be set
+    
+    echo "creating zip"
+    tree /data-export
+    cd /data-export || exit
+    mkdir "/output"
+    zip -q9rD "/output/export.zip" .
+    
+    # https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/mv.html
+    echo "start uploading to s3..."
+    uploadStart=$(date +%s%3N)
+    aws --endpoint="$S3_ENDPOINT" s3 cp "/output/export.zip" "s3://$S3_NAME$S3_FILE_PATH_WITHOUT_EXTENSION.zip"
+    
+    if [ "$CRON_JOB" = "true" ]; then
+      dateId=$(date +"$ZIP_FILE_NAME_DATE_FORMAT")
+      aws --endpoint="$S3_ENDPOINT" s3 cp "/output/export.zip" "s3://$S3_NAME$S3_FILE_PATH_WITHOUT_EXTENSION-$dateId.zip"
+    fi
+    
+    uploadEnd=$(date +%s%3N)
+    uploadDurationMillis=$((uploadEnd-uploadStart))
+    uploadDuration=$(awk -v millis=$uploadDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+    
+    jobStart=$(cat /metrics/job_start.txt)
+    
+    jobEnd=$(date +%s%3N)
+    jobDurationMillis=$((jobEnd-jobStart))
+    jobDuration=$(awk -v millis=$jobDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+    
+    # Write metrics to file
+    cat <<EOT >> /metrics/metrics.txt
+    # HELP sophora_export_job_upload_duration_seconds
+    # TYPE sophora_export_job_upload_duration_seconds gauge
+    sophora_export_job_upload_duration_seconds $uploadDuration
+    # HELP sophora_export_job_end the end unix timestamp of the export job
+    # TYPE sophora_export_job_end gauge
+    sophora_export_job_end{success="true"} $jobEnd
+    # HELP sophora_export_job_duration_seconds
+    # TYPE sophora_export_job_duration_seconds gauge
+    sophora_export_job_duration_seconds $jobDuration
+    EOT
+    
+    # Push metrics
+    if [ -z "$PUSHGATEWAY_BASE_URL" ]; then
+      echo "pushgateway url is empty - not pushing metrics"
+    else
+      echo "pushing metrics"
+      if [ -z "$PUSHGATEWAY_USERNAME" ]; then
+        curl -X PUT -s -H "Content-Type: text/plain" --data-binary "@/metrics/metrics.txt" "$PUSHGATEWAY_BASE_URL/metrics/job/$JOB_NAME"
+      else
+        curl -X PUT -s -H "Content-Type: text/plain" --user "${PUSHGATEWAY_USERNAME}:${PUSHGATEWAY_PASSWORD}" --data-binary "@/metrics/metrics.txt" "$PUSHGATEWAY_BASE_URL/metrics/job/$JOB_NAME"
+      fi
+    fi
+---
+# Source: sophora-export-job/templates/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-sophora-export-job
+  labels:
+    helm.sh/chart: sophora-export-job-1.1.1
+    app.kubernetes.io/name: sophora-export-job
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 6
+  parallelism: 1
+  activeDeadlineSeconds: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      shareProcessNamespace: true
+      initContainers:
+        - name: config-helper
+          image: "docker.subshell.com/misc/alpine-toolkit:0.1.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVER_SOPHORAUSERNAME
+              valueFrom:
+                secretKeyRef:
+                  key: username
+                  name: 
+            - name: SERVER_SOPHORAPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: 
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              envsubst < /exporter-configmap/exporter-config-template.json > /output/exporter.json
+              echo "Generated exporter-config.json from ENV"
+          volumeMounts:
+            - name: exporter-configmap
+              mountPath: /exporter-configmap
+            - name: exporter-config
+              mountPath: /output
+      containers:
+        - name: exporter
+          image: "docker.subshell.com/sophora/sophora-exporter:latest"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAVA_OPTS
+              value: -XX:InitialRAMPercentage=50.0 -XX:MaxRAMPercentage=80.0 -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 50m
+              memory: 1Gi
+          volumeMounts:
+            - name: exporter-config
+              mountPath: /exporter/config/exporter.json
+              subPath: exporter.json
+            - name: data-export
+              mountPath: /data-export
+        -
+          name: upload
+          image: "docker.subshell.com/misc/aws-cli-tools:0.0.2"
+          imagePullPolicy: IfNotPresent
+          env: 
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  key: accessKeyId
+                  name: 
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: secretAccessKey
+                  name: 
+            - name: S3_ENDPOINT
+              value: https://storage.googleapis.com
+            - name: S3_NAME
+              value: 
+            - name: S3_FILE_PATH_WITHOUT_EXTENSION
+              value: "/export"
+            - name: ZIP_FILE_NAME_DATE_FORMAT
+              value: "%a"
+            - name: CRON_JOB
+              value: "false"
+            - name: PUSHGATEWAY_BASE_URL
+              value: 
+            - name: JOB_NAME
+              value: "release-name-sophora-export-job"
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |-
+              sh /exporter-configmap/wait-for-exporter-to-finish.sh
+              sh /exporter-configmap/upload-to-s3.sh
+          volumeMounts:
+            - name: data-export
+              mountPath: /data-export
+            - name: exporter-configmap
+              mountPath: /exporter-configmap
+            - name: metrics
+              mountPath: /metrics
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
+      volumes:
+        - name: exporter-configmap
+          configMap:
+            name: release-name-sophora-export-job
+        - name: exporter-config
+          emptyDir: {}
+        - name: data-export
+          emptyDir: {}
+        - name: metrics
+          emptyDir: {}

@@ -1,0 +1,222 @@
+---
+# Source: image-suggestion-api/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: image-suggestion-api-release-name
+  labels:
+    app: image-suggestion-api
+    chart: image-suggestion-api-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: image-suggestion-api
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8000
+        protocol: TCP
+      - port: 9102
+        protocol: TCP
+---
+# Source: image-suggestion-api/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: image-suggestion-api-release-name-secret-config
+  labels:
+    app: image-suggestion-api
+    chart: image-suggestion-api-0.1.2
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: image-suggestion-api/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-release-name
+data:
+  config.yaml: |- 
+    
+    # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 1
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 500
+    
+    # Logger info
+    logging:
+      level: info
+    #  streams:
+    #  # Use gelf-stream -> logstash
+    #  - type: gelf
+    #    host: logstash1003.eqiad.wmnet
+    #    port: 12201
+    
+    # Statsd metrics reporter
+    metrics:
+      #type: log
+      #host: localhost
+      #port: 8125
+    
+    services:
+      - name: image-suggestion-api
+        # a relative path or the name of an npm package, if different from name
+        module: ./app.js
+        # optionally, a version constraint of the npm package
+        # version: ^0.4.0
+        # per-service config
+        conf:
+          port: 8000
+          # interface: localhost # uncomment to only listen on localhost
+          # more per-service config settings
+          # the location of the spec, defaults to spec.yaml if not specified
+          spec: ./spec.yaml
+          # allow cross-domain requests to the API (default '*')
+          cors: '*'
+          # to disable use:
+          # cors: false
+          # to restrict to a particular domain, use:
+          # cors: restricted.domain.org
+          # content for the CSP headers
+          # csp: false  # uncomment this line to disable sending them
+          # URL of the outbound proxy to use (complete with protocol)
+          # proxy: http://my.proxy.org:8080
+          # the list of domains for which not to use the proxy defined above
+          # no_proxy_list:
+          #   - domain1.com
+          #   - domain2.org
+          # the list of incoming request headers that can be logged; if left empty,
+          # the following headers are allowed: cache-control, content-length,
+          # content-type, if-match, user-agent, x-request-id
+          # log_header_whitelist:
+          #   - cache-control
+          #   - content-length
+          #   - content-type
+          #   - if-match
+          #   - user-agent
+          #   - x-request-id
+          # the user agent to use when issuing requests
+          # user_agent: service-template-node
+          # max JSON POST body size limit
+          # max_body_size: 100kb
+          # the template used for contacting the MW API
+          mwapi_req:
+            method: post
+            uri: http://localhost/w/api.php
+            headers:
+              host: '{{request.params.domain}}'
+              user-agent: '{{user-agent}}'
+            body: '{{request.body}}'
+          # the template used for contacting RESTBase
+          restbase_req:
+            method: '{{request.method}}'
+            uri: http://localhost:7231
+            query: '{{ default(request.query, {}) }}'
+            headers: '{{request.headers}}'
+            body: '{{request.body}}'
+---
+# Source: image-suggestion-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-suggestion-api-release-name
+  labels:
+    app: image-suggestion-api
+    chart: image-suggestion-api-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: image-suggestion-api
+    release: release-name
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 8000
+      port: 8000
+---
+# Source: image-suggestion-api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-suggestion-api-release-name
+  labels:
+    app: image-suggestion-api
+    chart: image-suggestion-api-0.1.2
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: image-suggestion-api
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: image-suggestion-api
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/secrets: 6e690659cc44a82d3fd6461598002197681e2befac9e6c9352413cd5c5175d02
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:        
+        # The main application container
+        - name: image-suggestion-api-release-name
+          image: "docker-registry.wikimedia.org/wikimedia/mediawiki-services-image-suggestion-api:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 8000
+          readinessProbe:
+            httpGet:
+              path: /_info
+              port: 8000
+            initialDelaySeconds: 30
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: image-suggestion-api-release-name
+          
+          resources:
+            requests:
+              cpu: 500m
+              memory: 500Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi
+                  
+      volumes:        
+          
+        
+        []
+---
+# Source: image-suggestion-api/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'image-suggestion-api-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'image-suggestion-api-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(IMAGE_SUGGESTION_API_RELEASE_NAME_SERVICE_HOST)', 'http://image-suggestion-api-release-name:8000']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

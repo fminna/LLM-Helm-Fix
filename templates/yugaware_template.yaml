@@ -1,0 +1,1157 @@
+---
+# Source: yugaware/templates/pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-yugaware-pdb
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: release-name-yugaware
+---
+# Source: yugaware/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  labels:
+    k8s-app: yugaware
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+---
+# Source: yugaware/templates/global-config.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-yugaware-global-config
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  postgres_db: "eXVnYXdhcmU="
+  postgres_user: "cG9zdGdyZXM="
+  postgres_password: "YUhQYW9kbjc="
+  app_secret: "U1RkVk9IcHZRVFowYjJ4Q2NHNVVhMHAzYjBGMWVXdEdUMlEyZG5kQ2IwVk1ZbUphTmpOcFF6aElhbmhuTUc5Uk9ITk5SamRSY1doNGJVcDRZMnBpYnc9PQ=="
+---
+# Source: yugaware/templates/configs.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-yugaware-app-config
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  application.docker.conf: |
+    include classpath("application.common.conf")
+    play.crypto.secret=${APP_SECRET}
+    play.i18n.langs = [ "en" ]
+    pidfile.path = "/dev/null"
+    play.logger.includeConfigProperties=true
+    log.override.path = "/opt/yugabyte/yugaware/data/logs"
+
+    db {
+      default.dbname=${POSTGRES_DB}
+  
+      default.host="127.0.0.1"
+  
+      default.url="jdbc:postgresql://"${db.default.host}":"${db.default.port}"/"${db.default.dbname}${db.default.params}
+      default.params=""
+      default.username=${POSTGRES_USER}
+      default.password=${POSTGRES_PASSWORD}
+  
+      perf_advisor.url="jdbc:postgresql://"${db.default.host}":"${db.default.port}"/"${db.perf_advisor.dbname}${db.default.params}
+      perf_advisor.createDatabaseUrl="jdbc:postgresql://"${db.default.host}":"${db.default.port}"/"${db.default.dbname}${db.default.params}
+  
+    }
+
+    yb {
+      cloud.enabled = false
+      cloud.requestIdHeader = "X-REQUEST-ID"
+      devops.home = /opt/yugabyte/devops
+      metrics.host = "127.0.0.1"
+      metrics.url = "http://"${yb.metrics.host}":9090/api/v1"
+      metrics.management.url = "http://"${yb.metrics.host}":9090/-"
+      storage.path = /opt/yugabyte/yugaware/data
+      docker.network = bridge
+      seedData = false
+      swamper.targetPath = /opt/yugabyte/prometheus/targets
+      swamper.rulesPath = /opt/yugabyte/prometheus/rules
+      security.enable_auth_for_proxy_metrics = true
+      proxy_endpoint_timeout = 3 minute
+      multiTenant = false
+      releases.path = "/opt/yugabyte/releases"
+      docker.release = "/opt/yugabyte/release"
+      # TODO(bogdan): need this extra level for installing from local...
+      thirdparty.packagePath = /opt/third-party
+      helm.packagePath = "/opt/yugabyte/helm"
+      helm.timeout_secs = 900
+      health.check_interval_ms = 300000
+      health.status_interval_ms = 43200000
+      health.default_email = ""
+      health.ses_email_username = ""
+      health.ses_email_password = ""
+      kubernetes.storageClass = ""
+      kubernetes.pullSecretName = "yugabyte-k8s-pull-secret"
+      kubernetes.operator.enabled = "false"
+      kubernetes.operator.namespace = ""
+      kubernetes.operator.crash_yba_on_operator_failure = "true"
+      url = "https://localhost"
+      # GKE MCS takes 7 to 10 minutes to setup DNS
+      wait_for_server_timeout = 15 minutes
+      security.headers.custom_headers = []
+    }
+
+    play.filters {
+      # CSRF config
+      csrf {
+        cookie {
+          # If non null, the CSRF token will be placed in a cookie with this name
+          name = "csrfCookie"
+          # Whether the cookie should be set to secure
+          secure = false
+          # Whether the cookie should have the HTTP only flag set
+          httpOnly = false
+        }
+        # Whether to bypass CSRF check if CORS check is satisfied
+        bypassCorsTrustedOrigins = false
+        header {
+          # The name of the header to accept CSRF tokens from.
+          name = "Csrf-Token"
+        }
+      }
+      # CORS config
+      cors {
+        pathPrefixes = ["/"]
+        allowedOrigins = ["http://localhost"]
+        # Server allows cookies/credentials to be sent with cross-origin requests
+        supportsCredentials=true
+        allowedHttpMethods = ["GET", "POST", "PUT", "OPTIONS", "DELETE"]
+        allowedHttpHeaders = ["Accept", "Origin", "Content-Type", "X-Auth-Token", "X-AUTH-YW-API-TOKEN", "X-REQUEST-ID", ${play.filters.csrf.header.name}]
+      }
+    }
+
+    # string config entries from helm values additionalAppConf
+
+    # boolean/int config entries from helm values additionalAppConf
+---
+# Source: yugaware/templates/configs.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-yugaware-pg-upgrade
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  pg-upgrade-11-to-14.sh: |
+    #!/bin/bash
+    set -x -o errexit
+
+    cd /pg_upgrade_logs/
+    if [ ! "$(ls -A ${PGDATANEW})" ] && [ "$(ls -A ${PGDATAOLD})" ];
+    then
+      echo "Upgrading PG data from ${PGDATAOLD} to ${PGDATANEW}"
+      # if fsGroup is set, we need to remove the sticky bit, and group
+      # write permission from the directories
+      chmod -R g-w-s "${PGDATAOLD}"
+      chmod g-w-s "${PGDATAOLD}"
+      docker-upgrade pg_upgrade | tee -a /pg_upgrade_logs/pg_upgrade_11_to_14.log;
+      echo "host all all all scram-sha-256" >> "${PGDATANEW}/pg_hba.conf";
+    fi
+---
+# Source: yugaware/templates/configs.yaml
+apiVersion: "v1"
+kind: ConfigMap
+metadata:
+  name: release-name-yugaware-pg-prerun
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  pg-prerun.sh: |
+    #!/bin/bash
+    set -x -o errexit
+
+    mkdir -p $PGDATA && chown -R $PG_UID:$PG_GID $PGDATA;
+---
+# Source: yugaware/templates/configs.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-pg-sample-config
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  postgresql.conf.sample: |
+    datestyle = 'iso, mdy'
+    default_text_search_config = 'pg_catalog.english'
+    dynamic_shared_memory_type = 'posix'
+    huge_pages = 'false'
+    lc_messages = 'en_US.utf8'
+    lc_monetary = 'en_US.utf8'
+    lc_numeric = 'en_US.utf8'
+    lc_time = 'en_US.utf8'
+    listen_addresses = '*'
+    log_filename = 'postgresql-%a.log'
+    log_rotation_age = '1d'
+    log_rotation_size = '0'
+    log_timezone = 'UTC'
+    log_truncate_on_rotation = 'true'
+    logging_collector = 'true'
+    max_connections = '100'
+    max_wal_size = '1GB'
+    min_wal_size = '80MB'
+    shared_buffers = '128MB'
+    timezone = 'UTC'
+    wal_buffers = '4MB'
+---
+# Source: yugaware/templates/configs.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-yugaware-prometheus-config
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  prometheus.yml: |
+    global:
+        scrape_interval:     10s
+        evaluation_interval: 10s
+    rule_files:
+      - '/opt/yugabyte/prometheus/rules/yugaware.ad.*.yml'
+      - '/opt/yugabyte/prometheus/rules/yugaware.recording-rules.yml'
+    scrape_configs:
+
+      - job_name: 'kubernetes-nodes'
+
+        scheme: https
+
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+        kubernetes_sd_configs:
+        - role: node
+
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics
+        metric_relabel_configs:
+          # Only keep the metrics which we care about
+          - source_labels: ["__name__"]
+            regex: "kubelet_volume_stats_used_bytes|kubelet_volume_stats_capacity_bytes"
+            action: keep
+          - source_labels: ["persistentvolumeclaim"]
+            regex: "(.*)-yb-(.*)"
+            action: keep
+          # Save the name of the metric so we can group_by since we cannot by __name__ directly...
+          - source_labels: ["__name__"]
+            regex: "(.*)"
+            target_label: "saved_name"
+            replacement: "$1"
+          - source_labels: ["pod"]
+            regex: "(.*)"
+            target_label: "pod_name"
+            replacement: "$1"
+          - source_labels: ["container"]
+            regex: "(.*)"
+            target_label: "container_name"
+            replacement: "$1"
+
+      - job_name: 'kube-state-metrics'
+        static_configs:
+        - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+        metric_relabel_configs:
+          # Only keep the metrics which we care about
+          - source_labels: ["__name__", "unit"]
+            regex: "kube_pod_container_resource_requests;core"
+            action: keep
+          # Save the name of the metric so we can group_by since we cannot by __name__ directly...
+          - source_labels: ["__name__"]
+            regex: "(.*)"
+            target_label: "saved_name"
+            replacement: "$1"
+          - source_labels: ["pod"]
+            regex: "(.*)"
+            target_label: "pod_name"
+            replacement: "$1"
+          - source_labels: ["container"]
+            regex: "(.*)"
+            target_label: "container_name"
+            replacement: "$1"
+          # Keep metrics from YugabyteDB pods, discard everything else
+          - source_labels: ["pod_name"]
+            regex: "(.*)yb-(.*)"
+            action: keep
+          # rename new name of the CPU metric to the old name and label
+          # ref: https://github.com/kubernetes/kube-state-metrics/blob/master/CHANGELOG.md#v200-alpha--2020-09-16
+          - source_labels: ["__name__", "unit"]
+            regex: "kube_pod_container_resource_requests;core"
+            target_label: "__name__"
+            replacement: "kube_pod_container_resource_requests_cpu_cores"
+          # Keep metrics for CPU, discard duplicate metrics
+          - source_labels: ["__name__"]
+            regex: "kube_pod_container_resource_requests_cpu_cores"
+            action: keep
+
+      - job_name: 'kubernetes-cadvisor'
+
+        scheme: https
+
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+        kubernetes_sd_configs:
+        - role: node
+
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+        metric_relabel_configs:
+          # Only keep the metrics which we care about
+          - source_labels: ["__name__"]
+            regex: "container_cpu_usage_seconds_total|container_memory_working_set_bytes"
+            action: keep
+          # Save the name of the metric so we can group_by since we cannot by __name__ directly...
+          - source_labels: ["__name__"]
+            regex: "(.*)"
+            target_label: "saved_name"
+            replacement: "$1"
+          - source_labels: ["pod"]
+            regex: "(.*)"
+            target_label: "pod_name"
+            replacement: "$1"
+          - source_labels: ["container"]
+            regex: "(.*)"
+            target_label: "container_name"
+            replacement: "$1"
+          # Keep metrics from YugabyteDB pods, discard everything else
+          - source_labels: ["pod_name"]
+            regex: "(.*)yb-(.*)"
+            action: keep
+
+      - job_name: 'platform'
+        metrics_path: "/api/v1/prometheus_metrics"
+        static_configs:
+          - targets: [
+            '127.0.0.1:9000'
+          ]
+      
+      - job_name: 'prometheus'
+        metrics_path: "/metrics"
+        static_configs:
+          - targets: ['127.0.0.1:9090']
+
+      - job_name: 'node-agent'
+        metrics_path: "/metrics"
+        file_sd_configs:
+          - files:
+            - '/opt/yugabyte/prometheus/targets/node-agent.*.json'
+
+      - job_name: "node"
+        file_sd_configs:
+          - files:
+            - '/opt/yugabyte/prometheus/targets/node.*.json'
+        metric_relabel_configs:
+          # Below relabels are required for smooth migration from node_exporter 0.13.0 to the latest
+          - source_labels: ["__name__"]
+            regex: "node_cpu"
+            target_label: "__name__"
+            replacement: "node_cpu_seconds_total"
+          - source_labels: ["__name__"]
+            regex: "node_filesystem_free"
+            target_label: "__name__"
+            replacement: "node_filesystem_free_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_filesystem_size"
+            target_label: "__name__"
+            replacement: "node_filesystem_size_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_disk_reads_completed"
+            target_label: "__name__"
+            replacement: "node_disk_reads_completed_total"
+          - source_labels: ["__name__"]
+            regex: "node_disk_writes_completed"
+            target_label: "__name__"
+            replacement: "node_disk_writes_completed_total"
+          - source_labels: ["__name__"]
+            regex: "node_memory_MemTotal"
+            target_label: "__name__"
+            replacement: "node_memory_MemTotal_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_memory_Slab"
+            target_label: "__name__"
+            replacement: "node_memory_Slab_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_memory_Cached"
+            target_label: "__name__"
+            replacement: "node_memory_Cached_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_memory_Buffers"
+            target_label: "__name__"
+            replacement: "node_memory_Buffers_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_memory_MemFree"
+            target_label: "__name__"
+            replacement: "node_memory_MemFree_bytes"
+          - source_labels: ["__name__"]
+            regex: "node_network_receive_bytes"
+            target_label: "__name__"
+            replacement: "node_network_receive_bytes_total"
+          - source_labels: ["__name__"]
+            regex: "node_network_transmit_bytes"
+            target_label: "__name__"
+            replacement: "node_network_transmit_bytes_total"
+          - source_labels: ["__name__"]
+            regex: "node_network_receive_packets"
+            target_label: "__name__"
+            replacement: "node_network_receive_packets_total"
+          - source_labels: ["__name__"]
+            regex: "node_network_transmit_packets"
+            target_label: "__name__"
+            replacement: "node_network_transmit_packets_total"
+          - source_labels: ["__name__"]
+            regex: "node_network_receive_errs"
+            target_label: "__name__"
+            replacement: "node_network_receive_errs_total"
+          - source_labels: ["__name__"]
+            regex: "node_network_transmit_errs"
+            target_label: "__name__"
+            replacement: "node_network_transmit_errs_total"
+          - source_labels: ["__name__"]
+            regex: "node_disk_bytes_read"
+            target_label: "__name__"
+            replacement: "node_disk_read_bytes_total"
+          - source_labels: ["__name__"]
+            regex: "node_disk_bytes_written"
+            target_label: "__name__"
+            replacement: "node_disk_written_bytes_total"
+          # Save the name of the metric so we can group_by since we cannot by __name__ directly...
+          - source_labels: ["__name__"]
+            regex: "(.*)"
+            target_label: "saved_name"
+            replacement: "$1"
+
+      - job_name: "yugabyte"
+        tls_config:
+          insecure_skip_verify: true
+        metrics_path: "/prometheus-metrics"
+        file_sd_configs:
+          - files:
+            - '/opt/yugabyte/prometheus/targets/yugabyte.*.json'
+        metric_relabel_configs:
+          # Save the name of the metric so we can group_by since we cannot by __name__ directly...
+          - source_labels: ["__name__"]
+            regex: "(.*)"
+            target_label: "saved_name"
+            replacement: "$1"
+          # The following basically retrofit the handler_latency_* metrics to label format.
+          - source_labels: ["__name__"]
+            regex: "handler_latency_(yb_[^_]*)_([^_]*)_([^_]*)(.*)"
+            target_label: "server_type"
+            replacement: "$1"
+          - source_labels: ["__name__"]
+            regex: "handler_latency_(yb_[^_]*)_([^_]*)_([^_]*)(.*)"
+            target_label: "service_type"
+            replacement: "$2"
+          - source_labels: ["__name__"]
+            regex: "handler_latency_(yb_[^_]*)_([^_]*)_([^_]*)(_sum|_count)?"
+            target_label: "service_method"
+            replacement: "$3"
+          - source_labels: ["__name__"]
+            regex: "handler_latency_(yb_[^_]*)_([^_]*)_([^_]*)(_sum|_count)?"
+            target_label: "__name__"
+            replacement: "rpc_latency$4"
+---
+# Source: yugaware/templates/init-container-script.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-yugaware-init
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+data:
+  init-permissions.sh: |
+    #!/bin/bash
+
+    set -xe -o pipefail
+
+    recreate_files() {
+      local source_directory="$1"
+      local backup_suffix="$2"
+      local target_directory="$(dirname "${source_directory}")/${backup_suffix}"
+      local temp_directory="$(dirname "${source_directory}")/${backup_suffix}-$(date +%s)"
+
+      echo "Creating copy of ${source_directory} directory"
+      cp -r "${source_directory}" "${target_directory}"
+
+      echo "Renaming existing directory"
+      mv "${source_directory}" "${temp_directory}"
+
+      echo "Renaming target  directory source directory"
+      mv "${target_directory}" "${source_directory}"
+    }
+
+    data_directory="/opt/yugabyte/yugaware/data"
+    if [[ -d "${data_directory}/keys/" ]]; then
+      pemfiles=$(find "${data_directory}/keys/" -name "*.pem" -exec stat -c "%a" {} + | uniq | tr '\n' ',')
+      IFS="," read -r -a pemfile_perms <<< "${pemfiles}"
+
+      trigger=false
+      echo "Finding pem files with permissions different than 400, and setting their permissions to 400."
+
+      for pemfile in  "${pemfile_perms[@]}"; do
+        if [[ "${pemfile}" != *400* ]]; then
+          echo "Found a pem file with permissions ${pemfile}"
+          trigger=true
+          break
+        fi
+      done
+
+      if ${trigger}; then
+        echo "Creating copy of data/keys directory"
+        cp -r "${data_directory}/keys" "${data_directory}/new_keys"
+
+        echo "Setting permission of all pem files to 400"
+        find "${data_directory}/new_keys/" -name "*.pem" -exec chmod 400 {} +
+
+        echo "Renaming existing keys directory"
+        mv "${data_directory}/keys" "${data_directory}/keys-$(date +%s)"
+
+        echo "Renaming new keys directory"
+        mv "${data_directory}/new_keys" "${data_directory}/keys"
+      else
+        echo "All pem files already have permission set to 400"
+      fi
+    fi
+    # Update provision_instance.py script to correct permissions.
+    if [[ -d "/opt/yugabyte/yugaware/data/provision/" ]]; then
+      recreate_files "/opt/yugabyte/yugaware/data/provision/" "backup_provision"
+    fi
+---
+# Source: yugaware/templates/volumes.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-yugaware-storage
+  labels:
+    app: yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: yugaware/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name
+rules:
+# Set of permissions required for operator
+- apiGroups:
+  - operator.yugabyte.io
+  resources:
+  - "*"
+  verbs:
+  - "get"
+  - "create"
+  - "delete"
+  - "patch"
+  - "list"
+  - "watch"
+  - "update"
+# Set of permissions required to install, upgrade, delete the yugabyte chart
+- apiGroups:
+  - "policy"
+  resources:
+  - "poddisruptionbudgets"
+  verbs:
+  - "get"
+  - "create"
+  - "delete"
+  - "patch"
+- apiGroups:
+  - ""
+  resources:
+  - "services"
+  verbs:
+  - "get"
+  - "delete"
+  - "create"
+  - "patch"
+- apiGroups:
+  - "apps"
+  resources:
+  - "statefulsets"
+  verbs:
+  - "get"
+  - "list"
+  - "delete"
+  - "create"
+  - "patch"
+- apiGroups:
+  - ""
+  resources:
+  - "secrets"
+  verbs:
+  - "create"
+  - "list"
+  - "get"
+  - "delete"
+  - "update"
+  - "patch"
+- apiGroups:
+  - "cert-manager.io"
+  resources:
+  - "certificates"
+  verbs:
+  - "create"
+  - "delete"
+  - "get"
+  - "patch"
+- apiGroups:
+  - ""
+  resources:
+  - "configmaps"
+  verbs:
+  - "get"
+  - "create"
+  - "patch"
+  - "delete"
+# Set of permissions required by YBA to manage YB DB universes
+- apiGroups:
+  - ""
+  resources:
+  - "namespaces"
+  verbs:
+  - "delete"
+  - "create"
+  - "patch"
+  - "get"
+  - "list"
+- apiGroups:
+  - ""
+  resources:
+  - "pods"
+  verbs:
+  - "get"
+  - "list"
+  - "delete"
+- apiGroups:
+  - ""
+  resources:
+  - "services"
+  verbs:
+  - "get"
+  - "list"
+- apiGroups:
+  - ""
+  resources:
+  - "persistentvolumeclaims"
+  verbs:
+  - "get"
+  - "patch"
+  - "list"
+  - "delete"
+- apiGroups:
+  - ""
+  resources:
+  - "pods/exec"
+  verbs:
+  - "create"
+- apiGroups:
+  - "apps"
+  resources:
+  - "statefulsets/scale"
+  verbs:
+  - "patch"
+- apiGroups:
+  - ""
+  resources:
+  - "events"
+  verbs:
+  - "list"
+# required to scrape resource metrics like CPU, memory, etc.
+- apiGroups:
+  - ""
+  resources:
+  - "nodes"
+  verbs:
+  - "list"
+  - "get"
+  - "watch"
+# required to scrape resource metrics like CPU, memory, etc.
+- apiGroups:
+  - ""
+  resources:
+  - "nodes/proxy"
+  verbs:
+  - "get"
+# Ref: https://github.com/yugabyte/charts/commit/4a5319972385666487a7bc2cd0c35052f2cfa4c5
+- apiGroups:
+  - ""
+  resources:
+  - "events"
+  verbs:
+  - "get"
+  - "list"
+  - "watch"
+  - "create"
+  - "update"
+  - "patch"
+  - "delete"
+- apiGroups:
+  - ""
+  resources:
+  - "configmaps"
+  verbs:
+  - "list"
+  - "watch"
+  - "update"
+---
+# Source: yugaware/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+  labels:
+    k8s-app: yugaware
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: yugaware/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-yugaware-ui
+  labels:
+    app: release-name-yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+spec:
+  ports:
+  - name: ui
+    port: 80
+    targetPort: 9000
+  - name: metrics
+    port: 9090
+  selector:
+    app: release-name-yugaware
+  type: "LoadBalancer"
+---
+# Source: yugaware/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-yugaware
+  labels:
+    app: release-name-yugaware
+    chart: yugaware
+    release: release-name
+    heritage: "Helm"
+spec:
+  serviceName: release-name-yugaware
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-yugaware
+  template:
+    metadata:
+      annotations:
+        checksum/config: 4eab74dc486e50352a4a7c3c935937d0ff6254bb3d92337aa4171e55e2c90cf8
+      labels:
+        app: release-name-yugaware
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: release-name
+      imagePullSecrets:
+      - name: yugabyte-k8s-pull-secret
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      volumes:
+        - name: yugaware-storage
+          persistentVolumeClaim:
+            claimName: release-name-yugaware-storage
+        - name: yugaware-ui
+          emptyDir: {}
+        - name: yugaware-config
+          projected:
+            sources:
+              - configMap:
+                  name: release-name-yugaware-app-config
+                  items:
+                    - key: application.docker.conf
+                      path: application.docker.conf
+        - name: prometheus-config
+          configMap:
+            name: release-name-yugaware-prometheus-config
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+        - name: init-container-script
+          configMap:
+            name: release-name-yugaware-init
+            items:
+              - key: init-permissions.sh
+                path: init-permissions.sh
+        - name: pg-upgrade-11-to-14
+          configMap:
+            name: release-name-yugaware-pg-upgrade
+            items:
+              - key: pg-upgrade-11-to-14.sh
+                path: pg-upgrade-11-to-14.sh
+        - name: pg-init
+          configMap:
+            name: release-name-yugaware-pg-prerun
+            items:
+              - key: pg-prerun.sh
+                path: pg-prerun.sh
+        - name: pg-sample-config
+          configMap:
+            name: release-name-pg-sample-config
+            items:
+              - key: postgresql.conf.sample
+                path: postgresql.conf.sample
+      initContainers:
+        - image: quay.io/yugabyte/yugaware:2.21.0.0-b545
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "0.25"
+              memory: 500Mi
+          name: prometheus-configuration
+          command:
+            - 'bash'
+            - '-c'
+            - |
+              cp /default_prometheus_config/prometheus.yml /prometheus_configs/prometheus.yml && /bin/bash /init-container/init-permissions.sh;          
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          volumeMounts:
+          - name: prometheus-config
+            mountPath: /default_prometheus_config
+          - name: yugaware-storage
+            mountPath: /prometheus_configs
+            subPath: prometheus.yml
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/yugaware/data/
+            subPath: data
+          - name: init-container-script
+            mountPath: /init-container
+        - image: tianon/postgres-upgrade:11-to-14
+          imagePullPolicy: IfNotPresent
+          name: postgres-upgrade
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: 500Mi
+          command:
+          - 'bash'
+          - '-c'
+          - /bin/bash /pg_upgrade_11_to_14/pg-upgrade-11-to-14.sh;
+          env:
+          - name: PGDATANEW
+            value: /var/lib/postgresql/14/pgdata
+          - name: PGDATAOLD
+            value: /var/lib/postgresql/11/pgdata
+          # https://github.com/tianon/docker-postgres-upgrade/issues/10#issuecomment-523020113
+          - name: PGUSER
+            valueFrom:
+              secretKeyRef:
+                name: release-name-yugaware-global-config
+                key: postgres_user
+          - name: POSTGRES_INITDB_ARGS
+            value: "-U $PGUSER"
+          volumeMounts:
+          - name: yugaware-storage
+            mountPath: /var/lib/postgresql/11/
+            subPath: postgres_data
+          - name: yugaware-storage
+            mountPath: /var/lib/postgresql/14/
+            subPath: postgres_data_14
+          - name: pg-upgrade-11-to-14
+            mountPath: /pg_upgrade_11_to_14
+          - name: yugaware-storage
+            mountPath: /pg_upgrade_logs
+            subPath: postgres_data_14
+        - image: postgres:14.9
+          name: postgres-init
+          resources:
+            requests:
+              cpu: "0.25"
+              memory: 500Mi
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/pg_prerun/pg-prerun.sh"]
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: PG_UID
+              value: "10001"
+            - name: PG_GID
+              value: "10001"
+          volumeMounts:
+          - name: yugaware-storage
+            mountPath: /var/lib/postgresql/data
+            subPath: postgres_data_14
+          - name: pg-init
+            mountPath: /pg_prerun
+      containers:
+        
+        - name: postgres
+          image: postgres:14.9
+          imagePullPolicy: IfNotPresent          
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_db
+            # The RH Postgres image doesn't allow this directory to be changed.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+              name: postgres
+          resources:
+            requests:
+              cpu: "0.5"
+              memory: 1Gi
+          
+
+          volumeMounts:
+            - name: yugaware-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres_data_14
+            - name: pg-sample-config
+              mountPath: /usr/share/postgresql/postgresql.conf.sample
+              subPath: postgresql.conf.sample
+
+        # Check if yugabytedb is enabled.
+
+        - name: prometheus
+          image: prom/prometheus:v2.47.1
+          imagePullPolicy: IfNotPresent
+          
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+          
+
+          volumeMounts:
+          - name: yugaware-storage
+            mountPath: /prometheus_configs
+            subPath: prometheus.yml
+          - name: yugaware-storage
+            mountPath: /prometheus/
+          - mountPath: /opt/yugabyte/yugaware/data/keys/
+            name: yugaware-storage
+            subPath: data/keys
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/prometheus/targets
+            subPath: swamper_targets
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/prometheus/rules
+            subPath: swamper_rules
+          args:
+            - --config.file=/prometheus_configs/prometheus.yml
+            - --storage.tsdb.path=/prometheus/
+            - --web.enable-admin-api
+            - --web.enable-lifecycle
+            - --storage.tsdb.retention.time=15d
+            - --query.max-concurrency=20
+            - --query.max-samples=5e+06
+            - --query.timeout=30s
+          ports:
+            - containerPort: 9090
+        - name: yugaware
+          image: quay.io/yugabyte/yugaware:2.21.0.0-b545
+          
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+          args: ["bin/yugaware","-Dconfig.file=/data/application.docker.conf"]
+          env:
+          # Conditionally set these env variables, if runAsUser is not 0(root)
+          # or 10001(yugabyte).
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: postgres_db
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-yugaware-global-config
+                  key: app_secret
+          ports:
+            - containerPort: 9000
+              name: yugaware
+          volumeMounts:
+          - name: yugaware-config
+            mountPath: /data
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/yugaware/data/
+            subPath: data
+          # old path for backward compatibility
+          - name: yugaware-storage
+            mountPath: /opt/yugaware_data/
+            subPath: data
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/releases/
+            subPath: releases
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/ybc/releases/
+            subPath: ybc_releases
+          # old path for backward compatibility
+          - name: yugaware-storage
+            mountPath: /opt/releases/
+            subPath: releases
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/prometheus/targets
+            subPath: swamper_targets
+          - name: yugaware-storage
+            mountPath: /opt/yugabyte/prometheus/rules
+            subPath: swamper_rules
+          - name: yugaware-storage
+            mountPath: /prometheus_configs
+            subPath: prometheus.yml
+---
+# Source: yugaware/templates/certificates.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/configs.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/global-config.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/service.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/statefulset.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/universe-boot-script.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/ybdb-scripts-configmap.yaml
+# Copyright (c) YugaByte, Inc.
+---
+# Source: yugaware/templates/tests/test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-yugaware-test
+  labels:
+    app: release-name-yugaware-test
+    chart: yugaware
+    release: release-name
+  annotations:
+    "helm.sh/hook": test
+spec:
+  terminationGracePeriodSeconds: 30
+  imagePullSecrets:
+  - name: yugabyte-k8s-pull-secret
+  containers:
+    - name: yugaware-test
+      image: quay.io/yugabyte/yugaware:2.21.0.0-b545
+      command:
+        - '/bin/bash'
+        - '-ec'
+        - >
+          sleep 60s;
+        - >
+            curl --head http://release-name-yugaware-ui
+      # Hard coded resources to the test pod.
+      resources:
+        limits:
+          cpu: "1"
+          memory: "512Mi"
+        requests:
+          cpu: "0.5"
+          memory: "256Mi"
+  restartPolicy: Never

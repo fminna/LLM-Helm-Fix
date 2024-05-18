@@ -1,0 +1,781 @@
+---
+# Source: metersphere/charts/kafka/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metersphere-kafka
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-11.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+---
+# Source: metersphere/charts/kafka/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metersphere-kafka-scripts
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-11.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    ID="${MY_POD_NAME#"metersphere-kafka-"}"
+    export KAFKA_CFG_BROKER_ID="$ID"
+
+    exec /entrypoint.sh /run.sh
+---
+# Source: metersphere/templates/01-config-map/metersphere-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metersphere-config
+data:
+  metersphere.properties: |-
+    
+    ## DATABASE
+    spring.datasource.url=jdbc:mysql://metersphere-mysql:3306/metersphere?autoReconnect=false&useUnicode=true&characterEncoding=UTF-8&characterSetResults=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false
+    spring.datasource.username=root
+    spring.datasource.password=Password123@mysql
+    
+    ## KAFKA
+    kafka.partitions=1
+    kafka.replicas=1
+    kafka.topic=JMETER_METRICS
+    kafka.bootstrap-servers=metersphere-kafka.default:9092
+    kafka.log.topic=JMETER_LOGS
+    
+    ## JMETER
+    jmeter.image=registry.cn-qingdao.aliyuncs.com/metersphere/jmeter-master:5.3-ms14
+    jmeter.pod.threads.limit=500
+    
+    logger.sql.level=info
+
+  data-streaming.properties: |-
+    
+    ## DATABASE
+    spring.datasource.url=jdbc:mysql://metersphere-mysql:3306/metersphere?autoReconnect=false&useUnicode=true&characterEncoding=UTF-8&characterSetResults=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false
+    spring.datasource.username=root
+    spring.datasource.password=Password123@mysql
+    
+    ## KAFKA
+    kafka.partitions=1
+    kafka.replicas=1
+    kafka.topic=JMETER_METRICS
+    kafka.bootstrap-servers=metersphere-kafka:9092
+    kafka.log.topic=JMETER_LOGS
+    jmeter.report.granularity=5000
+---
+# Source: metersphere/templates/01-config-map/mysql-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+data:
+  my.cnf: |
+    [mysqld]
+    datadir=/var/lib/mysql
+
+    default-storage-engine=INNODB
+    character_set_server=utf8
+    lower_case_table_names=1
+    table_open_cache=128
+    max_connections=2000
+    max_connect_errors=6000
+    innodb_file_per_table=1
+    innodb_buffer_pool_size=1G
+    max_allowed_packet=64M
+    transaction_isolation=READ-COMMITTED
+    innodb_flush_method=O_DIRECT
+    innodb_lock_wait_timeout=1800
+    innodb_flush_log_at_trx_commit=0
+    sync_binlog=0
+
+    sql_mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
+
+    skip-name-resolve
+
+    [mysql]
+    default-character-set=utf8
+
+    [mysql.server]
+    default-character-set=utf8
+  init.sql: |
+    CREATE DATABASE `metersphere` /*!40100 DEFAULT CHARACTER SET utf8 */;
+---
+# Source: metersphere/templates/02-pvc/mysql.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: mysql-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName:
+---
+# Source: metersphere/charts/kafka/charts/zookeeper/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-zookeeper-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-5.17.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    
+    
+    - name: follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: metersphere/charts/kafka/charts/zookeeper/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-5.17.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  ports:
+    
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    
+    
+    - name: follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: metersphere/charts/kafka/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-kafka-headless
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-11.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+    - name: tcp-internal
+      port: 9093
+      protocol: TCP
+      targetPort: kafka-internal
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: metersphere/charts/kafka/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-kafka
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-11.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: metersphere/templates/03-modules/metersphere-data-streaming.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-data-streaming
+  labels:
+    app: metersphere-data-streaming
+spec:
+  sessionAffinity: ClientIP
+  selector:
+    app: metersphere-data-streaming
+  ports:
+    - name: http
+      port: 8084
+      protocol: TCP
+---
+# Source: metersphere/templates/03-modules/metersphere-server.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-server
+  labels:
+    app: metersphere-server
+spec:
+  sessionAffinity: ClientIP
+  selector:
+    app: metersphere-server
+  ports:
+    - name: http
+      port: 8081
+      protocol: TCP
+  type: NodePort
+---
+# Source: metersphere/templates/03-modules/mysql.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: metersphere-mysql
+  labels:
+    app: metersphere-mysql
+spec:
+  clusterIP: None
+  selector:
+    app: metersphere-mysql
+  ports:
+    - name: tcp
+      port: 3306
+      protocol: TCP
+---
+# Source: metersphere/templates/03-modules/metersphere-data-streaming.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metersphere-data-streaming
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metersphere-data-streaming
+  template:
+    metadata:
+      labels:
+        app: metersphere-data-streaming
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - metersphere-data-streaming
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: wait-mysql
+          image: busybox:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -ex
+              until nc -zv metersphere-mysql 3306; do sleep 5; done
+              sleep 10
+        - name: wait-kafka
+          image: busybox:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -ex
+              until nc -zv metersphere-kafka 9092; do sleep 5; done
+              sleep 10
+      containers:
+        - name: metersphere-data-streaming
+          image: registry.cn-qingdao.aliyuncs.com/metersphere/ms-data-streaming:v1.6
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 300Mi
+              cpu: 0.1
+          ports:
+            - name: http
+              containerPort: 8084
+          volumeMounts:
+            - mountPath: /opt/metersphere/conf
+              name: opt-metersphere-config
+            - mountPath: /opt/metersphere/logs
+              name: metersphere-logs
+      
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: metersphere-config
+            items:
+            - key: data-streaming.properties
+              path: metersphere.properties
+          name: opt-metersphere-config
+        - name: metersphere-logs
+          
+          emptyDir: {}
+---
+# Source: metersphere/templates/03-modules/metersphere-server.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metersphere-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metersphere-server
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 100%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: metersphere-server
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - metersphere-server
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: wait-mysql
+          image: busybox:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -ex
+              until nc -zv metersphere-mysql 3306; do sleep 5; done
+              sleep 10
+      containers:
+        - name: metersphere-server
+          image: registry.cn-qingdao.aliyuncs.com/metersphere/metersphere:v1.6
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 300Mi
+              cpu: 0.1
+          ports:
+            - name: http
+              containerPort: 8081
+          volumeMounts:
+            - mountPath: /opt/metersphere/conf
+              name: opt-metersphere-config
+            - mountPath: /opt/metersphere/logs
+              name: metersphere-logs
+      
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: metersphere-config
+            items:
+            - key: metersphere.properties
+              path: metersphere.properties
+          name: opt-metersphere-config
+        - name: metersphere-logs
+          
+          emptyDir: {}
+---
+# Source: metersphere/charts/kafka/charts/zookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: metersphere-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-5.17.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+    role: zookeeper
+spec:
+  serviceName: metersphere-zookeeper-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zookeeper
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: zookeeper
+  template:
+    metadata:
+      name: metersphere-zookeeper
+      labels:
+        app.kubernetes.io/name: zookeeper
+        helm.sh/chart: zookeeper-5.17.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: zookeeper
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: zookeeper
+          image: registry.cn-qingdao.aliyuncs.com/metersphere/zookeeper:3
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - bash
+            - -ec
+            - |
+                # Execute entrypoint as usual after obtaining ZOO_SERVER_ID based on POD hostname
+                HOSTNAME=`hostname -s`
+                if [[ $HOSTNAME =~ (.*)-([0-9]+)$ ]]; then
+                  ORD=${BASH_REMATCH[2]}
+                  export ZOO_SERVER_ID=$((ORD+1))
+                else
+                  echo "Failed to get index from hostname $HOST"
+                  exit 1
+                fi
+                exec /entrypoint.sh /run.sh
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: ZOO_PORT_NUMBER
+              value: "2181"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+            - name: ZOO_INIT_LIMIT
+              value: "10"
+            - name: ZOO_SYNC_LIMIT
+              value: "5"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr, mntr"
+            - name: ZOO_LISTEN_ALLIPS_ENABLED
+              value: "no"
+            - name: ZOO_AUTOPURGE_INTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_RETAIN_COUNT
+              value: "3"
+            - name: ZOO_MAX_SESSION_TIMEOUT
+              value: "40000"
+            - name: ZOO_SERVERS
+              value: metersphere-zookeeper-0.metersphere-zookeeper-headless.default.svc.cluster.local:2888:3888 
+            - name: ZOO_ENABLE_AUTH
+              value: "no"
+            - name: ZOO_HEAP_SIZE
+              value: "1024"
+            - name: ZOO_LOG_LEVEL
+              value: "ERROR"
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          ports:
+            
+            - name: client
+              containerPort: 2181
+            
+            
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          livenessProbe:
+            tcpSocket:
+              
+              port: client
+              
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            tcpSocket:
+              
+              port: client
+              
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/zookeeper
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# Source: metersphere/charts/kafka/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: metersphere-kafka
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-11.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: kafka
+  serviceName: metersphere-kafka-headless
+  updateStrategy:
+    type: "RollingUpdate"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        helm.sh/chart: kafka-11.3.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: kafka
+    spec:      
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      serviceAccountName: metersphere-kafka
+      containers:
+        - name: kafka
+          image: registry.cn-qingdao.aliyuncs.com/metersphere/kafka:2
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECT
+              value: "metersphere-zookeeper"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,CLIENT:PLAINTEXT"
+            - name: KAFKA_CFG_LISTENERS
+              value: "INTERNAL://:9093,CLIENT://:9092"
+            - name: KAFKA_CFG_ADVERTISED_LISTENERS
+              value: "INTERNAL://$(MY_POD_NAME).metersphere-kafka-headless.default.svc.cluster.local:9093,CLIENT://$(MY_POD_NAME).metersphere-kafka-headless.default.svc.cluster.local:9092"
+            - name: ALLOW_PLAINTEXT_LISTENER
+              value: "yes"
+            - name: KAFKA_CFG_BROKER_ID
+              value: "-1"
+            - name: KAFKA_CFG_DELETE_TOPIC_ENABLE
+              value: "false"
+            - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx1024m -Xms1024m"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MESSAGES
+              value: "10000"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MS
+              value: "1000"
+            - name: KAFKA_CFG_LOG_RETENTION_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_RETENTION_CHECK_INTERVALS_MS
+              value: "300000"
+            - name: KAFKA_CFG_LOG_RETENTION_HOURS
+              value: "168"
+            - name: KAFKA_CFG_MESSAGE_MAX_BYTES
+              value: "1000012"
+            - name: KAFKA_CFG_LOG_SEGMENT_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_DIRS
+              value: "/bitnami/kafka/data"
+            - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_CFG_NUM_IO_THREADS
+              value: "8"
+            - name: KAFKA_CFG_NUM_NETWORK_THREADS
+              value: "3"
+            - name: KAFKA_CFG_NUM_PARTITIONS
+              value: "1"
+            - name: KAFKA_CFG_NUM_RECOVERY_THREADS_PER_DATA_DIR
+              value: "1"
+            - name: KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES
+              value: "104857600"
+            - name: KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECTION_TIMEOUT_MS
+              value: "6000"
+          ports:
+            - name: kafka-client
+              containerPort: 9092
+            - name: kafka-internal
+              containerPort: 9093
+          livenessProbe:
+            tcpSocket:
+              port: kafka-client
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 
+            periodSeconds: 
+            successThreshold: 
+          readinessProbe:
+            tcpSocket:
+              port: kafka-client
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+            periodSeconds: 
+            successThreshold: 
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/kafka
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: metersphere-kafka-scripts
+            defaultMode: 0755
+        - name: data
+          emptyDir: {}
+---
+# Source: metersphere/templates/03-modules/mysql.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  replicas: 1
+  serviceName: "metersphere-mysql"
+  selector:
+    matchLabels:
+      app: metersphere-mysql
+  template:
+    metadata:
+      labels:
+        app: metersphere-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: registry.cn-qingdao.aliyuncs.com/metersphere/mysql:5.7.25
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: 100Mi
+              cpu: 0.1
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: Password123@mysql
+          ports:
+            - name: tcp
+              containerPort: 3306
+          volumeMounts:
+            - mountPath: /etc/mysql/conf.d/my.cnf
+              name: opt-metersphere-config
+              subPath: my.cnf
+            - mountPath: /docker-entrypoint-initdb.d/init.sql
+              name: init-mysql
+              subPath: init.sql
+            - mountPath: /var/lib/mysql
+              name: mysql-data
+              subPath: mysql
+      
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: mysql-config
+          name: opt-metersphere-config
+        - configMap:
+            defaultMode: 420
+            name: mysql-config
+          name: init-mysql
+        - name: mysql-data
+          
+          persistentVolumeClaim:
+            claimName: mysql-data-pvc

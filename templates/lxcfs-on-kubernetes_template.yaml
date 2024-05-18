@@ -1,0 +1,243 @@
+---
+# Source: lxcfs-on-kubernetes/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: 'release-name-lxcfs-on-kubernetes-manager-role'
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - events
+  verbs:
+  - '*'
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - '*'
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - '*'
+---
+# Source: lxcfs-on-kubernetes/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: 'release-name-lxcfs-on-kubernetes-manager-rolebinding'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'release-name-lxcfs-on-kubernetes-manager-role'
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: "default"
+---
+# Source: lxcfs-on-kubernetes/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: 'release-name-lxcfs-on-kubernetes-webhook-service'
+  namespace: "default"
+  labels:
+    helm.sh/chart: lxcfs-on-kubernetes-0.1.4
+    app.kubernetes.io/name: lxcfs-on-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/compose: manager
+    app.kubernetes.io/version: "0.1.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 9443
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: lxcfs-on-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/compose: manager
+---
+# Source: lxcfs-on-kubernetes/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    helm.sh/chart: lxcfs-on-kubernetes-0.1.4
+    app.kubernetes.io/name: lxcfs-on-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/compose: lxcfs
+    app.kubernetes.io/version: "0.1.4"
+    app.kubernetes.io/managed-by: Helm
+  name: 'release-name-lxcfs-on-kubernetes-controller-manager-daemonset'
+  namespace: "default"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lxcfs-on-kubernetes
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/compose: lxcfs
+  template:
+    metadata:
+      annotations:
+        {}
+      labels:
+        app.kubernetes.io/name: lxcfs-on-kubernetes
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/compose: lxcfs
+    spec:
+      containers:
+      - args:
+        - -l
+        - --enable-cfs
+        - --enable-pidfd
+        - /var/lib/lxcfs
+        image: ghcr.io/cndoit18/lxcfs-agent:v0.1.4
+        imagePullPolicy: "IfNotPresent"
+        name: agent
+        resources:
+          limits:
+            cpu: 500m
+            memory: 300Mi
+          requests:
+            cpu: 300m
+            memory: 200M
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /var/lib/lxcfs
+          mountPropagation: Bidirectional
+          name: lxcfs
+        - mountPath: /sys/fs/cgroup
+          name: cgroup
+      hostPID: true
+      volumes:
+      - hostPath:
+          path: /var/lib/lxcfs
+          type: DirectoryOrCreate
+        name: lxcfs
+      - hostPath:
+          path: /sys/fs/cgroup
+        name: cgroup
+---
+# Source: lxcfs-on-kubernetes/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    helm.sh/chart: lxcfs-on-kubernetes-0.1.4
+    app.kubernetes.io/name: lxcfs-on-kubernetes
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/compose: manager
+    app.kubernetes.io/version: "0.1.4"
+    app.kubernetes.io/managed-by: Helm
+  name: 'release-name-lxcfs-on-kubernetes-controller-manager'
+  namespace: "default"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lxcfs-on-kubernetes
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/compose: manager
+  template:
+    metadata:
+      annotations:
+        {}
+      labels:
+        app.kubernetes.io/name: lxcfs-on-kubernetes
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/compose: manager
+    spec:
+      containers:
+      - args:
+        - --lxcfs-path=/var/lib/lxcfs
+        - --v=4
+        - --leader-election=false
+        - --leader-election-namespace=kube-system
+        - --leader-election-id=lxcfs-on-kubernetes-leader-election
+        image: ghcr.io/cndoit18/lxcfs-manager:v0.1.4
+        imagePullPolicy: "IfNotPresent"
+        name: manager
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 300Mi
+          requests:
+            cpu: 300m
+            memory: 200Mi
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: 'release-name-lxcfs-on-kubernetes-certificate'
+---
+# Source: lxcfs-on-kubernetes/templates/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: 'release-name-lxcfs-on-kubernetes-serving-cert'
+  namespace: "default"
+spec:
+  dnsNames:
+  - 'release-name-lxcfs-on-kubernetes-webhook-service.default.svc'
+  - 'release-name-lxcfs-on-kubernetes-webhook-service.default.svc.cluster.local'
+  issuerRef:
+    kind: Issuer
+    name: 'release-name-lxcfs-on-kubernetes-selfsigned-issuer'
+  secretName: 'release-name-lxcfs-on-kubernetes-certificate'
+---
+# Source: lxcfs-on-kubernetes/templates/issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: 'release-name-lxcfs-on-kubernetes-selfsigned-issuer'
+  namespace: "default"
+spec:
+  selfSigned: {}
+---
+# Source: lxcfs-on-kubernetes/templates/mutatingwebhookconfiguration.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: 'default/release-name-lxcfs-on-kubernetes-serving-cert'
+  name: 'release-name-lxcfs-on-kubernetes-mutating-webhook-configuration'
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: 'release-name-lxcfs-on-kubernetes-webhook-service'
+      namespace: "default"
+      path: /mount-lxcfs
+  failurePolicy: Ignore
+  name: club.cndoit18.lxcfs-on-kubernetes
+  namespaceSelector:
+    matchLabels:
+      mount-lxcfs: enabled
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - pods
+  sideEffects: NoneOnDryRun

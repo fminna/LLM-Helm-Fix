@@ -1,0 +1,201 @@
+---
+# Source: minecraft-overviewer/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-minecraft-overviewer
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: minecraft-overviewer/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-minecraft-overviewer
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.py: |
+    worlds["World"] = "/srv/world"
+    outputdir = "/tmp/overviewer"
+    texturepath = "/srv/minecraft_server.1.17.1.jar"
+    renders["day"] = {
+            "world": "World",
+            "title": "Daytime",
+            "rendermode": "smooth_lighting",
+            "dimension": "overworld"
+    }
+    renders["night"] = {
+            "world": "World",
+            "title": "Nighttime",
+            "rendermode": "smooth_night",
+            "dimension": "overworld"
+    }
+    renders["nether"] = {
+            "world": "World",
+            "title": "Nether",
+            "rendermode": "nether_smooth_lighting",
+            "dimension": "nether"
+    }
+---
+# Source: minecraft-overviewer/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-minecraft-overviewer
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+---
+# Source: minecraft-overviewer/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-minecraft-overviewer
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minecraft-overviewer
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minecraft-overviewer
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-minecraft-overviewer
+      securityContext:
+        fsGroup: 2000
+      initContainers:  # One time setup to create index.html if the www is empty
+        - name: init-minecraft-overviewer
+          image: busybox
+          command: ['sh', '-c', 'touch /usr/share/nginx/html/index.html']
+          volumeMounts:
+            - name: map
+              mountPath: /usr/share/nginx/html
+      containers:
+        - name: minecraft-overviewer
+          securityContext:
+            {}
+          image: "nginx:stable"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+          volumeMounts:
+            - name: map
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: map
+          emptyDir: {}
+---
+# Source: minecraft-overviewer/templates/cronjob.yaml
+# Where to set concurrent policy to false?
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-minecraft-overviewer
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "@daily"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: minecraft-overviewer
+            app.kubernetes.io/instance: release-name
+        spec:
+          containers:
+          - name: minecraft-overviewer
+            image: "mide/minecraft-overviewer:latest"
+            imagePullPolicy: IfNotPresent
+            env:
+              # - name: CONFIG_LOCATION
+              #   value: "/opt/config.py"
+              - name: MINECRAFT_VERSION
+                value: "1.17"
+            volumeMounts:
+              - name: config
+                mountPath: /opt
+                readOnly: true
+              - name: world
+                mountPath: /home/minecraft/server/
+                readOnly: true
+              - name: map
+                mountPath: /home/minecraft/render/
+                readOnly: false
+          volumes:
+            - name: config
+              configMap:
+                name: release-name-minecraft-overviewer
+            - name: world
+            - name: map
+          restartPolicy: OnFailure
+---
+# Source: minecraft-overviewer/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-minecraft-overviewer-test-connection"
+  labels:
+    helm.sh/chart: minecraft-overviewer-0.1.0
+    app.kubernetes.io/name: minecraft-overviewer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.17.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-minecraft-overviewer:80']
+  restartPolicy: Never

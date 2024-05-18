@@ -1,0 +1,1109 @@
+---
+# Source: mok/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: release-name-mok-dovecot
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+spec:
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: mok
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/component: postfix
+    ports:
+    - port: 24
+      protocol: TCP
+    - port: 12345
+      protocol: TCP
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - port: 110
+      protocol: TCP
+    - port: 143
+      protocol: TCP
+    - port: 993
+      protocol: TCP
+    - port: 995
+      protocol: TCP
+    - port: 4190
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mok
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: dovecot
+---
+# Source: mok/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: release-name-mok-postfix
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postfix
+spec:
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - port: 25
+      protocol: TCP
+    - port: 465
+      protocol: TCP
+    - port: 587
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mok
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: postfix
+---
+# Source: mok/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mok
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+---
+# Source: mok/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mok-dovecot-users
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+type: Opaque
+stringData:
+  passwd: |
+---
+# Source: mok/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mok-postfix-maps
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postfix
+type: Opaque
+stringData:
+  aliases: |
+  access_sender: |
+  domains: |
+  mailboxes: |
+  relayhosts: |
+  sender-login-maps: |
+  sasl_passwd: |
+  tls-policies: |
+    
+  header_checks: |
+    /^Message-ID:/i IGNORE
+    /^Mime-Version: 1.0.*/ REPLACE Mime-Version: 1.0
+    /^User-Agent:/ IGNORE
+    /^X-Enigmail:/ IGNORE
+    /^X-Mailer:/ IGNORE
+    /^X-Originating-IP:/ IGNORE
+    /^X-PHP-Originating-Script:/ IGNORE
+---
+# Source: mok/templates/dovecot-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mok-dovecot
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+data:
+  dovecot.conf: |
+    auth_mechanisms = plain login
+    disable_plaintext_auth = no
+    info_log_path = /dev/stdout
+    log_path = /dev/stderr
+
+    ## Mailbox location
+
+    mail_gid = vmail
+    mail_home = /srv/mail/mailboxes/%d/%n
+    mail_location = maildir:~/mail:LAYOUT=fs
+    mail_privileged_group = vmail
+    mail_uid = vmail
+
+    ## Sieve
+
+    managesieve_notify_capability = mailto
+    managesieve_sieve_capability = fileinto reject envelope encoded-character vacation subaddress comparator-i;ascii-numeric relational regex imap4flags copy include variables body enotify environment mailbox date index ihave duplicate mime foreverypart extracttext imapsieve vnd.dovecot.imapsieve
+
+    ## Inbox
+
+    namespace inbox {
+      inbox = yes
+      location =
+      mailbox Drafts {
+        auto = subscribe
+        special_use = \Drafts
+      }
+      mailbox Sent {
+        auto = subscribe
+        special_use = \Sent
+      }
+      mailbox Spam {
+        auto = subscribe
+        special_use = \Junk
+      }
+      mailbox Trash {
+        auto = subscribe
+        special_use = \Trash
+      }
+      prefix =
+    }
+
+    ## Authentication
+
+    passdb {
+      args = scheme=ARGON2ID /srv/passdb/passwd
+      driver = passwd-file
+    }
+
+    ## Plugins
+
+    plugin {
+      imapsieve_mailbox1_before = file:/srv/mail/sieve/global/learn-spam.sieve
+      imapsieve_mailbox1_causes = COPY
+      imapsieve_mailbox1_name = Spam
+      imapsieve_mailbox2_before = file:/srv/mail/sieve/global/learn-ham.sieve
+      imapsieve_mailbox2_causes = COPY
+      imapsieve_mailbox2_from = Spam
+      imapsieve_mailbox2_name = *
+      quota = maildir:User quota
+      quota_exceeded_message = User %u has exhausted allowed storage space.
+      sieve = file:/srv/mail/sieve/%d/%n/scripts;active=/srv/mail/sieve/%d/%n/active-script.sieve
+      sieve_before = /srv/mail/sieve/global/spam-global.sieve
+      sieve_global_extensions = +vnd.dovecot.pipe
+      sieve_pipe_bin_dir = /usr/bin
+      sieve_plugins = sieve_imapsieve sieve_extprograms
+    }
+
+    ## Services
+
+    protocols = imap lmtp sieve
+    service auth {
+      inet_listener {
+        port = 12345
+      }
+      vsz_limit = 2 G
+    }
+    service imap-login {
+      inet_listener imap {
+        port = 143
+      }
+    }
+    service lmtp {
+      inet_listener lmtp {
+        port = 24
+      }
+    }
+    service managesieve-login {
+      inet_listener sieve {
+        port = 4190
+      }
+    }
+    service stats {
+      inet_listener http {
+        port = 9090
+      }
+    }
+
+    ## TLS
+
+    ssl = required
+    ssl_cert = </srv/tls/tls.crt
+    ssl_cipher_list = EDH+CAMELLIA:EDH+aRSA:EECDH+aRSA+AESGCM:EECDH+aRSA+SHA256:EECDH:+CAMELLIA128:+AES128:+SSLv3:!aNULL:!eNULL:!LOW:!3DES:!MD5:!EXP:!PSK:!DSS:!RC4:!SEED:!IDEA:!ECDSA:kEDH:CAMELLIA128-SHA:AES128-SHA
+    ssl_key = </srv/tls/tls.key
+    ssl_prefer_server_ciphers = yes
+
+    ## Users
+
+    userdb {
+      args = uid=5000 gid=5000 home=/srv/mail/mailboxes/%d/%n allow_all_users=yes
+      driver = static
+    }
+
+    verbose_proctitle = yes
+
+    ## Protocols
+
+    protocol imap {
+      imap_idle_notify_interval = 5 mins
+      mail_max_userip_connections = 20
+      mail_plugins = " quota imap_quota imap_sieve"
+    }
+    protocol lmtp {
+      mail_plugins = " sieve"
+      postmaster_address = postmaster@mysystems.tld
+    }
+---
+# Source: mok/templates/postfix-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mok-postfix
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postfix
+data:
+  master.cf: |
+    # ==========================================================================
+    # service type  private unpriv  chroot  wakeup  maxproc command + args
+    #               (yes)   (yes)   (yes)   (never) (100)
+    # ==========================================================================
+    10025      inet  n       -       -       -       1       postscreen
+        -o postscreen_upstream_proxy_protocol=haproxy
+        -o syslog_name=postfix/10025
+    smtpd     pass  -       -       -       -       -       smtpd
+        -o smtpd_tls_received_header=yes
+        -o content_filter=
+    dnsblog   unix  -       -       -       -       0       dnsblog
+    tlsproxy  unix  -       -       -       -       0       tlsproxy
+    postlog   unix-dgram n  -       n       -       1       postlogd
+    #smtps     inet  n       -       -       -       -       smtpd
+    #  -o syslog_name=postfix/smtps
+    #  -o smtpd_tls_wrappermode=yes
+    #  -o smtpd_sasl_auth_enable=yes
+    #  -o smtpd_reject_unlisted_recipient=no
+    #  -o smtpd_client_restrictions=$mua_client_restrictions
+    #  -o smtpd_helo_restrictions=$mua_helo_restrictions
+    #  -o smtpd_sender_restrictions=$mua_sender_restrictions
+    #  -o smtpd_recipient_restrictions=
+    #  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+    #  -o milter_macro_daemon_name=ORIGINATING
+    #628       inet  n       -       -       -       -       qmqpd
+    smtp       inet  n       -       y       -       -       smtpd
+        -o smtpd_tls_received_header=yes
+        -o content_filter=
+    pickup     unix  n       -       y       60      1       pickup
+        -o receive_override_options=no_header_body_checks
+    cleanup    unix  n       -       y       -       0       cleanup
+    qmgr      unix  n       -       n       300     1       qmgr
+    #qmgr     unix  n       -       n       300     1       oqmgr
+    tlsmgr     unix  -       -       y       1000?   1       tlsmgr
+    rewrite    unix  -       -       y       -       -       trivial-rewrite
+    bounce     unix  -       -       y       -       0       bounce
+    defer      unix  -       -       y       -       0       bounce
+    trace      unix  -       -       y       -       0       bounce
+    verify     unix  -       -       y       -       1       verify
+    flush      unix  n       -       y       1000?   0       flush
+    proxymap  unix  -       -       n       -       -       proxymap
+    proxywrite unix -       -       n       -       1       proxymap
+    smtp       unix  -       -       y       -       -       smtp
+    #       -o smtp_helo_timeout=5 -o smtp_connect_timeout=5
+    relay      unix  -       -       y       -       -       smtp
+    showq      unix  n       -       y       -       -       showq
+    error      unix  -       -       y       -       -       error
+    retry      unix  -       -       y       -       -       error
+    discard    unix  -       -       y       -       -       discard
+    local     unix  -       n       n       -       -       local
+    virtual   unix  -       n       n       -       -       virtual
+    lmtp       unix  -       -       y       -       -       lmtp
+    anvil      unix  -       -       y       -       1       anvil
+    #
+    # ====================================================================
+    # Interfaces to non-Postfix software. Be sure to examine the manual
+    # pages of the non-Postfix software to find out what options it wants.
+    #
+    # Many of the following services use the Postfix pipe(8) delivery
+    # agent.  See the pipe(8) man page for information about ${recipient}
+    # and other message envelope options.
+    # ====================================================================
+    #
+    # maildrop. See the Postfix MAILDROP_README file for details.
+    # Also specify in main.cf: maildrop_destination_recipient_limit=1
+    #
+    scache     unix  -       -       y       -       1       scache
+    maildrop  unix  -       n       n       -       -       pipe
+      flags=DRhu user=vmail argv=/usr/bin/maildrop -d ${recipient}
+    #
+    # ====================================================================
+    #
+    # Recent Cyrus versions can use the existing "lmtp" master.cf entry.
+    #
+    # Specify in cyrus.conf:
+    #   lmtp    cmd="lmtpd -a" listen="localhost:lmtp" proto=tcp4
+    #
+    # Specify in main.cf one or more of the following:
+    #  mailbox_transport = lmtp:inet:localhost
+    #  virtual_transport = lmtp:inet:localhost
+    #
+    # ====================================================================
+    #
+    # Cyrus 2.1.5 (Amos Gouaux)
+    # Also specify in main.cf: cyrus_destination_recipient_limit=1
+    #
+    #cyrus     unix  -       n       n       -       -       pipe
+    #  user=cyrus argv=/cyrus/bin/deliver -e -r ${sender} -m ${extension} ${user}
+    #
+    # ====================================================================
+    # Old example of delivery via Cyrus.
+    #
+    #old-cyrus unix  -       n       n       -       -       pipe
+    #  flags=R user=cyrus argv=/cyrus/bin/deliver -e -m ${extension} ${user}
+    #
+    # ====================================================================
+    #
+    # See the Postfix UUCP_README file for configuration details.
+    #
+    uucp      unix  -       n       n       -       -       pipe
+      flags=Fqhu user=uucp argv=uux -r -n -z -a$sender - $nexthop!rmail ($recipient)
+    #
+    # Other external delivery methods.
+    #
+    ifmail    unix  -       n       n       -       -       pipe
+      flags=F user=ftn argv=/usr/lib/ifmail/ifmail -r $nexthop ($recipient)
+    bsmtp     unix  -       n       n       -       -       pipe
+      flags=Fq. user=bsmtp argv=/usr/lib/bsmtp/bsmtp -t$nexthop -f$sender $recipient
+    scalemail-backend unix	-	n	n	-	2	pipe
+      flags=R user=scalemail argv=/usr/lib/scalemail/bin/scalemail-store ${nexthop} ${user} ${extension}
+    mailman   unix  -       n       n       -       -       pipe
+      flags=FR user=list argv=/usr/lib/mailman/bin/postfix-to-mailman.py
+      ${nexthop} ${user}
+
+    submission inet  n       -       y       -       -       smtpd
+        -o syslog_name=postfix/submission
+        -o smtpd_tls_security_level=encrypt
+        -o tls_preempt_cipherlist=yes
+        -o smtpd_sasl_auth_enable=yes
+        -o smtpd_tls_auth_only=yes
+        -o smtpd_reject_unlisted_recipient=no
+        -o smtpd_recipient_restrictions=
+        -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+        -o smtpd_sender_login_maps=lmdb:/srv/tmp/sender-login-maps
+        -o sender_dependent_relayhost_maps=lmdb:/srv/tmp/relayhosts
+        -o cleanup_service_name=headers-cleanup
+
+    submissions inet  n       -       y       -       -       smtpd
+        -o syslog_name=postfix/submissions
+        -o smtpd_tls_wrappermode=yes
+        -o smtpd_tls_security_level=encrypt
+        -o tls_preempt_cipherlist=yes
+        -o smtpd_sasl_auth_enable=yes
+        -o smtpd_tls_auth_only=yes
+        -o smtpd_reject_unlisted_recipient=no
+        -o smtpd_recipient_restrictions=
+        -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+        -o smtpd_sender_login_maps=lmdb:/srv/tmp/sender-login-maps
+        -o sender_dependent_relayhost_maps=lmdb:/srv/tmp/relayhosts
+        -o cleanup_service_name=headers-cleanup
+
+    dovecot   unix  -       n       n       -       -       pipe flags=DRhu
+      user=vmail:vmail argv=/usr/lib/dovecot/deliver -d ${recipient}
+
+    #smtp-amavis unix -       -       y       -       2       smtp
+    #    -o smtp_data_done_timeout=1800
+    #    -o smtp_send_xforward_command=yes
+    #    -o disable_mime_output_conversion=yes
+    #    -o smtp_generic_maps=
+
+    #127.0.0.1:10025 inet n   -       y       -       -       smtpd
+    #    -o content_filter=
+    #    -o smtpd_proxy_filter=
+    #    -o smtpd_authorized_xforward_hosts=127.0.0.0/8
+    #    -o smtpd_client_restrictions=
+    #    -o smtpd_helo_restrictions=
+    #    -o smtpd_sender_restrictions=
+    #    -o smtpd_recipient_restrictions=permit_mynetworks,reject
+    #    -o smtpd_data_restrictions=
+    #    -o mynetworks=127.0.0.0/8
+    #    -o receive_override_options=no_unknown_recipient_checks
+    ##        -o header_checks=pcre:/etc/postfix/submission_header_checks.pcre
+
+
+    #127.0.0.1:10027 inet n   -       y       -       -       smtpd
+    #    -o content_filter=smtp-amavis:[127.0.0.1]:10028
+    #    -o smtpd_proxy_filter=
+    #    -o smtpd_authorized_xforward_hosts=127.0.0.0/8
+    #    -o smtpd_client_restrictions=
+    #    -o smtpd_helo_restrictions=
+    #    -o smtpd_sender_restrictions=
+    #    -o smtpd_recipient_restrictions=permit_mynetworks,reject
+    #    -o smtpd_data_restrictions=
+    #    -o mynetworks=127.0.0.0/8
+    #    -o receive_override_options=no_unknown_recipient_checks
+    #    -o cleanup_service_name=subcleanup
+
+    subcleanup unix  n       -       y       -       0       cleanup
+    #    -o header_checks=pcre:/srv/config/submission_header_checks.pcre
+
+    headers-cleanup unix n - - - 0 cleanup
+        -o syslog_name=postfix/headers-cleanup
+        -o header_checks=regexp:/etc/postfix/header_checks
+  main.cf: |
+    ############### Please enable soft_bounce during maintenance: #################
+
+    # Fatal 5xx Errors will be downgraded to temporary 4xx Errors.
+    #soft_bounce = yes
+
+    ###############################################################################
+
+    smtpd_banner = $myhostname ESMTP $mail_name
+    biff = no
+
+    append_dot_mydomain = no
+
+    readme_directory = no
+
+    mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128
+    mydestination =
+    mailbox_size_limit = 51200000
+    message_size_limit = 51200000
+    recipient_delimiter = +
+    inet_interfaces = all
+    myorigin = /etc/mailname
+    inet_protocols = all
+    maillog_file = /dev/stdout
+
+    ########
+    ##
+    ## TLS Configuration
+    ##
+
+    smtpd_tls_cert_file=/srv/tls/tls.crt
+    smtpd_tls_key_file=/srv/tls/tls.key
+    smtpd_tls_loglevel = 1
+
+    smtp_tls_cert_file=/srv/tls/tls.crt
+    smtp_tls_key_file=/srv/tls/tls.key
+    smtp_tls_loglevel = 1
+
+    smtpd_tls_security_level = may
+    smtp_tls_security_level = may
+
+    # generated 2023-02-26, Mozilla Guideline v5.6, Postfix 3.4.8, OpenSSL 1.1.1k, intermediate configuration
+    # https://ssl-config.mozilla.org/#server=postfix&version=3.4.8&config=intermediate&openssl=1.1.1k&guideline=5.6
+    smtpd_tls_auth_only = yes
+    smtpd_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+    smtp_tls_mandatory_protocols = !SSLv2, !SSLv3
+    lmtp_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+    smtpd_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+    smtp_tls_protocols = !SSLv2, !SSLv3
+    lmtp_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+    smtpd_tls_mandatory_ciphers = medium
+
+    tls_medium_cipherlist = ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
+    tls_preempt_cipherlist = no
+    tls_ssl_options = NO_COMPRESSION
+
+    smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+    smtpd_tls_dh1024_param_file = /etc/postfix/postfix_dhparams.pem
+
+    smtp_tls_policy_maps = lmdb:/srv/tmp/tls-policies
+
+    ########
+    ##
+    ## SASL Configuration Configuration
+    ##
+
+    smtpd_sasl_type = dovecot
+    
+    smtpd_sasl_path = inet:release-name-mok-dovecot-internal.default.svc.cluster.local:12345
+    smtpd_sasl_auth_enable = yes
+    broken_sasl_auth_clients = yes
+    smtpd_sasl_security_options = noanonymous, noplaintext
+    smtpd_sasl_tls_security_options = noanonymous
+    smtpd_tls_auth_only = yes
+
+    lmtp_host_lookup = dns, native
+    virtual_transport = lmtp:inet:release-name-mok-dovecot-internal.default.svc.cluster.local:24
+
+    ########
+    ##
+    ## Postscreen Configuration
+    ##
+
+    postscreen_upstream_proxy_protocol = haproxy
+    postscreen_upstream_proxy_timeout = 5s
+    postscreen_access_list = permit_mynetworks
+    postscreen_blacklist_action = drop
+    postscreen_greet_action = ignore
+    # Disable zombie detection
+    postscreen_greet_banner =
+    postscreen_dnsbl_action = enforce
+    postscreen_dnsbl_threshold = 3
+    postscreen_dnsbl_allowlist_threshold = -1
+    postscreen_dnsbl_sites =
+            zen.spamhaus.org=127.0.1.[2..254]*3,
+            ix.dnsbl.manitu.net*3,
+            bl.spamcop.net,
+            b.barracudacentral.org,
+            safe.dnsbl.sorbs.net,
+            swl.spamhaus.org*-10,
+
+    ########
+    ##
+    ## SMTPD Restrictions Configuration
+    ##
+
+    # Fixes for smtp-smuggling
+    smtpd_forbid_bare_newline = yes
+    smtpd_forbid_bare_newline_exclusions = $mynetworks
+
+    smtpd_recipient_restrictions =
+    #        check_recipient_access btree:/srv/config/access_recipient,
+    #        check_recipient_access pgsql:/srv/tmp/recipient-access.cf
+    #        check_client_access cidr:/srv/config/access_client,
+    #        check_helo_access btree:/srv/config/access_helo,
+            check_sender_access lmdb:/srv/tmp/access_sender,
+            reject_non_fqdn_sender,
+            reject_non_fqdn_recipient,
+            reject_unknown_sender_domain,
+            reject_unknown_recipient_domain,
+            reject_invalid_hostname,
+            warn_if_reject reject_unauth_pipelining,
+            permit_mynetworks,
+            reject_unauth_destination,
+            reject_known_sender_login_mismatch,
+            reject_unverified_recipient,
+            permit
+
+    smtpd_sender_restrictions =
+            permit_mynetworks,
+            reject_non_fqdn_sender,
+            reject_authenticated_sender_login_mismatch,
+            permit_sasl_authenticated
+
+    #smtpd_restriction_classes = local_only
+    #local_only =
+    #        check_recipient_access btree:/srv/config/local_domains,
+    #        check_sender_access regexp:/srv/config/local_only_reject.regexp
+
+    ########
+    ##
+    ## Virtual Maps Configuration
+    ##
+
+    virtual_uid_maps = static:5000
+    virtual_gid_maps = static:5000
+
+    virtual_alias_maps = lmdb:/srv/tmp/aliases
+    virtual_mailbox_maps = lmdb:/srv/tmp/mailboxes
+    virtual_mailbox_domains = lmdb:/srv/tmp/domains
+    local_recipient_maps = $virtual_mailbox_maps
+
+    ## Relay config
+
+    sender_dependent_relayhost_maps = lmdb:/srv/tmp/relayhosts
+
+    ## SMTP sasl
+
+    smtp_sasl_auth_enable = yes
+    smtp_sasl_security_options = noanonymous
+    smtp_sasl_tls_security_options = noanonymous
+    smtp_sasl_password_maps = lmdb:/srv/tmp/sasl_passwd
+    smtp_tls_note_starttls_offer = yes
+
+    ########
+    ##
+    ## Miscellaneous
+    ##
+
+    default_database_type = btree
+
+    #mime_header_checks = pcre:/srv/config/mime_header_checks.pcre
+
+    maximal_queue_lifetime = 1d
+    bounce_queue_lifetime = 1d
+    unverified_recipient_reject_code = 577
+    compatibility_level = 3.6
+---
+# Source: mok/templates/persistentvolumeclaim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-mok-dovecot-vmail
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  volumeMode: Filesystem
+---
+# Source: mok/templates/dovecot.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mok-dovecot
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+spec:
+  ports:
+  - port: 110
+    name: pop3
+    protocol: TCP
+  - port: 143
+    name: imap4
+    protocol: TCP
+  - port: 993
+    name: imaps
+    protocol: TCP
+  - port: 995
+    name: pop3s
+    protocol: TCP
+  - port: 4190
+    name: sieve
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: dovecot
+  type: LoadBalancer
+---
+# Source: mok/templates/dovecot.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mok-dovecot-internal
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+spec:
+  ports:
+  - port: 24
+    name: lmtp
+  - port: 9090
+    name: metrics
+  - port: 12345
+    name: auth
+  selector:
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: dovecot
+  type: ClusterIP
+---
+# Source: mok/templates/postfix.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mok-postfix
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postfix
+spec:
+  ports:
+  - port: 25
+    name: smtp
+    protocol: TCP
+  - port: 465
+    name: submissions
+    protocol: TCP
+  - port: 587
+    name: submission
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: postfix
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+---
+# Source: mok/templates/dovecot.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: dovecot
+  name: release-name-mok-dovecot
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mok
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: dovecot
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mok
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: dovecot
+      annotations:
+        checksum/config: d38af97119343ab9a779be94325fb24121f0e10d5a641418ef2fd999c13ad5d7
+    spec:
+      serviceAccountName: release-name-mok
+      securityContext:
+        {}
+      terminationGracePeriodSeconds: 300
+      containers:
+        - name: dovecot
+          image: "quay.io/shivering-isles/dovecot:2.3.21"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 24
+              name: lmtp
+            - containerPort: 110
+              name: pop3
+            - containerPort: 143
+              name: imap4
+            - containerPort: 993
+              name: imaps
+            - containerPort: 995
+              name: pop3s
+            - containerPort: 4190
+              name: sieve
+            - containerPort: 9090
+              name: metrics
+            - containerPort: 12345
+              name: auth
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+              - SYS_CHROOT
+              - CHOWN
+              - CAP_NET_BIND_SERVICE
+              - SETUID
+              - SETGID
+              - FOWNER
+              - KILL
+              drop:
+              - ALL
+            runAsNonRoot: false
+          volumeMounts:
+            - name: vmail
+              mountPath: /srv/mail/
+            - name: users
+              mountPath: "/srv/passdb/"
+              readOnly: true
+            - name: tls
+              mountPath: "/srv/tls/"
+              readOnly: true
+            - name: config
+              mountPath: /etc/dovecot/dovecot.conf
+              subPath: dovecot.conf
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-mok-dovecot
+        - name: vmail
+          persistentVolumeClaim:
+            claimName: release-name-mok-dovecot-vmail
+        - name: users
+          secret:
+            secretName: release-name-mok-dovecot-users
+        - name: tls
+          secret:
+            secretName: nil
+---
+# Source: mok/templates/postfix.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mok-postfix
+  labels:
+    helm.sh/chart: mok-0.13.0
+    app.kubernetes.io/name: mok
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: postfix
+spec:
+  replicas: 1
+  serviceName: release-name-mok-postfix-statefulset
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mok
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: postfix
+  volumeClaimTemplates:
+    - metadata:
+        name: spool
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Delete
+  template:
+    metadata:
+      annotations:
+        checksum/secret: d38af97119343ab9a779be94325fb24121f0e10d5a641418ef2fd999c13ad5d7
+        checksum/config: 57f80cf99d428e10e0083b76a23de2cd247be8375c6f43e34d34a1fa78aff8c0
+      labels:
+        app.kubernetes.io/name: mok
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: postfix
+    spec:
+      serviceAccountName: release-name-mok
+      securityContext:
+        {}
+      initContainers:
+        - name: postmap
+          image: quay.io/shivering-isles/postfix:3.8.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - cp /srv/virtual/* /srv/tmp && find /srv/tmp -type f -exec postmap lmdb://{} \;
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+              - SYS_CHROOT
+              - CHOWN
+              - CAP_NET_BIND_SERVICE
+              - SETUID
+              - SETGID
+              - FOWNER
+              - DAC_OVERRIDE
+              drop:
+              - ALL
+            runAsNonRoot: false
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postfix/master.cf
+              subPath: master.cf
+              readOnly: true
+            - name: config
+              mountPath: /etc/postfix/main.cf
+              subPath: main.cf
+              readOnly: true
+            - name: spool
+              mountPath: /var/spool/postfix/
+            - name: cache
+              mountPath: "/srv/tmp"
+            - name: maps
+              mountPath: "/srv/virtual"
+              readOnly: true
+            - name: tls
+              mountPath: "/srv/tls"
+              readOnly: true
+        - name: fill-chroot
+          image: quay.io/shivering-isles/postfix:3.8.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /var/spool/postfix/etc/ && cp /etc/resolv.conf /var/spool/postfix/etc/
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+              - SYS_CHROOT
+              - CHOWN
+              - CAP_NET_BIND_SERVICE
+              - SETUID
+              - SETGID
+              - FOWNER
+              - DAC_OVERRIDE
+              drop:
+              - ALL
+            runAsNonRoot: false
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postfix/master.cf
+              subPath: master.cf
+              readOnly: true
+            - name: config
+              mountPath: /etc/postfix/main.cf
+              subPath: main.cf
+              readOnly: true
+            - name: spool
+              mountPath: /var/spool/postfix/
+            - name: cache
+              mountPath: "/srv/tmp"
+            - name: maps
+              mountPath: "/srv/virtual"
+              readOnly: true
+            - name: tls
+              mountPath: "/srv/tls"
+              readOnly: true
+      containers:
+        - name: postfix
+          env:
+            - name: DOVECOT_SERVICE_NAME
+              value: release-name-mok-dovecot-internal.default.svc.cluster.local
+          image: quay.io/shivering-isles/postfix:3.8.6
+          imagePullPolicy: IfNotPresent
+          workingDir: /etc/postfix
+          command:
+            - postfix
+            - -c
+            - /etc/postfix
+            - start-fg
+          lifecycle:
+            preStop:
+              exec:
+                # flush all emails before shutting down
+                command:
+                  - postqueue
+                  - -f
+          readinessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 60
+            timeoutSeconds: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  printf "EHLO healthcheck\n" | nc 127.0.0.1 587 |
+                  grep -qE "^220.*ESMTP Postfix"
+          livenessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 1
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  ps axf | fgrep -v grep | fgrep -q "/usr/libexec/postfix/master"
+          startupProbe:
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 12
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  ps axf | fgrep -v grep | fgrep -q "/usr/libexec/postfix/master"
+          ports:
+            - containerPort: 25
+              name: smtp
+            - containerPort: 465
+              name: submissions
+            - containerPort: 587
+              name: submission
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+              - SYS_CHROOT
+              - CHOWN
+              - CAP_NET_BIND_SERVICE
+              - SETUID
+              - SETGID
+              - FOWNER
+              - DAC_OVERRIDE
+              drop:
+              - ALL
+            runAsNonRoot: false
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postfix/master.cf
+              subPath: master.cf
+              readOnly: true
+            - name: config
+              mountPath: /etc/postfix/main.cf
+              subPath: main.cf
+              readOnly: true
+            - name: spool
+              mountPath: /var/spool/postfix/
+            - name: cache
+              mountPath: "/srv/tmp"
+            - name: maps
+              mountPath: "/srv/virtual"
+              readOnly: true
+            - name: tls
+              mountPath: "/srv/tls"
+              readOnly: true
+      volumes:
+        - name: maps
+          secret:
+            secretName: release-name-mok-postfix-maps
+        - name: config
+          configMap:
+            name: release-name-mok-postfix
+            defaultMode: 0644
+        - name: tls
+          secret:
+            secretName: nil
+        - name: cache
+          emptyDir: {}

@@ -1,0 +1,214 @@
+---
+# Source: s3-proxy/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-s3-proxy
+  labels:
+    helm.sh/chart: s3-proxy-0.3.2
+    app.kubernetes.io/name: s3-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      helm.sh/chart: s3-proxy-0.3.2
+      app.kubernetes.io/name: s3-proxy
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "2.2.0"
+      app.kubernetes.io/managed-by: Helm
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: minio
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: radar-output
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: radar-s3-connector
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: radar-upload-source-connector
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# Source: s3-proxy/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-s3-proxy
+  labels:
+    helm.sh/chart: s3-proxy-0.3.2
+    app.kubernetes.io/name: s3-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  s3Credential: ""
+  targetCredential: ""
+---
+# Source: s3-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-s3-proxy
+  labels:
+    helm.sh/chart: s3-proxy-0.3.2
+    app.kubernetes.io/name: s3-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: s3-proxy
+    app.kubernetes.io/instance: release-name
+---
+# Source: s3-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-s3-proxy
+  labels:
+    helm.sh/chart: s3-proxy-0.3.2
+    app.kubernetes.io/name: s3-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: s3-proxy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: s3-proxy
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: "app.kubernetes.io/name"
+                    operator: In
+                    values:
+                    - s3-proxy
+                  - key: "app.kubernetes.io/instance"
+                    operator: In
+                    values:
+                    - release-name
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: s3-proxy
+          securityContext:
+            {}
+          image: "andrewgaul/s3proxy:sha-abc6d02"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: S3PROXY_AUTHORIZATION
+            value: "aws-v2-or-v4"
+          - name: S3PROXY_IDENTITY
+            value: ""
+          - name: S3PROXY_CREDENTIAL
+            valueFrom:
+              secretKeyRef:
+                name: release-name-s3-proxy
+                key: s3Credential
+          - name: JCLOUDS_PROVIDER
+            value: 
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+# Source: s3-proxy/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-s3-proxy-test-connection"
+  labels:
+    app.kubernetes.io/name: s3-proxy
+    helm.sh/chart: s3-proxy-0.3.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: nc
+      image: busybox
+      command: ['/bin/nc']
+      args:  ['-zv', 'release-name-s3-proxy', '80']
+  restartPolicy: Never

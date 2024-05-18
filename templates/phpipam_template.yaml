@@ -1,0 +1,155 @@
+---
+# Source: phpipam/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app: phpipam
+    chart: phpipam-1.0.1
+    release: release-name
+    heritage: Helm
+  name: release-name-phpipam
+  namespace: phpipam
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "default"
+  resources:
+    requests:
+      storage: "4Gi"
+---
+# Source: phpipam/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: phpipam-web
+  labels:
+    app: phpipam-web
+    chart: phpipam-1.0.1
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: release-name-phpipam
+    release: release-name
+---
+# Source: phpipam/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: phpipam-db
+  labels:
+    app: phpipam-db
+    chart: phpipam-1.0.1
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3306
+      targetPort: 3306
+      protocol: TCP
+      name: mysql
+  selector:
+    app: release-name-phpipam
+    release: release-name
+---
+# Source: phpipam/templates/deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-phpipam
+  labels:
+    app: release-name-phpipam
+    chart: phpipam-1.0.1
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-phpipam
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name-phpipam
+        release: release-name
+    spec:
+      volumes:
+        - name: release-name-phpipam
+          persistentVolumeClaim:
+            claimName: release-name-phpipam
+      containers:
+        - name: phpipam-web
+          image: "phpipam/phpipam-www:1.5x"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: America/Los_Angeles
+            - name: IPAM_DATABASE_HOST
+              value: phpipam-db
+            - name: IPAM_DATABASE_WEBHOST
+              value: '%'
+            - name: IPAM_DATABASE_PASS
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: mysql-password
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            timeoutSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            timeoutSeconds: 30
+          resources:
+            {}
+        - name: phpipam-mariadb
+          image: "mariadb:10.7.3"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: mysql-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          volumeMounts:
+            - name: release-name-phpipam
+              mountPath: /var/lib/mysql
+          resources:
+            {}
+        - name: phpipam-cron
+          image: "phpipam/phpipam-cron:1.5x"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: IPAM_DATABASE_HOST
+              value: phpipam-db
+            - name: IPAM_DATABASE_PASS
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: mysql-password
+            - name: SCAN_INTERVAL
+              value: 1h
+            - name: TZ
+              value: America/Los_Angeles
+          resources:
+            {}

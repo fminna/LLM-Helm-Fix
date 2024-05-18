@@ -1,0 +1,688 @@
+---
+# Source: hadoop-yarn/templates/yarn-rm-deployment.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    controle-plane: koordinator
+  name: hadoop-yarn
+---
+# Source: hadoop-yarn/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yarn-nodemanager
+  namespace: hadoop-yarn
+---
+# Source: hadoop-yarn/templates/hadoop-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: hadoop-yarn
+  name: release-name-hadoop-yarn
+  labels:
+    app.kubernetes.io/name: hadoop-yarn
+    helm.sh/chart: hadoop-yarn-3.3.3
+    app.kubernetes.io/instance: release-name
+data:
+  bootstrap.sh: |
+    #!/bin/bash -x
+
+    echo Starting
+
+    : ${HADOOP_HOME:=/opt/hadoop}
+
+    echo Using ${HADOOP_HOME} as HADOOP_HOME
+
+    . $HADOOP_HOME/etc/hadoop/hadoop-env.sh
+
+    # ------------------------------------------------------
+    # Directory to find config artifacts
+    # ------------------------------------------------------
+
+    CONFIG_DIR="/tmp/hadoop-config"
+
+    # ------------------------------------------------------
+    # Copy config files from volume mount
+    # ------------------------------------------------------
+
+    for f in slaves core-site.xml mapred-site.xml yarn-site.xml hdfs-site.xml; do
+      if [[ -e ${CONFIG_DIR}/$f ]]; then
+        cp ${CONFIG_DIR}/$f $HADOOP_HOME/etc/hadoop/$f
+      else
+        echo "ERROR: Could not find $f in $CONFIG_DIR"
+        exit 1
+      fi
+    done
+
+    # ------------------------------------------------------
+    # Start RESOURCE MANAGER and PROXY SERVER as daemons
+    # ------------------------------------------------------
+    if [[ "${YARN_ROLE}" =~ "yarn-rm" ]]; then
+      $HADOOP_HOME/bin/yarn --loglevel INFO --daemon start resourcemanager
+      $HADOOP_HOME/bin/yarn --loglevel INFO --daemon start proxyserver
+    fi
+
+    # ------------------------------------------------------
+    # Start NODE MANAGER
+    # ------------------------------------------------------
+    if [[ "${YARN_ROLE}" =~ "yarn-nm" ]]; then
+      useradd hadoop
+      chown root:root $HADOOP_HOME/etc/
+      chown root:root $HADOOP_HOME/etc/hadoop/
+      chown root:root $HADOOP_HOME/etc/hadoop/container-executor.cfg
+      echo 'banned.users=bin
+      allowed.system.users=root,nobody,impala,hive,hdfs,yarn,hadoop
+      feature.tc.enabled=0
+      min.user.id=0
+      yarn.nodemanager.linux-container-executor.group=hadoop' > $HADOOP_HOME/etc/hadoop/container-executor.cfg
+
+      chown root:hadoop $HADOOP_HOME/bin/container-executor
+      chmod 6050 $HADOOP_HOME/bin/container-executor
+
+      sed -i '/<\/configuration>/d' $HADOOP_HOME/etc/hadoop/yarn-site.xml
+      cat >> $HADOOP_HOME/etc/hadoop/yarn-site.xml <<- EOM
+      <property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>${NM_INIT_MEMORY_MB:-1024}</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.resource.cpu-vcores</name>
+        <value>${NM_INIT_CPU_CORES:-1}</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.address</name>
+        <value>${HOSTNAME}:8041</value>
+      </property>
+    EOM
+
+      # annotate nm id on pod
+      kubectl annotate pod -n ${POD_NAMESPACE} ${POD_NAME} yarn.hadoop.apache.org/node-id=${HOSTNAME}:8041
+
+      echo '</configuration>' >> $HADOOP_HOME/etc/hadoop/yarn-site.xml
+
+      # Wait with timeout for resourcemanager
+      TMP_URL="http://resource-manager:8088/ws/v1/cluster/info"
+      if timeout 5m bash -c "until curl -sf $TMP_URL; do echo Waiting for $TMP_URL; sleep 5; done"; then
+        $HADOOP_HOME/bin/yarn nodemanager --loglevel INFO
+      else
+        echo "$0: Timeout waiting for $TMP_URL, exiting."
+        exit 1
+      fi
+    fi
+
+    # ------------------------------------------------------
+    # Start HDFS NAME NODE
+    # ------------------------------------------------------
+    if [[ "${YARN_ROLE}" =~ "hdfs-nn" ]]; then
+      mkdir -p /tmp/hadoop-root/dfs/name
+      $HADOOP_HOME/bin/hdfs namenode -format
+      $HADOOP_HOME/bin/hdfs --loglevel INFO --daemon start namenode
+    fi
+
+    # ------------------------------------------------------
+    # Start HDFS DATA NODE
+    # ------------------------------------------------------
+    if [[ "${YARN_ROLE}" =~ "hdfs-dn" ]]; then
+      $HADOOP_HOME/bin/hdfs --loglevel INFO --daemon start datanode
+    fi
+
+    # ------------------------------------------------------
+    # Tail logfiles for daemonized workloads (parameter -d)
+    # ------------------------------------------------------
+    if [[ $1 == "-d" ]]; then
+      until find ${HADOOP_HOME}/logs -mmin -1 | egrep -q '.*'; echo "`date`: Waiting for logs..." ; do sleep 2 ; done
+      tail -F ${HADOOP_HOME}/logs/* &
+      while true; do sleep 1000; done
+    fi
+
+    # ------------------------------------------------------
+    # Start bash if requested (parameter -bash)
+    # ------------------------------------------------------
+    if [[ $1 == "-bash" ]]; then
+      /bin/bash
+    fi
+
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>fs.defaultFS</name>
+            <value>hdfs://resource-manager:9000/</value>
+        </property>
+    </configuration>
+
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>dfs.namenode.rpc-address</name>
+            <value>resource-manager:9000</value>
+        </property>
+        <property>
+            <name>dfs.namenode.rpc-bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>dfs.namenode.servicerpc-bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+          <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+          <value>false</value>
+        </property>
+    </configuration>
+
+  mapred-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+    <configuration>
+        <property>
+            <name>mapreduce.framework.name</name>
+            <value>yarn</value>
+        </property>
+        <property>
+            <name>mapreduce.jobhistory.address</name>
+            <value>resource-manager:10020</value>
+        </property>
+        <property>
+            <name>mapreduce.jobhistory.webapp.address</name>
+            <value>resource-manager:19888</value>
+        </property>
+    </configuration>
+
+  slaves: |
+    localhost
+
+  yarn-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+    <configuration>
+        <property>
+            <name>yarn.resourcemanager.hostname</name>
+            <value>resource-manager</value>
+        </property>
+
+        <!-- RM web proxy server address -->
+        <property>
+            <name>yarn.web-proxy.address</name>
+            <value>resource-manager:8054</value>
+        </property>
+
+        <!-- Enlarge yarn scheduler maximum allocation mb & vcores -->
+        <property>
+            <name>yarn.scheduler.maximum-allocation-vcores</name>
+            <value>48</value>
+        </property>
+        <property>
+            <name>yarn.scheduler.maximum-allocation-mb</name>
+            <value>20480</value>
+        </property>
+
+        <!-- Specify web app port -->
+        <property>
+            <name>yarn.resourcemanager.webapp.address</name>
+            <value>resource-manager:8088</value>
+        </property>
+
+        <!-- Enable log aggregation. -->
+        <property>
+            <name>yarn.log-aggregation-enable</name>
+            <value>true</value>
+        </property>
+        <!-- Retain seconds for logs -->
+        <property>
+            <name>yarn.log-aggregation.retain-seconds</name>
+            <value>86400</value>
+        </property>
+
+        <!-- Bind to all interfaces -->
+        <property>
+            <name>yarn.resourcemanager.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>yarn.nodemanager.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>yarn.timeline-service.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>yarn.web-proxy.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <!-- /Bind to all interfaces -->
+
+        <property>
+            <name>yarn.nodemanager.vmem-check-enabled</name>
+            <value>false</value>
+        </property>
+
+        <property>
+            <name>yarn.nodemanager.aux-services</name>
+            <value>mapreduce_shuffle</value>
+        </property>
+
+        <property>
+            <name>yarn.nodemanager.aux-services.mapreduce_shuffle.class</name>
+            <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+        </property>
+
+        <property>
+            <description>List of directories to store localized files in.</description>
+            <name>yarn.nodemanager.local-dirs</name>
+            <value>/var/lib/hadoop-yarn/cache/${user.name}/nm-local-dir</value>
+        </property>
+
+        <property>
+            <description>Where to store container logs.</description>
+            <name>yarn.nodemanager.log-dirs</name>
+            <value>/var/log/hadoop-yarn/containers</value>
+        </property>
+
+        <property>
+            <description>Where to aggregate logs to.</description>
+            <name>yarn.nodemanager.remote-app-log-dir</name>
+            <value>/var/log/hadoop-yarn/apps</value>
+        </property>
+
+        <property>
+            <name>yarn.application.classpath</name>
+            <value>
+                /opt/hadoop/etc/hadoop,
+                /opt/hadoop/share/hadoop/common/*,
+                /opt/hadoop/share/hadoop/common/lib/*,
+                /opt/hadoop/share/hadoop/hdfs/*,
+                /opt/hadoop/share/hadoop/hdfs/lib/*,
+                /opt/hadoop/share/hadoop/mapreduce/*,
+                /opt/hadoop/share/hadoop/mapreduce/lib/*,
+                /opt/hadoop/share/hadoop/yarn/*,
+                /opt/hadoop/share/hadoop/yarn/lib/*
+            </value>
+        </property>
+
+        <property>
+          <name>yarn.nodemanager.container-executor.class</name>
+          <value>org.apache.hadoop.yarn.server.nodemanager.LinuxContainerExecutor</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.resources-handler.class</name>
+          <value>org.apache.hadoop.yarn.server.nodemanager.util.CgroupsLCEResourcesHandler</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.group</name>
+          <value>hadoop</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.nonsecure-mode.local-user</name>
+          <value>hadoop</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.cgroups.mount</name>
+          <value>false</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.cgroups.mount-path</name>
+          <value>/host-cgroup/</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.linux-container-executor.cgroups.hierarchy</name>
+          <value>/kubepods.slice/kubepods-besteffort.slice/hadoop-yarn</value>
+        </property>
+        <property>
+          <name>yarn.nodemanager.resource.memory.enabled</name>
+          <value>true</value>
+        </property>
+    </configuration>
+---
+# Source: hadoop-yarn/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yarn-nodemanager-role
+  namespace: hadoop-yarn
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - patch
+      - update
+      - get
+      - list
+      - watch
+---
+# Source: hadoop-yarn/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yarn-nodemanager-rolebinding
+  namespace : hadoop-yarn
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yarn-nodemanager-role
+subjects:
+  - kind: ServiceAccount
+    name: yarn-nodemanager
+    namespace: hadoop-yarn
+---
+# Source: hadoop-yarn/templates/yarn-nm-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: hadoop-yarn
+  name: node-manager
+  labels:
+    app.kubernetes.io/name: hadoop-yarn
+    helm.sh/chart: hadoop-yarn-3.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: node-manager
+spec:
+  ports:
+  - port: 8088
+    name: web
+  - port: 8082
+    name: web2
+  - port: 8042
+    name: api
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: hadoop-yarn
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: node-manager
+---
+# Source: hadoop-yarn/templates/yarn-rm-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: hadoop-yarn
+  name: resource-manager
+  labels:
+    app.kubernetes.io/name: hadoop-yarn
+    helm.sh/chart: hadoop-yarn-3.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: yarn-rm-service
+spec:
+  ports:
+  - port: 8088
+    name: web
+  - port: 8033
+    name: admin-addr
+  - port: 8031
+    name: res-tracker-addr
+  - port: 8032
+    name: addr
+  - port: 8030
+    name: scheduler-addr
+  - port: 9000
+    name: hdfs-namenode
+  - port: 9870
+    name: hdfs-http
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hadoop-yarn
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: yarn-rm
+---
+# Source: hadoop-yarn/templates/yarn-rm-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-hadoop-yarn-rm
+  namespace: hadoop-yarn
+  annotations:
+    checksum/config: 501a2576d1d5544302c937aa959ede2f3e2e957fca8a977877f5797164f3c097
+  labels:
+    app.kubernetes.io/name: hadoop-yarn
+    helm.sh/chart: hadoop-yarn-3.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: yarn-rm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop-yarn
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: yarn-rm
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop-yarn
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: yarn-rm
+    spec:
+      terminationGracePeriodSeconds: 0
+      dnsPolicy: ClusterFirst
+      # hostNetwork: true
+      # Let rm pod schedule to node with specific label.
+      nodeSelector:
+        null
+      containers:
+      - name: yarn-rm
+        image: "registry.cn-beijing.aliyuncs.com/koordinator-sh/apache-hadoop:3.3.3-v1.0"
+        imagePullPolicy: "Always"
+        ports:
+        - containerPort: 8088
+          name: web
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: "1"
+            memory: 2Gi
+        env:
+          - name: YARN_ROLE
+            value: yarn-rm
+        readinessProbe:
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      - name: hdfs-nn
+        image: "registry.cn-beijing.aliyuncs.com/koordinator-sh/apache-hadoop:3.3.3-v1.0"
+        imagePullPolicy: "Always"
+        ports:
+          - containerPort: 9870
+            name: web
+        command:
+          - "/bin/bash"
+          - "/tmp/hadoop-config/bootstrap.sh"
+          - "-d"
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: "1"
+            memory: 1Gi
+        env:
+        - name: YARN_ROLE
+          value: hdfs-nn
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 9870
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /
+            port: 9870
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+          - name: hadoop-config
+            mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-yarn
+---
+# Source: hadoop-yarn/templates/yarn-nm-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  namespace: hadoop-yarn
+  name: release-name-hadoop-yarn-nm
+  annotations:
+    checksum/config: 501a2576d1d5544302c937aa959ede2f3e2e957fca8a977877f5797164f3c097
+  labels:
+    app.kubernetes.io/name: hadoop-yarn
+    helm.sh/chart: hadoop-yarn-3.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: node-manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop-yarn
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: node-manager
+  minReadySeconds: 10
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 20%
+  replicas: 2
+  serviceName: node-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop-yarn
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: node-manager
+        koordinator.sh/qosClass: BE
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop-yarn
+                  app.kubernetes.io/instance: release-name
+                  app.kubernetes.io/component: node-manager
+      serviceAccountName: yarn-nodemanager
+      setHostnameAsFQDN: true
+      terminationGracePeriodSeconds: 0
+      dnsPolicy: ClusterFirst
+      priorityClassName: koord-batch
+      hostNetwork: false
+      nodeSelector:
+        null
+      containers:
+      - name: yarn-nm
+        image: "registry.cn-beijing.aliyuncs.com/koordinator-sh/apache-hadoop:3.3.3-v1.0"
+        imagePullPolicy: "Always"
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+        resources:
+          requests:
+            kubernetes.io/batch-cpu: 1k
+            kubernetes.io/batch-memory: 1Gi
+          limits:
+            kubernetes.io/batch-cpu: 2k
+            kubernetes.io/batch-memory: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        securityContext:
+          privileged: true
+        livenessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        env:
+        - name: YARN_ROLE
+          value: yarn-nm
+        - name: NM_INIT_CPU_CORES
+          value: "1"
+        - name: NM_INIT_MEMORY_MB
+          value: "1024"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: host-cgroup-root
+          mountPath: /host-cgroup/
+      - name: hdfs-dn
+        image: "registry.cn-beijing.aliyuncs.com/koordinator-sh/apache-hadoop:3.3.3-v1.0"
+        imagePullPolicy: "Always"
+        command:
+          - "/bin/bash"
+          - "/tmp/hadoop-config/bootstrap.sh"
+          - "-d"
+        resources:
+          requests:
+            kubernetes.io/batch-cpu: 1k
+            kubernetes.io/batch-memory: 1Gi
+          limits:
+            kubernetes.io/batch-cpu: 1k
+            kubernetes.io/batch-memory: 1Gi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        securityContext:
+          privileged: true
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9864
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        env:
+          - name: YARN_ROLE
+            value: hdfs-dn
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-yarn
+      - name: host-cgroup-root
+        hostPath:
+          # set k8s/besteffort for yarn task, mount root dir here since the format is different betweent cgroup fs and systemd
+          path: /sys/fs/cgroup/
+          type: ""

@@ -1,0 +1,168 @@
+---
+# Source: proxy/templates/configmap.yaml
+apiVersion: v1
+data:
+  config.json: |-
+    {
+      "log": {
+          "loglevel": "debug"
+      },
+      "routing": {
+          "domainStrategy": "AsIs",
+          "rules": [
+              {
+                  "type": "field",
+                  "ip": [
+                      "geoip:private"
+                  ],
+                  "outboundTag": "block"
+              }
+          ]
+      },
+      "inbounds": [
+          {
+              "listen": "0.0.0.0",
+              "port": 9000,
+              "protocol": "socks",
+              "settings": {
+                  "auth": "noauth",
+                  "udp": false
+              }              
+          },{
+              "listen": "0.0.0.0",
+              "port": 9001,
+              "protocol": "http",
+              "settings": {
+                  "auth": "noauth",
+                  "udp": false
+              }              
+          }
+      ],
+      "outbounds": [
+          {
+              "protocol": "freedom",
+              "tag": "direct"
+          },
+          {
+              "protocol": "blackhole",
+              "tag": "block"
+          }
+      ]
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    helm.sh/chart: proxy-0.0.6
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v4.45.0"
+    app.kubernetes.io/managed-by: Helm
+  name: proxy
+  namespace: proxy
+---
+# Source: proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    getambassador.io/config: |
+      ---
+      apiVersion: ambassador/v2
+      kind: TCPMapping
+      name: ambd-proxy
+      port: 9000
+      service: ambd-proxy.proxy:9000
+      ---
+      apiVersion: ambassador/v2
+      kind: TCPMapping
+      name: ambd-proxy-http
+      port: 9001
+      service: ambd-proxy.proxy:9001
+  name: ambd-proxy
+  namespace: proxy
+  labels:
+    helm.sh/chart: proxy-0.0.6
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v4.45.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  sessionAffinity: None
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: proxy
+      protocol: TCP
+      name: proxy
+    - port: 9001
+      targetPort: proxy-http
+      protocol: TCP
+      name: proxy-http
+  selector:
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/instance: release-name
+---
+# Source: proxy/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: proxy
+  labels:
+    helm.sh/chart: proxy-0.0.6
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v4.45.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxy
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        helm.sh/chart: proxy-0.0.6
+        app.kubernetes.io/name: proxy
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "v4.45.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+      - image: docker.io/v2fly/v2fly-core:latest
+        imagePullPolicy: "IfNotPresent"
+        name: v2fly
+        ports:
+        - containerPort: 9000
+          name: proxy
+          protocol: TCP  
+        - containerPort: 9001
+          name: proxy-http
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /etc/v2ray
+          name: config-volume
+        resources:
+          requests:
+            cpu: "1"
+            ephemeral-storage: 40Gi
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        tty: true
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: proxy
+          name: config-volume

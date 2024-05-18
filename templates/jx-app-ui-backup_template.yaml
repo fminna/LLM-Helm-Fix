@@ -1,0 +1,209 @@
+---
+# Source: jx-app-ui-backup/charts/ui/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: ui
+    chart: "ui-0.0.2"
+    release: "release-name"
+    heritage: "Helm"
+  name: ui
+---
+# Source: jx-app-ui-backup/charts/ui/templates/rolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-ui
+  labels:
+    app: ui
+    chart: ui-0.0.2
+    release: release-name
+    heritage: Helm
+subjects:
+- kind: ServiceAccount
+  name: ui
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: cluster-admin
+---
+# Source: jx-app-ui-backup/charts/ui/templates/metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ui-metrics
+  labels:
+    app: ui
+    chart: ui-0.0.2
+    release: release-name
+    heritage: Helm
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: jxui-frontend-backup
+  selector:
+    app: ui
+    release: release-name
+---
+# Source: jx-app-ui-backup/charts/ui/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ui
+  labels:
+    app: ui
+    chart: ui-0.0.2
+    release: release-name
+    heritage: Helm
+  annotations:
+    fabric8.io/expose: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: jxui-frontend-backup
+  selector:
+    app: ui
+    release: release-name
+---
+# Source: jx-app-ui-backup/charts/ui/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-ui
+  labels:
+    app: ui
+    chart: ui-0.0.2
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 35%
+  template:
+    metadata:
+      labels:
+        app: ui
+        release: release-name
+    spec:
+      containers:
+        - name: ui-frontend
+          env:
+          - name: API_PORT
+            value: "8080"
+          image: "gcr.io/jenkinsxio/jxui-frontend-backup:0.0.2"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 60
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 60
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+        - name: ui-backend
+          image: "gcr.io/jenkinsxio/jxui-backend-backend:0.0.289"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: XDG_CONFIG_HOME
+            value: /home
+          - name: JX_LOG_FORMAT
+            value: json
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /_health
+              port: 8080
+            periodSeconds: 60
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /_health
+              port: 8080
+            periodSeconds: 60
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      serviceAccountName: ui
+---
+# Source: jx-app-ui-backup/templates/app.yaml
+apiVersion: jenkins.io/v1
+kind: App
+metadata:
+  name: release-name-jx-app-ui-backup
+  labels:
+    chart: "jx-app-ui-backup-0.0.2"
+spec:
+  schemaPreprocessor:
+    name: schema-preprocessor
+    image: "gcr.io/jenkinsxio/builder-go:0.1.435"
+    command:
+      - "/bin/sh"
+    env:
+      - name: DOMAIN
+        valueFrom:
+          configMapKeyRef:
+            name: ingress-config
+            key: domain
+    args:
+      - "-c"
+      - "/usr/bin/jx step values schema template --set domain=`echo $DOMAIN`"
+---
+# Source: jx-app-ui-backup/charts/ui/templates/sso.yaml
+apiVersion: "jenkins.io/v1"
+kind: "SSO"
+metadata:
+  name: sso-release-name-ui
+  namespace: default
+spec:
+  oidcIssuerUrl: 
+  upstreamService: release-name-ui
+  forwardToken: true
+  domain: 
+  certIssuerName: letsencrypt-prod
+  cookieSpec:
+    name: sso-jxui
+    expire: "168h"
+    refresh: "60m"
+    secure: true
+    httpOnly: true
+  proxyImage: "quay.io/pusher/oauth2_proxy"
+  proxyImageTag: "v3.2.0"
+  proxyResources:
+    limits:
+      cpu: 100m
+      memory: 256Mi
+    requests:
+      cpu: 80m
+      memory: 128Mi
+  skipExposeService: false

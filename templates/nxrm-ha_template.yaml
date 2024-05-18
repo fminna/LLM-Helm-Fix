@@ -1,0 +1,247 @@
+---
+# Source: nxrm-ha/templates/namespaces.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusrepo
+---
+# Source: nxrm-ha/templates/nxrm-logback-tasklogfile-override.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-nxrm-ha-logback-tasklogfile-override
+  namespace: nexusrepo
+data:
+  logback-tasklogfile-appender-override.xml: |
+    <included>
+      <appender name="tasklogfile" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <File>${karaf.data}/log/tasks/allTasks.log</File>
+        <filter class="org.sonatype.nexus.pax.logging.TaskLogsFilter" />
+        <Append>true</Append>
+        <encoder class="org.sonatype.nexus.pax.logging.NexusLayoutEncoder">
+          <pattern>%d{"yyyy-MM-dd HH:mm:ss,SSSZ"} %-5p [%thread] %node %mdc{userId:-*SYSTEM} %c - %m%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+          <fileNamePattern>${karaf.data}/log/tasks/allTasks-%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+          <maxHistory>1</maxHistory>
+        </rollingPolicy>
+      </appender>
+    </included>
+---
+# Source: nxrm-ha/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nxrm-ha-hl
+  namespace: "nexusrepo"
+  labels:
+    helm.sh/chart: nxrm-ha-68.0.0
+    app.kubernetes.io/name: nxrm-ha
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.68.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: nxrm-ha
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: nexus-ui
+      port: 8081
+      targetPort: nexus-ui
+---
+# Source: nxrm-ha/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-nxrm-ha
+  namespace: nexusrepo
+  labels:
+
+    helm.sh/chart: nxrm-ha-68.0.0
+    app.kubernetes.io/name: nxrm-ha
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.68.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 3
+  
+  serviceName: release-name-nxrm-ha-hl
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nxrm-ha
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: nxrm-ha
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        
+        - args:
+          - -c
+          - mkdir -p /nexus-data/etc/logback && mkdir -p /nexus-data/log/tasks && mkdir -p
+            /nexus-data/log/audit && touch -a /nexus-data/log/tasks/allTasks.log && touch
+            -a /nexus-data/log/audit/audit.log && touch -a /nexus-data/log/request.log &&
+            chown -R '200:200' /nexus-data
+          command:
+          - /bin/sh
+          image: busybox:1.33.1
+          name: chown-nexusdata-owner-to-nexus-and-init-log-dir
+          resources:
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+          volumeMounts:
+          - mountPath: /nexus-data
+            name: nexus-data
+      containers:
+        - name: nxrm-app
+          image: sonatype/nexus3:3.68.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            
+            runAsUser: 200
+          lifecycle:
+          ports:
+            - name: nexus-ui
+              containerPort: 8081
+          resources:
+            
+            limits:
+              cpu: 16
+              memory: 16Gi
+            requests:
+              cpu: 8
+              memory: 8Gi
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 180
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 0
+            periodSeconds: 60
+            timeoutSeconds: 1
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 0
+            periodSeconds: 60
+            timeoutSeconds: 1
+            failureThreshold: 6
+          env:
+            - name: DB_NAME
+              value: "nexus"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-ha-dbsecret
+                  key: db-password
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-ha-dbsecret
+                  key: db-user
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-ha-dbsecret
+                  key: db-host
+            - name: NEXUS_SECURITY_INITIAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-ha-adminsecret
+                  key: nexus-admin-password
+            - name: NEXUS_SECURITY_RANDOMPASSWORD
+              value: "false"
+            - name: LICENSE_FILE
+              value: /var/nexus-repo-license/nexus-repo-license.lic
+          
+            - name: INSTALL4J_ADD_VM_PARAMS
+              value: "-Xms2703m -Xmx2703m -Dnexus.licenseFile=${LICENSE_FILE} \
+          -Dnexus.datastore.clustered.enabled=true -Djava.util.prefs.userRoot=${NEXUS_DATA}/javaprefs \
+          -Dnexus.datastore.nexus.jdbcUrl=jdbc:postgresql://${DB_HOST}:5432/${DB_NAME} \
+          -Dnexus.datastore.nexus.username=${DB_USER} \
+          -Dnexus.datastore.nexus.password=${DB_PASSWORD}"
+          
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+            - name: logback-tasklogfile-override
+              mountPath: /nexus-data/etc/logback/logback-tasklogfile-appender-override.xml
+              subPath: logback-tasklogfile-appender-override.xml
+          
+        - name: request-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/request.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+        - name: audit-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/audit/audit.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+        - name: tasks-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/tasks/allTasks.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+        
+        
+      volumes:
+        - name: logback-tasklogfile-override
+          configMap:
+            name: release-name-nxrm-ha-logback-tasklogfile-override
+            items:
+              - key: logback-tasklogfile-appender-override.xml
+                path: logback-tasklogfile-appender-override.xml
+      
+        - name: nexus-data
+          emptyDir:
+            sizeLimit: 2Gi
+---
+# Source: nxrm-ha/templates/external-dns.yaml
+# comment out sa if it was previously created

@@ -1,0 +1,203 @@
+---
+# Source: rabbitmq-helm-chart/templates/rabbitmq-config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config-map
+  namespace: notes-project
+data:
+  rabbitmq.config: |
+    [
+      {rabbit, [
+        {loopback_users, []}
+      ]},
+      {rabbitmq_management, [
+        {load_definitions, "/etc/rabbitmq/definitions.json"}
+      ]}
+    ].
+  definitions.json: |
+    {
+      "rabbit_version": "3.6.16",
+      "users": [
+        {
+          "name": "guest",
+          "password_hash": "eQmj8WIVsPivqyraOtikjbwxBk63L5PxCq4gWiglz6xsYsc7",
+          "hashing_algorithm": "rabbit_password_hashing_sha256",
+          "tags": "administrator"
+        }
+      ],
+      "vhosts": [
+        {
+          "name": "/"
+        }
+      ],
+      "permissions": [
+        {
+          "user": "guest",
+          "vhost": "/",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        }
+      ],
+      "parameters": [],
+      "global_parameters": [
+        {
+          "name": "cluster_name",
+          "value": "rabbit@e473b9a9542e"
+        }
+      ],
+      "policies": [],
+      "queues": [
+        {
+          "name": "filesystem.notifications.queue",
+          "vhost": "/",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        }
+      ],
+      "exchanges": [
+        {
+          "name": "filesystem.notifications.exchange",
+          "vhost": "/",
+          "type": "topic",
+          "durable": true,
+          "auto_delete": false,
+          "internal": false,
+          "arguments": {}
+        }
+      ],
+      "bindings": [
+        {
+          "source": "filesystem.notifications.exchange",
+          "vhost": "/",
+          "destination": "filesystem.notifications.queue",
+          "destination_type": "queue",
+          "routing_key": "#",
+          "arguments": {}
+        }
+      ]
+    }
+---
+# Source: rabbitmq-helm-chart/templates/rabbitmq-persistent-volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: rabbitmq-persistent-volume
+  namespace: notes-project
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/rabbitmq
+  storageClassName: standard
+---
+# Source: rabbitmq-helm-chart/templates/rabbitmq-persistent-volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-persistent-volume-claim
+  namespace: notes-project
+spec:
+  volumeName: rabbitmq-persistent-volume
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: rabbitmq-helm-chart/templates/rabbitmq-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-service
+  namespace: notes-project
+  labels:
+    app: rabbitmq-service
+spec:
+  selector:
+    app: rabbitmq-deployment
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 5672
+      name: rabbitmq-service
+      nodePort: 31366
+    - port: 81
+      targetPort: 15672
+      name: rabbitmq-admin
+      nodePort: 31367
+---
+# Source: rabbitmq-helm-chart/templates/rabbitmq-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq-deployment
+  namespace: notes-project
+  labels:
+    app: rabbitmq-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq-deployment
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-deployment
+    spec:
+      containers:
+        - name: rabbitmq-deployment
+          image: rabbitmq:3.6-management
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          lifecycle:
+            postStart:
+              exec:
+                command: [ "chmod", "777", "/etc/rabbitmq" ]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rabbitmq/rabbitmq.config
+              subPath: rabbitmq.config
+            - name: definitions
+              mountPath: /etc/rabbitmq/definitions.json
+              subPath: definitions.json
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config-map
+            items:
+              - key: rabbitmq.config
+                path: rabbitmq.config
+        - name: definitions
+          configMap:
+            name: rabbitmq-config-map
+            items:
+              - key: definitions.json
+                path: definitions.json
+---
+# Source: rabbitmq-helm-chart/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-rabbitmq-helm-chart-test-connection"
+  labels:
+    helm.sh/chart: rabbitmq-helm-chart-0.1.0
+    app.kubernetes.io/name: rabbitmq-helm-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-rabbitmq-helm-chart:80']
+  restartPolicy: Never

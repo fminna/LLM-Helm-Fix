@@ -1,0 +1,184 @@
+---
+# Source: hermitcrab/templates/hermitcrab/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: release-name-hermitcrab-hermitcrab
+  labels:
+    helm.sh/chart: hermitcrab-0.1.4
+    app.kubernetes.io/part-of: hermitcrab
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+  selector:
+    helm.sh/chart: hermitcrab-0.1.4
+    app.kubernetes.io/part-of: hermitcrab
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+---
+# Source: hermitcrab/templates/hermitcrab/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: release-name-hermitcrab-hermitcrab-headless
+  labels:
+    helm.sh/chart: hermitcrab-0.1.4
+    app.kubernetes.io/part-of: hermitcrab
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    helm.sh/chart: hermitcrab-0.1.4
+    app.kubernetes.io/part-of: hermitcrab
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+---
+# Source: hermitcrab/templates/hermitcrab/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  namespace: default
+  name: release-name-hermitcrab-hermitcrab
+  labels:
+    helm.sh/chart: hermitcrab-0.1.4
+    app.kubernetes.io/part-of: hermitcrab
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+spec:
+  serviceName: release-name-hermitcrab-hermitcrab-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      helm.sh/chart: hermitcrab-0.1.4
+      app.kubernetes.io/part-of: hermitcrab
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: hermitcrab-0.1.4
+        app.kubernetes.io/part-of: hermitcrab
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: server
+        app.kubernetes.io/version: "v0.1.4"
+    spec:
+      automountServiceAccountToken: false
+      shareProcessNamespace: true
+      containers:
+        - name: release-name-hermitcrab-hermitcrab-providers-mirror
+          image: sealio/terraform-deployer:v1.5.7-seal.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -e;
+
+              cut -d' ' -f5 </proc/self/stat >/pids/providers-mirror;
+
+              trap 'exit 0' TERM INT;
+              sleep infinity & wait
+          volumeMounts:
+            - name: pids
+              mountPath: /pids
+        - name: release-name-hermitcrab-hermitcrab
+          image: sealio/hermitcrab:v0.1.4
+          imagePullPolicy: IfNotPresent
+          command:
+          - hermitcrab
+          args:
+          - --log-debug
+          - --log-verbosity=4
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    set -e;
+
+                    mkdir -p /usr/share/terraform/providers
+
+                    ln -s /proc/$(cat /pids/providers-mirror)/$(whoami)/usr/share/terraform/providers/plugins /usr/share/terraform/providers/
+          ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+          startupProbe:
+            initialDelaySeconds: 0
+            timeoutSeconds: 1
+            periodSeconds: 5
+            failureThreshold: 10
+            successThreshold: 1
+            httpGet:
+              port: 80
+              path: /readyz
+          readinessProbe:
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+            httpGet:
+              port: 80
+              path: /readyz
+          livenessProbe:
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+            successThreshold: 1
+            httpGet:
+              # Redirect the liveness probe request.
+              httpHeaders:
+                - name: "User-Agent"
+                  value: ""
+              port: 80
+              path: /livez
+          volumeMounts:
+            - name: data
+              mountPath: /var/run/hermitcrab
+            - name: pids
+              mountPath: /pids
+              readOnly: true
+      volumes:
+        - name: pids
+          emptyDir: { }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          helm.sh/chart: hermitcrab-0.1.4
+          app.kubernetes.io/part-of: hermitcrab
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/managed-by: Helm
+          app.kubernetes.io/component: server
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: "1Gi"

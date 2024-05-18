@@ -1,0 +1,448 @@
+---
+# Source: step-certificates/templates/bootstrap.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-step-certificates-config
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: step-certificates/templates/secrets.yaml
+# Secrets that will be updated by the configuration job: 
+# 1. CA keys password.
+# 2. Provisioner password.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-step-certificates-ca-password
+  namespace: default
+---
+# Source: step-certificates/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-step-certificates-provisioner-password
+  namespace: default
+---
+# Source: step-certificates/templates/configmaps.yaml
+# ConfigMaps that will be updated by the configuration job: 
+# 1. Step CA config directory.
+# 2. Step CA certs direcotry.
+# 3. Step CA secrets directory.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-step-certificates-config
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: step-certificates/templates/configmaps.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-step-certificates-certs
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: step-certificates/templates/configmaps.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-step-certificates-secrets
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: step-certificates/templates/configmaps.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-step-certificates-bootstrap
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  bootstrap.sh: |-
+    #!/bin/sh
+    STEPPATH=/home/step
+    echo -e "\e[1mWelcome to Step Certificates configuration.\e[0m\n"
+
+    function permission_error () {
+      echo -e "\033[0;31mPERMISSION ERROR:\033[0m $1\n"
+      exit 1
+    }
+
+    function kbreplace() {
+      kubectl $@ -o yaml --dry-run=client | kubectl replace -f -
+    }
+
+    echo -e "\e[1mConfiguring kubctl with service account...\e[0m"
+    # Use the service account context
+    kubectl config set-cluster cfc --server=https://kubernetes.default --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubectl config set-credentials bootstrap --token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    kubectl config set-context cfc --cluster=cfc --user=bootstrap
+    kubectl config use-context cfc
+
+    echo -e "\n\e[1mChecking cluster permissions...\e[0m"
+    echo -n "Checking for permission to create configmaps in default namespace: "
+    kubectl auth can-i create configmaps --namespace default
+    if [ $? -ne 0 ]; then
+      permission_error "create configmaps"
+    fi
+
+    echo -n "Checking for permission to create secrets in default namespace: "
+    kubectl auth can-i create secrets --namespace default
+    if [ $? -ne 0 ]; then
+      permission_error "create secrets"
+    fi
+
+    # Setting this here on purpose, after the above section which explicitly checks
+    # for and handles exit errors.
+    set -e
+
+    echo -e "\n\e[1mInitializating the CA...\e[0m"
+
+    # CA password
+    CA_PASSWORD=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32 ; echo '')
+    # Provisioner password
+    CA_PROVISIONER_PASSWORD=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32 ; echo '')
+
+    TMP_CA_PASSWORD=$(mktemp /tmp/autocert.XXXXXX)
+    TMP_CA_PROVISIONER_PASSWORD=$(mktemp /tmp/autocert.XXXXXX)
+
+    echo $CA_PASSWORD > $TMP_CA_PASSWORD
+    echo $CA_PROVISIONER_PASSWORD > $TMP_CA_PROVISIONER_PASSWORD
+
+    step ca init \
+      --name "Step Certificates" \
+      --dns "release-name-step-certificates.default.svc.cluster.local,127.0.0.1" \
+      --address ":9000" \
+      --provisioner "admin" \
+      --with-ca-url "https://release-name-step-certificates.default.svc.cluster.local" \
+      --password-file "$TMP_CA_PASSWORD" \
+      --provisioner-password-file "$TMP_CA_PROVISIONER_PASSWORD" 
+
+    rm -f $TMP_CA_PASSWORD $TMP_CA_PROVISIONER_PASSWORD
+
+    echo -e "\n\e[1mCreating configmaps and secrets in default namespace ...\e[0m"
+
+    # Replace secrets created on helm install
+    # It allows to properly remove them on helm delete
+    kbreplace -n default create configmap release-name-step-certificates-config --from-file $(step path)/config
+    kbreplace -n default create configmap release-name-step-certificates-certs --from-file $(step path)/certs
+    kbreplace -n default create configmap release-name-step-certificates-secrets --from-file $(step path)/secrets
+
+    kbreplace -n default create secret generic release-name-step-certificates-ca-password --from-literal "password=${CA_PASSWORD}"
+    kbreplace -n default create secret generic release-name-step-certificates-provisioner-password --from-literal "password=${CA_PROVISIONER_PASSWORD}"
+
+    # Label all configmaps and secrets
+    kubectl -n default label configmap release-name-step-certificates-config helm.sh/chart=step-certificates-1.26.0 app.kubernetes.io/name=step-certificates app.kubernetes.io/instance=release-name app.kubernetes.io/version="0.26.0" app.kubernetes.io/managed-by=Helm
+    kubectl -n default label configmap release-name-step-certificates-certs helm.sh/chart=step-certificates-1.26.0 app.kubernetes.io/name=step-certificates app.kubernetes.io/instance=release-name app.kubernetes.io/version="0.26.0" app.kubernetes.io/managed-by=Helm
+    kubectl -n default label configmap release-name-step-certificates-secrets helm.sh/chart=step-certificates-1.26.0 app.kubernetes.io/name=step-certificates app.kubernetes.io/instance=release-name app.kubernetes.io/version="0.26.0" app.kubernetes.io/managed-by=Helm
+    kubectl -n default label secret release-name-step-certificates-ca-password helm.sh/chart=step-certificates-1.26.0 app.kubernetes.io/name=step-certificates app.kubernetes.io/instance=release-name app.kubernetes.io/version="0.26.0" app.kubernetes.io/managed-by=Helm
+    kubectl -n default label secret release-name-step-certificates-provisioner-password helm.sh/chart=step-certificates-1.26.0 app.kubernetes.io/name=step-certificates app.kubernetes.io/instance=release-name app.kubernetes.io/version="0.26.0" app.kubernetes.io/managed-by=Helm
+
+    # Patch webhook if autocert is enabled
+
+    echo -e "\n\e[1mStep Certificates installed!\e[0m"
+    echo
+    echo "CA URL: https://release-name-step-certificates.default.svc.cluster.local"
+    echo "CA Fingerprint: $(step certificate fingerprint $(step path)/certs/root_ca.crt)"
+    echo
+---
+# Source: step-certificates/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-step-certificates-config
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: 0.26.0
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "create", "update", "patch"]
+---
+# Source: step-certificates/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-step-certificates-config
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: 0.26.0
+subjects:
+- kind: ServiceAccount
+  name: release-name-step-certificates-config
+  namespace: default
+roleRef:
+  kind: Role
+  name: release-name-step-certificates-config
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: step-certificates/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-step-certificates
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 9000
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+---
+# Source: step-certificates/templates/ca.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-step-certificates
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # Only one replica is supported at this moment
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: step-certificates
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-step-certificates
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: step-certificates
+        app.kubernetes.io/instance: release-name
+    spec:
+      initContainers:
+        - name: step-certificates-init
+          image: busybox:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "20"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: step-certificates
+          image: "cr.step.sm/smallstep/step-ca:0.26.0"
+          imagePullPolicy: IfNotPresent
+          command: [ "/usr/local/bin/step-ca" ]
+          args: [
+            "--password-file", "/home/step/secrets/passwords/password",
+            "/home/step/config/ca.json"
+          ]
+          workingDir: /home/step
+          env:
+          - name: NAMESPACE
+            value: "default"
+          ports:
+            - name: https
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 5
+            httpGet:
+              path: /health
+              port: 9000
+              scheme: HTTPS
+          readinessProbe:
+            initialDelaySeconds: 5
+            httpGet:
+              path: /health
+              port: 9000
+              scheme: HTTPS
+          resources:
+            {}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+              - NET_BIND_SERVICE
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+          - name: certs
+            mountPath: /home/step/certs
+            readOnly: true
+          - name: config
+            mountPath: /home/step/config
+            readOnly: true
+          - name: secrets
+            mountPath: /home/step/secrets
+            readOnly: true
+          - name: ca-password
+            mountPath: /home/step/secrets/passwords
+            readOnly: true
+          - name: database
+            mountPath: /home/step/db
+            readOnly: false
+      volumes:
+      - name: certs
+        configMap:
+          name: release-name-step-certificates-certs
+      - name: config
+        configMap:
+          name: release-name-step-certificates-config
+      - name: secrets
+        configMap:
+          name: release-name-step-certificates-secrets
+      - name: ca-password
+        secret:
+          secretName: release-name-step-certificates-ca-password
+  volumeClaimTemplates:
+  - metadata:
+      name: database
+      labels:
+        app.kubernetes.io/name: step-certificates
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "10Gi"
+---
+# Source: step-certificates/templates/bootstrap.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name"
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  template:
+    metadata:
+      name: "release-name"
+      labels:
+        app.kubernetes.io/name: step-certificates
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-step-certificates-config
+      restartPolicy: Never
+      volumes:
+      - name: bootstrap
+        configMap:
+          name: release-name-step-certificates-bootstrap
+      containers:
+      - name: config
+        image: "cr.step.sm/smallstep/step-ca-bootstrap:latest"
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "/home/step/bootstrap/bootstrap.sh"]
+        volumeMounts:
+          - name: bootstrap
+            mountPath: /home/step/bootstrap
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+# Source: step-certificates/templates/rbac.yaml
+# if .Values.autocert.enabled
+---
+# Source: step-certificates/templates/secrets.yaml
+---
+---
+# Source: step-certificates/templates/secrets.yaml
+---
+---
+# Source: step-certificates/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-step-certificates-test-connection"
+  namespace: default
+  labels:
+    helm.sh/chart: step-certificates-1.26.0
+    app.kubernetes.io/name: step-certificates
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.26.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: alpine/curl
+      command:
+        - 'curl'
+      args:
+        - '-s'
+        - '-k'
+        - 'https://release-name-step-certificates:443/health'
+  restartPolicy: Never

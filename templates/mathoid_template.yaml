@@ -1,0 +1,220 @@
+---
+# Source: mathoid/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mathoid-release-name
+  labels:
+    app: mathoid
+    chart: mathoid-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: mathoid
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 10044
+        protocol: TCP
+---
+# Source: mathoid/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-release-name
+data:
+  config.yaml: |-     # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 1
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 300
+    
+    # The maximum interval in ms that can pass between two beat messages
+    # sent by each worker to the master before it is killed
+    worker_heartbeat_timeout: 7500
+    
+    # Logger info
+    logging:
+      name: mathoid
+      streams:
+        - type: stdout
+          named_levels: true
+    
+    services:
+      - name: mathoid
+        # a relative path or the name of an npm package, if different from name
+        module: ./app.js
+        # per-service config
+        conf:
+          port: 10044
+          # interface: localhost # uncomment to only listen on localhost
+          # more per-service config settings
+          # the location of the spec, defaults to spec.yaml if not specified
+          # spec: ./spec.template.yaml
+          # allow cross-domain requests to the API (default '*')
+          cors: '*'
+          # to disable use:
+          # cors: false
+          # to restrict to a particular domain, use:
+          # cors: restricted.domain.org
+          # content for the CSP headers
+          # csp: false  # uncomment this line to disable sending them
+          # URL of the outbound proxy to use (complete with protocol)
+          #      proxy: http://url-downloader.eqiad.wikimedia.org:8080
+          # the list of domains for which not to use the proxy defined above
+          # no_proxy_list:
+          #   - domain1.com
+          #   - domain2.org
+          # the list of incoming request headers that can be logged; if left empty,
+          # the following headers are allowed: cache-control, content-length,
+          # content-type, if-match, user-agent, x-request-id
+          # log_header_whitelist:
+          #   - cache-control
+          #   - content-length
+          #   - content-type
+          #   - if-match
+          #   - user-agent
+          #   - x-request-id
+          # list of enabled renders
+          svg: true
+          img: true
+          png: true
+          texvcinfo: true
+          no_check: true
+          speech: true
+          speech_on: false
+          speech_config:
+            semantics: true
+            domain: 'mathspeak'
+            style: 'default'
+            semantic: false
+            minSTree: false
+            speakText: true
+            enrich: false
+          mj_config:
+              extensions: "TeX/color,TeX/mediawiki-texvc,TeX/mhchem"
+              MathJax:
+                menuSettings:
+                  semantics: true
+                SVG:
+                  font: "TeX"
+                TeX:
+                  noErrors:
+                    disabled: true
+          dpi: 180
+          svgo: false
+---
+# Source: mathoid/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mathoid-release-name
+  labels:
+    app: mathoid
+    chart: mathoid-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: mathoid
+    release: release-name
+    routed_via: release-name
+  ports:
+  - name: http
+    protocol: TCP
+    port: 10044
+---
+# Source: mathoid/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mathoid-release-name
+  labels:
+    app: mathoid
+    chart: mathoid-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: mathoid
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mathoid
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: 24eec11dbff7107c5d675da88bf3bebba63a42cde24bef45575f76cc032ba0fe
+        prometheus.io/scrape: "false"
+                
+    spec:
+      containers:
+        # The main application container
+        - name: mathoid-release-name
+          image: "docker-registry.wikimedia.org/repos/mediawiki/services/mathoid:latest"
+          command: ["node"]
+          args: ["server.js", "-c", "/etc/mathoid/config.yaml"]
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 10044
+          livenessProbe:
+            tcpSocket:
+              port: 10044
+          readinessProbe:
+            httpGet:
+              path: /_info
+              port: 10044
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: mathoid-release-name
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/mathoid
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 1
+              memory: 1Gi          
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+               drop:
+               - ALL
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault        
+      volumes:
+        
+        - name: config-volume
+          configMap:
+            name: config-release-name
+---
+# Source: mathoid/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'mathoid-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'mathoid-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(MATHOID_RELEASE_NAME_SERVICE_HOST)', 'http://mathoid-release-name:10044']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

@@ -1,0 +1,115 @@
+---
+# Source: nats-account-server/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-config
+  labels:
+    app: release-name
+    chart: nats-account-server-0.8.0
+data:
+  accountserver.conf: |
+    # Host/Port for the NATS Account Server
+    http {
+      host: "0.0.0.0"
+      port: 9090
+    }
+    store {
+      dir: "/store"
+    }
+---
+# Source: nats-account-server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  labels:
+    app: release-name
+    chart: nats-account-server-0.8.0
+spec:
+  selector:
+    app: release-name
+  clusterIP: None
+  ports:
+  - name: server
+    port: 9090
+---
+# Source: nats-account-server/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name
+  labels:
+    app: release-name
+    chart: nats-account-server-0.8.0
+spec:
+  selector:
+    matchLabels:
+      app: release-name
+  replicas: 1
+  serviceName: release-name
+  volumeClaimTemplates:
+  - metadata:
+      name: release-name-pvc
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+  template:
+    metadata:
+      labels:
+        app: release-name
+        chart: nats-account-server-0.8.0
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: release-name-config
+
+      ########################
+      #                      #
+      #  NATS Account Server #
+      #                      #
+      ########################
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: nats-account-server
+        image: natsio/nats-account-server:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9090
+          # hostPort: 9090
+          name: server
+        command:
+         - "nats-account-server"
+         - "-c"
+         - "/etc/nats-config/conf/accountserver.conf"
+
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/nats-config/conf
+          - name: system-account-jwt-volume
+            mountPath: /etc/nats-config/sys
+          - name: operator-jwt-volume
+            mountPath: /etc/nats-config/operator
+          - name: nats-sys-creds
+            mountPath: /etc/nats-config/syscreds
+          - name: release-name-pvc
+            mountPath: /store
+
+        # Liveness/Readiness probes against the monitoring.
+        #
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9090
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9090
+          initialDelaySeconds: 10
+          timeoutSeconds: 5

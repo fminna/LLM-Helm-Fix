@@ -1,0 +1,281 @@
+---
+# Source: chromium-render/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chromium-render-release-name
+  labels:
+    app: chromium-render
+    chart: chromium-render-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: chromium-render
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 3030
+        protocol: TCP
+---
+# Source: chromium-render/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chromium-render-release-name-secret-config
+  labels:
+    app: chromium-render
+    chart: chromium-render-0.2.2
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: chromium-render/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chromium-render-release-name-config
+  labels:
+    app: chromium-render
+    chart: chromium-render-0.2.2
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |-     # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 2
+    
+    # Number of workers to start in parallel after the first worker.
+    # The first worker is always started independently. After it has completed
+    # its start-up, this number controls the number of workers to start in
+    # parallel until `num_workers` have been started. Note that setting this
+    # number to a too high a value might lead to high resource consumption
+    # (especially of CPU) during the start-up process.
+    startup_concurrency: 1
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 750
+    
+    # The maximum interval in ms that can pass between two beat messages
+    # sent by each worker to the master before it is killed
+    worker_heartbeat_timeout: 15000
+    
+    # Logger info
+    logging:
+      level: warn
+      name: chromium-render
+      streams:
+        - type: stdout
+          named_levels: true
+    
+    services:
+      - name: proton
+        # a relative path or the name of an npm package, if different from name
+        module: ./app.js
+        # per-service config
+        conf:
+          port: 3030
+          # interface: localhost # uncomment to only listen on localhost
+          # more per-service config settings
+          # the location of the spec, defaults to spec.yaml if not specified
+          # spec: ./spec.template.yaml
+          # allow cross-domain requests to the API (default '*')
+          cors: '*'
+          # to disable use:
+          # cors: false
+          # to restrict to a particular domain, use:
+          # cors: restricted.domain.org
+          # content for the CSP headers
+          # csp: false  # uncomment this line to disable sending them
+          # URL of the outbound proxy to use (complete with protocol)
+          #      proxy: http://url-downloader.eqiad.wikimedia.org:8080
+          # the list of domains for which not to use the proxy defined above
+          # no_proxy_list:
+          #   - domain1.com
+          #   - domain2.org
+          # the list of incoming request headers that can be logged; if left empty,
+          # the following headers are allowed: cache-control, content-length,
+          # content-type, if-match, user-agent, x-request-id
+          # log_header_whitelist:
+          #   - cache-control
+          #   - content-length
+          #   - content-type
+          #   - if-match
+          #   - user-agent
+          #   - x-request-id
+          # User-Agent HTTP header to use for requests
+          user_agent: Proton/WMF
+          # the template used for contacting RESTBase
+          restbase_req:
+            method: '{{request.method}}'
+            # uri: /{{domain}}/v1/{+path}
+            uri: https://{{domain}}/api/rest_v1/{+path}
+            query: '{{ default(request.query, {}) }}'
+            headers: '{{request.headers}}'
+            body: '{{request.body}}'
+            timeout: 60000
+          # the template used for requesting a page from a MediaWiki appserver
+          mw_req:
+            method: get
+            # uri: 
+            uri: https://{{extdomain}}/w/index.php
+            headers:
+              host: '{{request.params.domain}}'
+              x-subdomain: '{{if(request.params.mobile, "M", "")}}'
+            query:
+              title: '{{request.params.title}}'
+          # https://github.com/GoogleChrome/puppeteer/blob/v0.13.0/docs/api.md#pagepdfoptions
+          # Explicitly override defaults so that we don't have unexpected results
+          # after puppeteer upgrades
+          pdf_options:
+            scale: 1
+            displayHeaderFooter: false
+            printBackground: true
+            landscape: false
+            pageRanges: ''
+            format: 'a4'
+            margin:
+              top: '0.5in'
+              right: '0.5in'
+              # some room for page numbers
+              bottom: '0.75in'
+              left: '0.5in'
+          # https://github.com/GoogleChrome/puppeteer/blob/v0.13.0/docs/api.md#puppeteerlaunchoptions
+          puppeteer_options:
+            timeout: 30000
+            headless: true
+            executablePath: '/usr/bin/chromium'
+            args:
+              - '--no-sandbox'
+              - '--disable-setuid-sandbox'
+              - '--font-rendering-hinting=medium'
+              - '--enable-font-antialiasing'
+              - '--hide-scrollbars'
+              - '--disable-gpu'
+              - '--no-first-run'
+              - '--single-process'
+              - '--no-zygote'
+          # Regexp of domains the browser is not allowed to access during rendering the page.
+          # Case-insensitive, gets anchored automatically.
+          # .*:.* - IPv6 or non-standard port; [\d.]+ - IPv4
+          host_blacklist: '.*:.*|[\d.]+|.*\.wmnet|gistcdn\.githack\.com'
+          # the maximum number of puppeteer instances that can be launched at a time
+          render_concurrency: 3
+          # don't wait to render a PDF after this many seconds
+          render_queue_timeout: 60
+          # the number of seconds before puppeteer terminates the browser instance
+          render_execution_timeout: 90
+          # maximum allowed number of pending jobs
+          max_render_queue_size: 50
+          queue_health_logging_interval: 3600
+---
+# Source: chromium-render/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: chromium-render-release-name
+  labels:
+    app: chromium-render
+    chart: chromium-render-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: chromium-render
+    release: release-name
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 3030
+      port: 3030
+---
+# Source: chromium-render/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chromium-render-release-name
+  labels:
+    app: chromium-render
+    chart: chromium-render-0.2.2
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: chromium-render
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: chromium-render
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: 2cd66671ddba3f9cdedfc339eb54f2c5dd429b45e0ac1b8f247227568dedac05
+        checksum/secrets: 6784d95f4220c0b4db94cefeb100d6166bb1841b45ffffe563f1c77da185a712
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:
+        # The main application container
+        - name: chromium-render-release-name
+          image: docker-registry.wikimedia.org/wikimedia/mediawiki-services-chromium-render:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+          args:
+            - server.js
+            - -c
+            - /etc/chromium-render/config.yaml
+          ports:
+            - containerPort: 3030
+          livenessProbe:
+            tcpSocket:
+              port: 3030
+          readinessProbe:
+            httpGet:
+              path: /_info
+              port: 3030
+          env:
+            - name: APP_ENABLE_CANCELLABLE_PROMISES
+              value: "true"
+            - name: SERVICE_IDENTIFIER
+              value: chromium-render-release-name
+          resources:
+            requests:
+              cpu: 4
+              memory: 2Gi
+            limits:
+              cpu: 8
+              memory: 3Gi
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/chromium-render        
+      volumes:        
+        - name: config-volume
+          configMap:
+            name: chromium-render-release-name-config
+---
+# Source: chromium-render/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'chromium-render-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'chromium-render-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(CHROMIUM_RENDER_RELEASE_NAME_SERVICE_HOST)', 'http://chromium-render-release-name:3030']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

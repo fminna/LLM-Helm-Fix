@@ -1,0 +1,367 @@
+---
+# Source: kubeupdater/templates/psp.yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: '*'
+spec:
+  privileged: true
+  allowPrivilegeEscalation: true
+  allowedCapabilities:
+  - '*'
+  allowedHostPaths:
+  - pathPrefix: '/usr/bin'
+    readOnly: false
+  volumes:
+  - 'configMap'
+  - 'hostPath'
+  - 'secret'
+  hostNetwork: true
+  hostIPC: true
+  hostPID: true
+  runAsUser:
+    rule: 'RunAsAny'
+  seLinux:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+---
+# Source: kubeupdater/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kubeupdater/templates/bin-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  kubeupdater: |
+    #!/bin/bash
+    function pre_upgrade {
+      echo "About to upgrade everything"
+      
+    }
+
+    function post_upgrade {
+      echo "Done upgrading"
+      
+    }
+
+    function finish_upgrade {
+      reboot
+      
+    }
+
+    #!/bin/bash
+    
+    flag=$1
+    
+    HOSTNAME=$(hostname)
+    export KUBECONFIG=/etc/kubernetes/kubelet.conf
+    
+    [ -f /etc/sysconfig/kubeupdater ] && . /etc/sysconfig/kubeupdater
+    
+    if [ "x$flag" == "x-b" ]; then
+    	for x in `seq 1 5`; do
+    		kubectl label node $HOSTNAME miscscripts.pnnl.gov/upgrade- && break
+    		echo Failed to unlabel. Waiting and trying again.
+    		sleep $x
+    	done
+    fi
+    
+    if [ "x$flag" == "x-u" ]; then
+    	while true; do
+    		UPGRADE=0
+    		while read upgrade; do
+    			if [ "x$upgrade" == "xtrue" ]; then
+    				UPGRADE=1
+    				break
+    			fi
+    		done < <(kubectl get nodes $HOSTNAME -ogo-template='{{printf "%s\n" (index .metadata.labels "miscscripts.pnnl.gov/upgrade")}}' --watch)
+    		if [ $UPGRADE -eq 1 ]; then
+    			UPGRADE=0
+    			echo "Doing upgrade"
+    			systemctl stop kubeupdater-checker
+    			systemctl stop kubelet
+    			yum install kubeadm -y
+    			kubeadm upgrade node
+    			pre_upgrade
+    			yum upgrade -y
+    			post_upgrade
+    			kubectl label node $HOSTNAME miscscripts.pnnl.gov/upgrade-needed-
+    			finish_upgrade
+    		fi
+    	done
+    	sleep 1
+    fi
+    
+    if [ "x$flag" == "x-c" ]; then
+    	while true; do
+    		while read line; do
+    			while true; do
+    				kubectl get configmap -n kube-system kubeupdater -o go-template='{{index .data "everything.repo"}}' > /etc/yum.repos.d/everything.repo.new
+    				mv /etc/yum.repos.d/everything.repo.new /etc/yum.repos.d/everything.repo
+    				echo Upgrade checking
+    				yum check-update -y
+    				res=$?
+    				[ $res -eq 0 ] && break
+    				if [ $res -eq 100 ]; then
+    					echo Upgrade found. Informing the orchestrator.
+    					kubectl label node $HOSTNAME miscscripts.pnnl.gov/upgrade-needed=true
+    					break
+    				fi
+    				echo Failed to upgrade check. Retrying in 10 seconds.
+    				sleep 10
+    			done
+    		done < <(kubectl get configmap -n kube-system kubeupdater --watch -ogo-template='{{printf "\n"}}')
+    		sleep 1
+    	done
+    fi
+    
+    if [ "x$flag" == "x-i" ]; then
+    	cat > /etc/systemd/system/kubeupdater-checker.service <<EOF
+    [Unit]
+    Description=kubeupdater-checker: The Kube Updater Checker
+    
+    [Service]
+    ExecStart=/usr/bin/kubeupdater -c
+    Restart=always
+    StartLimitInterval=0
+    RestartSec=10
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+    	cat > /etc/systemd/system/kubeupdater-updater.service <<EOF
+    [Unit]
+    Description=kubeupdater-updater: The Kube Updater updater
+    After=network-online.target nss-lookup.target kubeupdater-boot.service
+    Before=kubelet.service
+    Wants=network-online.target
+    
+    [Service]
+    ExecStart=/usr/bin/kubeupdater -u
+    Restart=always
+    StartLimitInterval=0
+    RestartSec=10
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+    	cat > /etc/systemd/system/kubeupdater-boot.service <<EOF
+    [Unit]
+    Description=kubeupdater-boot: The Kube Updater on boot service
+    After=network-online.target nss-lookup.target
+    Before=kubelet.service kubeupdater-updater.service
+    Wants=network-online.target
+    
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/kubeupdater -b
+    RemainAfterExit=yes
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+    	systemctl daemon-reload
+    	systemctl enable kubeupdater-checker kubeupdater-updater kubeupdater-boot
+    	systemctl restart kubeupdater-checker kubeupdater-updater
+    fi
+    
+    if [ "x$flag" == "x-r" ]; then
+    	rm -f /etc/systemd/system/kubeupdater-checker.service /etc/systemd/system/kubeupdater-updater.service /etc/systemd/system/kubeupdater-boot.service
+    fi
+---
+# Source: kubeupdater/templates/repo-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubeupdater
+  namespace: kube-system
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  everything.repo: |
+    [everything]
+    name=everything
+    enabled=1
+    baseurl=https://changeme/1.16.8-nginx-2
+    gpgkey = file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9
+             https://changeme/1.16.8-nginx-2/repodata/RPM-GPG-KEY
+    gpgcheck = 1
+    repo_gpgcheck = 1
+    keepcache = 0
+---
+# Source: kubeupdater/templates/node-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-kubeupdater-node
+  namespace: kube-system
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - kubeupdater
+  verbs:
+  - get
+  - watch
+---
+# Source: kubeupdater/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs:     ['use']
+  resourceNames:
+  - release-name-kubeupdater
+---
+# Source: kubeupdater/templates/node-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-kubeupdater-node
+  namespace: kube-system
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-kubeupdater-node
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes
+---
+# Source: kubeupdater/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-kubeupdater
+subjects:
+- kind: ServiceAccount
+  name: release-name-kubeupdater
+  namespace: default
+---
+# Source: kubeupdater/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-kubeupdater
+  labels:
+    helm.sh/chart: kubeupdater-0.4.5
+    app.kubernetes.io/name: kubeupdater
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  replicas: 
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubeupdater
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubeupdater
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: "2131dd5a665b70152ace80c393ba9cba4b29457c7cb78f73fa677b08bd795c0d"
+    spec:
+      containers:
+      - image: "alpine:3.11"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -ec
+        - |
+          cat /config/kubeupdater > /host-bin/kubeupdater
+          chmod +x /host-bin/kubeupdater
+          nsenter -m/proc/1/ns/mnt -- /usr/bin/kubeupdater -i
+          while true; do sleep 10000; done
+        name: main
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /host-bin
+          name: host-bin
+        - mountPath: /config
+          name: config
+        resources:
+          {}
+      serviceAccountName: release-name-kubeupdater
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      volumes:
+      - hostPath:
+          path: /usr/bin
+        name: host-bin
+      - configMap:
+          name: release-name-kubeupdater
+        name: config

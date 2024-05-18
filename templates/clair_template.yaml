@@ -1,0 +1,400 @@
+---
+# Source: clair/charts/postgresql/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: "networking.k8s.io/v1"
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+  ingress:
+    # Allow inbound connections
+    - ports:
+        - port: 5432
+---
+# Source: clair/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgresql-postgres-password: "cHlOeENsdlhTRw=="
+  postgresql-password: "Y2xhaXI="
+---
+# Source: clair/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-clair
+  labels:
+    app.kubernetes.io/name: clair
+    helm.sh/chart: clair-0.2.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.yaml: |
+    clair:
+      database:
+        # Database driver
+        type: pgsql
+        options:
+          # PostgreSQL Connection string
+          # https://www.postgresql.org/docs/current/static/libpq-connect.html#LIBPQ-CONNSTRING
+          # This should be done using secrets or Vault, but for now this will also work
+          source: "postgres://postgres:clair@release-name-postgresql:5432/postgres?sslmode=disable"
+          
+
+          # Number of elements kept in the cache
+          # Values unlikely to change (e.g. namespaces) are cached in order to save prevent needless roundtrips to the database.
+          cachesize: 16384
+
+          # 32-bit URL-safe base64 key used to encrypt pagination tokens
+          # If one is not provided, it will be generated.
+          # Multiple clair instances in the same cluster need the same value.
+          paginationkey: ""
+      api:
+        # v3 grpc/RESTful API server address
+        addr: "0.0.0.0:6060"
+
+        # Health server address
+        # This is an unencrypted endpoint useful for load balancers to check to healthiness of the clair server.
+        healthaddr: "0.0.0.0:6061"
+
+        # Deadline before an API request will respond with a 503
+        timeout: 900s
+
+        # Optional PKI configuration
+        # If you want to easily generate client certificates and CAs, try the following projects:
+        # https://github.com/coreos/etcd-ca
+        # https://github.com/cloudflare/cfssl
+        servername:
+        cafile:
+        keyfile:
+        certfile:
+
+      worker:
+        namespace_detectors:
+        - os-release
+        - lsb-release
+        - apt-sources
+        - alpine-release
+        - redhat-release
+
+        feature_listers:
+        - apk
+        - dpkg
+        - rpm
+
+      updater:
+        # Frequency the database will be updated with vulnerabilities from the default data sources
+        # The value 0 disables the updater entirely.
+        interval: "2h"
+        enabledupdaters:
+        - debian
+        - ubuntu
+        - rhel
+        - oracle
+        - alpine
+
+      notifier:
+        # Number of attempts before the notification is marked as failed to be sent
+        attempts: 3
+
+        # Duration before a failed notification is retried
+        renotifyinterval: 2h
+
+        http:
+          # Optional endpoint that will receive notifications via POST requests
+          endpoint: ""
+
+          # Optional PKI configuration
+          # If you want to easily generate client certificates and CAs, try the following projects:
+          # https://github.com/cloudflare/cfssl
+          # https://github.com/coreos/etcd-ca
+          servername:
+          cafile:
+          keyfile:
+          certfile:
+
+          # Optional HTTP Proxy: must be a valid URL (including the scheme).
+          proxy:
+---
+# Source: clair/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: clair/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: clair/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-clair
+  labels:
+    app.kubernetes.io/name: clair
+    helm.sh/chart: clair-0.2.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: clair-api
+    port: 6060
+    targetPort: 6060
+    protocol: TCP
+    name: "clair-api"
+  - name: clair-health
+    port: 6061
+    targetPort: 6061
+    protocol: TCP
+    name: "clair-health"
+  selector:
+    app.kubernetes.io/name: clair
+    app.kubernetes.io/instance: release-name
+---
+# Source: clair/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-clair
+  labels:
+    app.kubernetes.io/name: clair
+    helm.sh/chart: clair-0.2.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clair
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clair
+        helm.sh/chart: clair-0.2.9
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      volumes:
+      - name: "clair-config"
+        configMap:
+          name: release-name-clair
+      containers:
+      - name: clair
+        image: "quay.io/coreos/clair:v2.1.6"
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-log-level=debug"
+        
+        ports:
+        - name: clair-api
+          containerPort: 6060
+          protocol: TCP
+        - name: clair-health
+          containerPort: 6061
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 6061
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 6061
+        volumeMounts:
+        - name: "clair-config"
+          mountPath: /etc/clair
+        resources:
+          limits:
+            cpu: 2
+            memory: 3000Mi
+          requests:
+            cpu: 50m
+            memory: 2000Mi
+---
+# Source: clair/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.10.0-debian-10-r2
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            limits:
+              cpu: 2
+              memory: 512Mi
+            requests:
+              cpu: 50m
+              memory: 512Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "true"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "1Gi"

@@ -1,0 +1,271 @@
+---
+# Source: pure-k8s-plugin/templates/clusterrolebinding.yaml
+# Create a service account for installation
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pure
+  namespace: default
+---
+# Source: pure-k8s-plugin/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pure-provisioner-secret
+  namespace: default
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+data:
+  pure.json: "bnVsbA=="
+---
+# Source: pure-k8s-plugin/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: pure
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+  labels:
+    kubernetes.io/cluster-service: "true"
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+provisioner: pure-provisioner
+parameters:
+    backend: "block"
+---
+# Source: pure-k8s-plugin/templates/storageclass.yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: pure-file
+  labels:
+    kubernetes.io/cluster-service: "true"
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+provisioner: pure-provisioner
+parameters:
+    backend: file
+---
+# Source: pure-k8s-plugin/templates/storageclass.yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: pure-block
+  labels:
+    kubernetes.io/cluster-service: "true"
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+provisioner: pure-provisioner
+parameters:
+    backend: block
+---
+# Source: pure-k8s-plugin/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+  name: pure-provisioner-clusterrole
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["create", "delete", "get", "list", "watch", "update"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "update", "watch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update", "watch"]
+---
+# Source: pure-k8s-plugin/templates/clusterrolebinding.yaml
+# Assign cluster role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pure-provisioner-rights
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pure-provisioner-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: pure
+  namespace: default
+---
+# Source: pure-k8s-plugin/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pure-provisioner-role
+  namespace: default
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+rules:
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+---
+# Source: pure-k8s-plugin/templates/clusterrolebinding.yaml
+# Assign role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pure-provisioner-rights-ns
+  namespace: default
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pure-provisioner-role
+subjects:
+- kind: ServiceAccount
+  name: pure
+  namespace: default
+---
+# Source: pure-k8s-plugin/templates/pure-flex-daemon.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pure-flex
+  namespace: default
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+# flex-daemon may not be running on some nodes in the cluster like master/infra nodes. This affects the maxUnavailable nodes for a RollingUpdate.
+# Set maxUnavailable to 100% so that a Rolling Update is possible for any cluster configuration.
+      maxUnavailable: 100%
+  selector:
+    matchLabels:
+      app: pure-flex
+  template:
+    metadata:
+      labels:
+        app: pure-flex
+        generator: helm
+        chart: pure-k8s-plugin
+        release: "release-name"
+    spec:
+      serviceAccountName: pure
+      containers:
+        - name: pure-flex
+          image: "purestorage/k8s:2.7.1"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - "/uninstaller"
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          command:
+            - "/pure-flex-daemon"
+            - "--kubeletBaseDir=/kubelet-plugins"
+            - "--daemon"
+            - "install"
+          volumeMounts:
+          - name: config
+            mountPath: /etc/pure
+            readOnly: true
+          - name: kubelet-plugins
+            mountPath: /kubelet-plugins
+          env:
+          - name: PURE_DISCOVERY_CONF
+            value: /etc/pure/pure.json
+          - name: PURE_FLASHARRAY_SAN_TYPE
+            value: ISCSI
+          - name: PURE_K8S_NAMESPACE
+            value: k8s
+          - name: PURE_DEFAULT_BLOCK_FS_TYPE
+            value: xfs
+          - name: PURE_DEFAULT_BLOCK_FS_OPT
+            value: "-q"
+          - name: PURE_DEFAULT_BLOCK_MNT_OPT
+            value: ""
+          - name: PURE_PREEMPT_RWO_ATTACHMENTS_DEFAULT
+            value: "true"
+          - name: PURE_ISCSI_ALLOWED_CIDRS
+            value: ""
+          - name: PURE_ISCSI_LOGIN_TIMEOUT
+            value: "20"
+      volumes:
+        - name: config
+          secret:
+            secretName: pure-provisioner-secret
+        - name: kubelet-plugins
+          hostPath:
+           path: /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+---
+# Source: pure-k8s-plugin/templates/pure-provisioner.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pure-provisioner
+  namespace: default
+  labels:
+    generator: helm
+    chart: pure-k8s-plugin
+    release: "release-name"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pure-provisioner
+  template:
+    metadata:
+      labels:
+        app: pure-provisioner
+        generator: helm
+        chart: pure-k8s-plugin
+        release: "release-name"
+    spec:
+      serviceAccountName: pure
+      containers:
+        - name: pure-provisioner
+          image: "purestorage/k8s:2.7.1"
+          imagePullPolicy: Always
+          command:
+            - /k8s-provisioner
+            - '-logtostderr=true'
+            - '-log_file_max_size=32'
+            - '-stderrthreshold=2'
+          volumeMounts:
+          - name: config
+            mountPath: /etc/pure
+            readOnly: true
+          env:
+          - name: PURE_DISCOVERY_CONF
+            value: /etc/pure/pure.json
+          - name: PURE_K8S_NAMESPACE
+            value: k8s
+          - name: PURE_DEFAULT_BLOCK_FS_TYPE
+            value: xfs
+          - name: PURE_DEFAULT_ENABLE_FB_NFS_SNAPSHOT
+            value: "false"
+      volumes:
+        - name: config
+          secret:
+            secretName: pure-provisioner-secret

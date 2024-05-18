@@ -1,0 +1,206 @@
+---
+# Source: teleport-ent-auth/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/component: "auth"
+    helm.sh/chart: teleport-ent-auth-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teleport-auth
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: "auth"
+  maxUnavailable: 50%
+---
+# Source: teleport-ent-auth/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/component: "auth"
+    helm.sh/chart: teleport-ent-auth-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: teleport-ent-auth/templates/secret.yaml
+## Config files mounted by the Teleport Auth service
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/component: "auth"
+    helm.sh/chart: teleport-ent-auth-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  teleport.yaml: ""
+---
+# Source: teleport-ent-auth/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app: teleport-auth
+    chart: teleport-ent-auth-0.2.0
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests/approval
+  - certificatesigningrequests/status
+  verbs:
+   - update
+---
+# Source: teleport-ent-auth/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app: teleport-auth
+    chart: teleport-ent-auth-0.2.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-teleport-auth
+subjects:
+- kind: ServiceAccount
+  name: release-name-teleport-auth
+  namespace: default
+---
+# Source: teleport-ent-auth/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/component: "auth"
+    helm.sh/chart: teleport-ent-auth-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-timeout: "60"
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "60"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0
+    service.beta.kubernetes.io/aws-load-balancer-ssl-negotiation-policy: ELBSecurityPolicy-TLS-1-2-2017-01
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 3025
+      targetPort: auth
+      protocol: TCP
+      name: auth
+  selector:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: "auth"
+---
+# Source: teleport-ent-auth/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-teleport-auth
+  labels:
+    app.kubernetes.io/name: teleport-auth
+    app.kubernetes.io/component: "auth"
+    helm.sh/chart: teleport-ent-auth-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50%
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teleport-auth
+      app.kubernetes.io/component: "auth"
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: teleport-auth
+        app.kubernetes.io/component: "auth"
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: 6a71c11301cd3c3487820a295ad06c386b5115cc49a5748eddfddfb7c73351ad
+        checksum/bootstrap: 139545784b84f8387852ab13040ba72ac88d9d1a1cc0287627436c3698978d2f
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: teleport-auth
+        image: "quay.io/gravitational/teleport-ent:4.0.9"
+        imagePullPolicy: IfNotPresent
+        args:
+          - --roles=auth
+          - --diag-addr=0.0.0.0:3000
+        env:
+        # See https://gravitational.com/teleport/docs/admin-guide/#ports
+        ports:
+        - name: auth
+          containerPort: 3025
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 70
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 3000
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - mountPath: /etc/teleport
+          name: config
+          readOnly: true
+        - mountPath: /var/lib/teleport
+          name: storage
+      volumes:
+      - name: config
+        secret:
+          secretName: "release-name-teleport-auth"
+      - name: storage
+        emptyDir: {}
+      serviceAccountName: release-name-teleport-auth
+---
+# Source: teleport-ent-auth/templates/secret-resources.yaml
+## Secret for bootstrap resource files mounted by the bootstrap container

@@ -1,0 +1,750 @@
+---
+# Source: hertzbeat/templates/collector/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-hertzbeat-collector"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  IDENTITY: ""
+  MANAGER_HOST: "release-name-hertzbeat-cluster"
+  MANAGER_PORT: "1158"
+  application.yml: |+
+    server:
+      port: 1159
+    spring:
+      application:
+        name: ${HOSTNAME:@hertzbeat-collector@}${PID}
+      profiles:
+        active: cluster
+      jackson:
+        default-property-inclusion: ALWAYS
+      # need to disable spring boot mongodb auto config, or default mongodb connection tried and failed...
+      autoconfigure:
+        exclude: org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration, org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+    
+    ---
+    spring:
+      config:
+        activate:
+          on-profile: cluster
+    
+    collector:
+      dispatch:
+        entrance:
+          netty:
+            enabled: true
+            identity: ${IDENTITY:}
+            mode: ${MODE:public}
+            manager-host: ${MANAGER_HOST:127.0.0.1}
+            manager-port: ${MANAGER_PORT:1158}
+    
+    common:
+      queue:
+        # memory or kafka
+        type: ${QUEUE_TYPE:netty}
+        # properties when queue type is kafka
+        kafka:
+          servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+          metrics-data-topic: ${KAFKA_TOPIC:async-metrics-data}
+---
+# Source: hertzbeat/templates/database/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-hertzbeat-database"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  TZ: "Asia/Shanghai"
+  MYSQL_ROOT_PASSWORD: "123456"
+  schema.sql: |+
+    set names utf8mb4;
+    create database if not exists hertzbeat default charset utf8mb4 collate utf8mb4_general_ci;
+    commit;
+---
+# Source: hertzbeat/templates/manager/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-hertzbeat"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  application.yml: |+
+    server:
+      port: 1157
+    spring:
+      application:
+        name: ${HOSTNAME:@hertzbeat@}${PID}
+      profiles:
+        active: prod
+      mvc:
+        static-path-pattern: /**
+      jackson:
+        default-property-inclusion: ALWAYS
+      web:
+        resources:
+          static-locations:
+            - classpath:/dist/
+            - classpath:../dist/
+      # need to disable spring boot mongodb auto config, or default mongodb connection tried and failed..
+      autoconfigure:
+        exclude: org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration, org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      freemarker:
+        enabled: false
+    management:
+      health:
+        mail:
+          enabled: off
+      endpoints:
+        web:
+          exposure:
+            include:
+              - 'metrics'
+              - 'health'
+              - 'env'
+        enabled-by-default: on
+    
+    sureness:
+      auths:
+        - digest
+        - basic
+        - jwt
+      jwt:
+        secret: CyaFv0bwq2Eik0jdrKUtsA6bx3sDJeFV143R LnfKefTjsIfJLBa2YkhEqEGtcHDTNe4CU6+9 8tVt4bisXQ13rbN0oxhUZR73M6EByXIO+SV5 dKhaX0csgOCTlCxq20yhmUea6H6JIpSE2Rwp
+    
+    ---
+    spring:
+      config:
+        activate:
+          on-profile: prod
+    
+      datasource:
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: 123456
+        url: jdbc:mysql://release-name-hertzbeat-database:3306/hertzbeat?useUnicode=true&characterEncoding=utf-8&allowPublicKeyRetrieval=true&useSSL=false
+        hikari:
+          max-lifetime: 120000
+    
+      jpa:
+        hibernate:
+          ddl-auto: update
+    
+      mail:
+        # Attention: this is mail server address.
+        # 请注意此为邮件服务器地址：qq邮箱为 smtp.qq.com qq 企业邮箱为 smtp.exmail.qq.com
+        host: smtp.qq.com
+        username: tancloud@qq.com
+        # Attention: this is not email account password, this requires an email authorization code
+        # 请注意此非邮箱账户密码 此需填写邮箱授权码
+        password: your-password
+        #Attention: Tencent mail smtps 465,smtp 587
+        #请注意腾讯邮箱465为smtps,587为smtp
+        port: 587
+        properties:
+          mail:
+            smtp:
+              socketFactoryClass: javax.net.ssl.SSLSocketFactory
+              ssl:
+                enable: true
+    
+    common:
+      queue:
+        # memory or kafka
+        type: memory
+        # properties when queue type is kafka
+        kafka:
+          servers: 127.0.0.1:9092
+          metrics-data-topic: async-metrics-data
+          alerts-data-topic: async-alerts-data
+    
+    warehouse:
+      store:
+        # store history metrics data, enable only one below
+        # 存储历史数据方式, 下方只能enabled启用一种方式
+        jpa:
+          enabled: false
+        victoria-metrics:
+          enabled: true
+          url: http://release-name-hertzbeat-tsdb:8428
+          username: root
+          password: root
+        td-engine:
+          enabled: false
+          driver-class-name: com.taosdata.jdbc.rs.RestfulDriver
+          url: jdbc:TAOS-RS://release-name-hertzbeat-tsdb:6041/hertzbeat
+          username: root
+          password: taosdata
+        greptime:
+          enabled: false
+          endpoint: localhost:4001
+        iot-db:
+          enabled: false
+          host: release-name-hertzbeat-tsdb
+          rpc-port: 6667
+          username: root
+          password: root
+          # org.dromara.hertzbeat.warehouse.config.IotDbVersion: V_0_13 || V_1_0
+          version: V_1_0
+          query-timeout-in-ms: -1
+          # 数据存储时间：默认'7776000000'（90天,单位为毫秒,-1代表永不过期）
+          # data expire time, unit:ms, default '7776000000'(90 days, -1:never expire)
+          expire-time: '7776000000'
+        influxdb:
+          enabled: false
+          server-url: http://127.0.0.1:8086
+          username: root
+          password: root
+          expire-time: '30d'
+          replication: 1
+    
+        # store real-time metrics data, enable only one below
+        # 存储实时数据方式, 下方只能enabled启用一种方式
+        memory:
+          enabled: true
+          init-size: 16
+        redis:
+          enabled: false
+          host: 127.0.0.1
+          port: 6379
+          password: 123456
+          db: 0
+    
+    alerter:
+      # custom console url
+      console-url: https://console.tancloud.cn
+    
+    scheduler:
+      server:
+        enabled: true
+        port: 1158
+
+
+  sureness.yml: |+
+    resourceRole:
+      - /api/account/auth/refresh===post===[admin,user,guest]
+      - /api/apps/**===get===[admin,user,guest]
+      - /api/monitor/**===get===[admin,user,guest]
+      - /api/monitor/**===post===[admin,user]
+      - /api/monitor/**===put===[admin,user]
+      - /api/monitor/**===delete==[admin]
+      - /api/monitors/**===get===[admin,user,guest]
+      - /api/monitors/**===post===[admin,user]
+      - /api/monitors/**===put===[admin,user]
+      - /api/monitors/**===delete===[admin]
+      - /api/alert/**===get===[admin,user,guest]
+      - /api/alert/**===post===[admin,user]
+      - /api/alert/**===put===[admin,user]
+      - /api/alert/**===delete===[admin]
+      - /api/alerts/**===get===[admin,user,guest]
+      - /api/alerts/**===post===[admin,user]
+      - /api/alerts/**===put===[admin,user]
+      - /api/alerts/**===delete===[admin]
+      - /api/notice/**===get===[admin,user,guest]
+      - /api/notice/**===post===[admin,user]
+      - /api/notice/**===put===[admin,user]
+      - /api/notice/**===delete===[admin]
+      - /api/tag/**===get===[admin,user,guest]
+      - /api/tag/**===post===[admin,user]
+      - /api/tag/**===put===[admin,user]
+      - /api/tag/**===delete===[admin]
+      - /api/summary/**===get===[admin,user,guest]
+      - /api/summary/**===post===[admin,user]
+      - /api/summary/**===put===[admin,user]
+      - /api/summary/**===delete===[admin]
+      - /api/collector/**===get===[admin,user,guest]
+      - /api/collector/**===post===[admin,user]
+      - /api/collector/**===put===[admin,user]
+      - /api/collector/**===delete===[admin]
+      - /api/status/page/**===get===[admin,user,guest]
+      - /api/status/page/**===post===[admin,user]
+      - /api/status/page/**===put===[admin,user]
+      - /api/status/page/**===delete===[admin]
+
+    # 需要被过滤保护的资源,不认证鉴权直接访问
+    # /api/v1/source3===get 表示 /api/v1/source3===get 可以被任何人访问 无需登录认证鉴权
+    excludedResource:
+      - /api/alerts/report/**===*
+      - /api/account/auth/**===*
+      - /api/i18n/**===get
+      - /api/apps/hierarchy===get
+      - /api/push/**===*
+      - /api/status/page/public/**===*
+      # web ui 前端静态资源
+      - /===get
+      - /dashboard/**===get
+      - /monitors/**===get
+      - /alert/**===get
+      - /account/**===get
+      - /setting/**===get
+      - /passport/**===get
+      - /status/**===get
+      - /**/*.html===get
+      - /**/*.js===get
+      - /**/*.css===get
+      - /**/*.ico===get
+      - /**/*.ttf===get
+      - /**/*.png===get
+      - /**/*.gif===get
+      - /**/*.jpg===get
+      - /**/*.svg===get
+      - /**/*.json===get
+      - /**/*.woff===get
+      - /**/*.eot===get
+      # swagger ui 资源
+      - /swagger-resources/**===get
+      - /v2/api-docs===get
+      - /v3/api-docs===get
+      # h2 database
+      - /h2-console/**===*
+
+    # 用户账户信息
+    # 下面有 admin tom lili 三个账户
+    # eg: admin 拥有[admin,user]角色,密码为hertzbeat
+    # eg: tom 拥有[user],密码为hertzbeat
+    # eg: lili 拥有[guest],明文密码为lili, 加盐密码为1A676730B0C7F54654B0E09184448289
+    account:
+      - appId: admin
+        credential: hertzbeat
+        role: [admin]
+      - appId: tom
+        credential: hertzbeat
+        role: [user]
+      - appId: guest
+        credential: hertzbeat
+        role: [guest]
+      - appId: lili
+        # 注意 Digest认证不支持加盐加密的密码账户
+        # 加盐加密的密码，通过 MD5(password+salt)计算
+        # 此账户的原始密码为 lili
+        credential: 1A676730B0C7F54654B0E09184448289
+        salt: 123
+        role: [guest]
+---
+# Source: hertzbeat/templates/tsdb/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-hertzbeat-tsdb"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  TZ: "Asia/Shanghai"
+---
+# Source: hertzbeat/templates/database/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-hertzbeat-database
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: database
+spec:
+  accessModes: 
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi
+---
+# Source: hertzbeat/templates/tsdb/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-hertzbeat-tsdb
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: tsdb
+spec:
+  accessModes: 
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi
+---
+# Source: hertzbeat/templates/database/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hertzbeat-database
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3306
+      targetPort: 3306
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    component: database
+---
+# Source: hertzbeat/templates/manager/service-cluster.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-hertzbeat-cluster"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 1158
+      targetPort: 1158
+      protocol: TCP
+      name: cluster
+  selector:
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    component: manager
+---
+# Source: hertzbeat/templates/manager/service-expose.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-hertzbeat-http"
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm 
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 1157
+      targetPort: 1157
+  selector:
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    component: manager
+---
+# Source: hertzbeat/templates/tsdb/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hertzbeat-tsdb
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8428
+      targetPort: 8428
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    component: tsdb
+---
+# Source: hertzbeat/templates/collector/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-hertzbeat-collector
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hertzbeat
+      app.kubernetes.io/instance: release-name
+      component: collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hertzbeat
+        app.kubernetes.io/instance: release-name
+        component: collector
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: hertzbeat-collector
+          securityContext:
+            {}
+          image: "tancloud/hertzbeat-collector:v1.5.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 1159
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 1159
+          readinessProbe:
+            tcpSocket:
+              port: 1159
+          envFrom:
+            - configMapRef:
+                name: "release-name-hertzbeat-collector"
+          volumeMounts:
+            - mountPath: /opt/hertzbeat-collector/config/application.yml
+              subPath: application.yml
+              name: application
+          resources:
+            {}
+      volumes:
+        - name: application
+          configMap:
+            name: release-name-hertzbeat-collector
+---
+# Source: hertzbeat/templates/manager/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-hertzbeat
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hertzbeat
+      app.kubernetes.io/instance: release-name
+      component: manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hertzbeat
+        app.kubernetes.io/instance: release-name
+        component: manager
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: hertzbeat
+          securityContext:
+            {}
+          image: "tancloud/hertzbeat:v1.5.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 1157
+              protocol: TCP
+            - name: cluster
+              containerPort: 1158
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 1157
+          readinessProbe:
+            tcpSocket:
+              port: 1157
+          volumeMounts:
+            - mountPath: /opt/hertzbeat/config/application.yml
+              subPath: application.yml
+              name: application
+            - mountPath: /opt/hertzbeat/config/sureness.yml
+              subPath: sureness.yml
+              name: sureness
+          resources:
+            {}
+      volumes:
+        - name: application
+          configMap:
+            name: release-name-hertzbeat
+        - name: sureness
+          configMap:
+            name: release-name-hertzbeat
+---
+# Source: hertzbeat/templates/database/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hertzbeat-database
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: database
+spec:
+  replicas: 1
+  serviceName: release-name-hertzbeat-database
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hertzbeat
+      app.kubernetes.io/instance: release-name
+      component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hertzbeat
+        app.kubernetes.io/instance: release-name
+        component: database
+    spec:
+      securityContext:
+        {}
+      containers:
+      - name: database
+        image: mysql:8
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          tcpSocket:
+            port: 3306
+          initialDelaySeconds: 300
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 3306
+          initialDelaySeconds: 1
+          periodSeconds: 10
+        resources:
+            {}
+        envFrom:
+          - configMapRef:
+              name: "release-name-hertzbeat-database"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: ""
+        - mountPath: /docker-entrypoint-initdb.d/schema.sql
+          subPath: schema.sql
+          name: schema
+      volumes:
+        - name: schema
+          configMap:
+            name: release-name-hertzbeat-database
+        - name: data
+          persistentVolumeClaim: 
+            claimName: release-name-hertzbeat-database
+---
+# Source: hertzbeat/templates/tsdb/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hertzbeat-tsdb
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+    component: tsdb
+spec:
+  replicas: 1
+  serviceName: release-name-hertzbeat-tsdb
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hertzbeat
+      app.kubernetes.io/instance: release-name
+      component: tsdb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hertzbeat
+        app.kubernetes.io/instance: release-name
+        component: tsdb
+    spec:
+      securityContext:
+        {}
+      containers:
+      - name: tsdb
+        image: victoriametrics/victoria-metrics:v1.95.1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          tcpSocket:
+            port: 8428
+          initialDelaySeconds: 300
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 8428
+          initialDelaySeconds: 1
+          periodSeconds: 10
+        resources:
+            {}
+        envFrom:
+          - configMapRef:
+              name: "release-name-hertzbeat-tsdb"
+        volumeMounts:
+        - name: data
+          mountPath: /victoria-metrics-data
+          subPath: ""
+      volumes:
+        - name: data
+          persistentVolumeClaim: 
+            claimName: release-name-hertzbeat-tsdb
+---
+# Source: hertzbeat/templates/manager/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "release-name-hertzbeat-ingress"
+  annotations:
+    {}
+  labels:
+    helm.sh/chart: hertzbeat-1.5.0
+    app.kubernetes.io/name: hertzbeat
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: hertzbeat.domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "release-name-hertzbeat-http"
+                port:
+                  number: 1157
+  tls:

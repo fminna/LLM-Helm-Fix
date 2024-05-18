@@ -1,0 +1,214 @@
+---
+# Source: runtime-sensors/templates/rbac-configurations.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtimesa
+  namespace: default
+---
+# Source: runtime-sensors/templates/runtime-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-config-configmap
+  namespace: default
+data:
+  clusterId: ""
+             
+
+# In case clusterID and clusterName were not specified, just use empty string. 
+# Then the runtime Controller should generate a clusterID
+---
+# Source: runtime-sensors/templates/rbac-configurations.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: runtime-view
+rules:
+  - apiGroups: ["", "extensions", "v1", "apps", "pods", "deployments", "nodes"]
+    resources: ["pods", "replicationcontrollers", "deployments", "nodes", "configmaps"]
+    verbs: ["get", "watch", "list", "update"]
+---
+# Source: runtime-sensors/templates/rbac-configurations.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: "runtime-view-rolebinding-default"
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: runtime-view 
+subjects:
+  - kind: ServiceAccount
+    name: runtimesa
+    namespace: default
+---
+# Source: runtime-sensors/templates/runtime-agent-ds.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: jfs-runtime-agent #agent
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      name: jfs-runtime-agent
+  template:
+    metadata:
+      labels:
+        name: jfs-runtime-agent
+    spec:
+      imagePullSecrets:
+        - name: docker-jfrog-io-pull-secret
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: disable_jfrog_runtime
+                operator: DoesNotExist
+      hostPID: true
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+      containers:
+        - name: jfs-runtime-agent
+          image: "releases-docker.jfrog.io/jfrog/runtime-agent:0.17.1"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 500Mi
+            requests:
+              cpu: 200m
+              memory: 250Mi        
+          env:
+            - name: JF_REGISTRATION_TOKEN
+              value: ""
+            - name: ENVIRONMENT
+              value: "dev"
+            - name: BF_CLUSTER_NAME
+              value: ""
+            - name: GRPC_ADDRESS
+              value: "runtime-service:443"
+            - name: JF_SECURED
+              value:  "true"
+            - name: BF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: JF_AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          imagePullPolicy: 
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "[ -s /etc/runtime-config/clusterId ]"
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: bin
+              mountPath: /host/usr/bin
+              readOnly: true
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+            - name: runtime-config-volume
+              mountPath: /etc/runtime-config
+              readOnly: true
+      volumes:
+        - name: runtime-config-volume
+          configMap:
+            name: runtime-config-configmap
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: modules
+          hostPath:
+            path: /lib/modules
+        - name: bin
+          hostPath:
+            path: /usr/bin
+        - name: proc
+          hostPath:
+            path: /proc
+---
+# Source: runtime-sensors/templates/kube-auditor-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jfs-runtime-controller
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-sensors
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-sensors
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: docker-jfrog-io-pull-secret
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: disable_jfrog_runtime
+                operator: DoesNotExist
+      serviceAccountName: runtimesa
+      containers:
+        - name: jfs-runtime-controller
+          image: "releases-docker.jfrog.io/jfrog/runtime-k8s-controller:0.17.1" 
+          resources:
+            limits:
+              cpu: 500m
+              memory: 500Mi
+            requests:
+              cpu: 200m
+              memory: 250Mi        
+          command: ["kube-auditor", "--log-level", "debug"]
+          imagePullPolicy: Always
+          env:
+            - name: JF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: JF_CLUSTER
+              value: ""
+            - name: JF_SERVER
+              value: "runtime-service:443"
+            - name: JF_PERIODICAL
+              value: "30"
+            - name: JF_REGISTRATION_TOKEN
+              value: ""
+            - name: JF_CONFIG_NAMESPACE
+              value: default
+            - name: JF_CLUSTER_ID
+              value: ""
+            - name: JF_SECURED
+              value:  "true"

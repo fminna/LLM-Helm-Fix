@@ -1,0 +1,124 @@
+---
+# Source: openldap/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: openldap
+  labels:
+    helm.sh/chart: openldap-0.9.0
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.57"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  connectionCredential:
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_ldap)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_ldap)"
+  componentDefs:
+    - name: openldap-compdef
+      characterType: openldap
+      workloadType: Stateful
+      service:
+        ports:
+          - name: ldap
+            port: 389
+            targetPort: ldap
+      podSpec:
+        containers:
+          - name: openldap-container
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /var/lib/ldap
+                name: data
+                subPath: ldap-data
+              - mountPath: /etc/ldap/slapd.d
+                name: data
+                subPath: ldap-config
+            ports:
+              - containerPort: 389
+                name: ldap
+            lifecycle:
+              postStart:
+                exec:
+                  command:
+                    - bin/sh
+                    - -c
+                    - |
+                      if [ $KB_REPLICA_COUNT -gt 1 ]; then
+                        export LDAP_REPLICATION_CONFIG_SYNCPROV="binddn=\"cn=admin,cn=config\" bindmethod=simple credentials=$LDAP_CONFIG_PASSWORD searchbase=\"cn=config\" type=refreshAndPersist retry=\"60 +\" timeout=1"
+                        export LDAP_REPLICATION_DB_SYNCPROV="binddn=\"cn=admin,$LDAP_BASE_DN\" bindmethod=simple credentials=$LDAP_ADMIN_PASSWORD searchbase=\"$LDAP_BASE_DN\" type=refreshAndPersist interval=01:00:00:10 retry=\"60 +\" timeout=1"
+                        export LDAP_REPLICATION_HOSTS="#PYTHON2BASH:['ldap://${KB_CLUSTER_NAME}-${KB_COMP_NAME}-0.${KB_CLUSTER_NAME}-${KB_COMP_NAME}-headless', 'ldap://${KB_CLUSTER_NAME}-.${KB_COMP_NAME}-1.${KB_CLUSTER_NAME}-${KB_COMP_NAME}-headless']"
+                      fi
+            env:
+              - name: LDAP_ORGANISATION
+                value: "kubeblocks"
+              - name: LDAP_DOMAIN
+                value: "kubeblocks.io"
+              - name: LDAP_CONFIG_PASSWORD
+                value: "admin"
+              - name: LDAP_ADMIN_PASSWORD
+                value: "admin"
+              - name: LDAP_REPLICATION
+                value: "false"
+              - name: LDAP_TLS
+                value: "false"
+              - name: LDAP_REMOVE_CONFIG_AFTER_SETUP
+                value: "false"
+              - name: MY_POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+---
+# Source: openldap/templates/clusterVersion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: openldap-2.4.57
+  labels:
+    helm.sh/chart: openldap-0.9.0
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.57"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: openldap
+  componentVersions:
+    - componentDefRef: openldap-compdef
+      versionsContext:
+        containers:
+          - name: openldap-container
+            image: docker.io/osixia/openldap:1.5.0
+            imagePullPolicy: IfNotPresent
+---
+# Source: openldap/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-openldap-test-connection"
+  labels:
+    helm.sh/chart: openldap-0.9.0
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.57"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+    "url": "ldap://release-name-openldap-0"
+spec:
+  containers:
+    - name: test-openldap
+      image: "docker.io/osixia/openldap:1.5.0"
+      command:
+        - "ldapsearch"
+      args:
+        - "-x"
+        - "-H"
+        - "ldap://myopenldap-openldap-compdef-0.myopenldap-openldap-compdef-headless.default.svc.cluster.local"
+        - "-b"
+        - "dc=kubeblocks,dc=io"
+        - "-D"
+        - "cn=admin,dc=kubeblocks,dc=io"
+        - "-w"
+        - "admin"
+  restartPolicy: Never

@@ -1,0 +1,212 @@
+---
+# Source: fluentd/templates/konfiguratortemplate.yaml
+apiVersion: konfigurator.stakater.com/v1alpha1
+kind: KonfiguratorTemplate
+metadata:
+  labels:
+      app: fluentd
+      group: com.stakater.platform
+      provider: stakater
+      version: "1.2.0-1.1.0"
+      chart: "fluentd-1.0.14"
+      release: "release-name"
+      heritage: "Helm"
+  name: fluentd
+spec:
+  renderTarget: ConfigMap
+  app:
+    name: fluentd
+    kind: DaemonSet
+    volumeMounts:
+    - mountPath: /fluentd/etc/appconf
+      container: fluentd
+  templates:
+    fluent.conf: |- 
+      # Listen for logs on port 24224 of docker host network, as pod runs with HostNetwork: true
+      # (docker log driver will send to this address)
+      <source>
+        @type forward
+        port 24224
+      </source>
+      
+      # Read kubernetes logs
+      <source>
+        @type tail
+        path /var/log/containers/*.log
+        pos_file /var/log/es-containers.log.pos
+        time_format %Y-%m-%dT%H:%M:%S.%N
+        tag kubernetes.*
+        format json
+        read_from_head true
+      </source>
+      
+      <filter kubernetes.var.log.containers.**.log>
+        @type kubernetes_metadata
+      </filter>
+      
+      # TODO: This regex is incomplete at the moment. 
+      # # Springboot default Java Stacktrace filter
+      # <filter **>
+      #   @type concat
+      #   key log
+      #   multiline_start_regexp /^(?<time>\d{4}-\d{1,2}-\d{1,2} \d{1,2}:\d{1,2}:\d{1,2}.\d{1,3})[\s]*(?<level>[^\s]+) (?<pid>[\d]+) --- \[(?<thread>.*)\] (?<class>[^\s]+)[\s]*:[\s]*(?<message>.*)/
+      # </filter>
+      
+      # Generic multiline (for docker containers)
+      # TODO: add multiline_end_regexp, as without that, multiline logs won't be 
+      # parsed by concat filter if another log doesn't come immedietly after that one
+      # see https://github.com/fluent-plugins-nursery/fluent-plugin-concat/issues/2
+      <filter **>
+        @type concat
+        key log
+        multiline_start_regexp /^[\S]+/
+        flush_interval 30s
+      </filter>
+      
+      # Send all logs to ES
+      <match **>
+        @type elasticsearch
+        @log_level info
+        include_tag_key true
+        host elasticsearch
+        port 9200
+        logstash_format true
+        # For EK 6+ setup
+        # logstash_prefix logs
+        flush_interval 30s
+        # Never wait longer than 5 minutes between retries.
+        max_retry_wait 60
+        # Disable the limit on the number of retries (retry forever).
+        disable_retry_limit
+        time_key timestamp
+        reload_connections false
+      </match>
+---
+# Source: fluentd/templates/daemonset.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: extensions/v1beta1
+  kind: DaemonSet
+  metadata:
+    annotations:
+      configmap.reloader.stakater.com/reload: fluentd
+    labels:
+      app: fluentd
+      group: com.stakater.platform
+      provider: stakater
+      version: "1.2.0-1.1.0"
+      chart: "fluentd-1.0.14"
+      release: "release-name"
+      heritage: "Helm"
+    name: fluentd
+  spec:
+    updateStrategy:
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/scrape: "true"
+        labels:
+          app: fluentd
+          group: com.stakater.platform
+          provider: stakater
+      spec:
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        containers:
+        - env:
+          - name: ELASTICSEARCH_HOST
+            value: elasticsearch
+          - name: ELASTICSEARCH_PORT
+            value: "9200"
+          - name: KUBERNETES_URL
+            value: https://kubernetes.default
+          image: "stakater/fluentd-kubernetes:1.2.0-1.1.0"
+          imagePullPolicy: IfNotPresent
+          name: fluentd
+          ports:
+          - containerPort: 24231
+            name: scrape
+          - containerPort: 24224
+            hostPort: 24224
+          resources:
+            limits:
+              cpu: 100m
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - mountPath: /var/log
+            name: varlog
+          - mountPath: /var/lib/docker/containers
+            name: defaultdocker
+            readOnly: true
+          - mountPath: /mnt/ephemeral/docker/containers
+            name: awsdocker
+            readOnly: true
+          - mountPath: /mnt/sda1/var/lib/docker/containers
+            name: minikubedocker
+            readOnly: true
+        serviceAccountName: fluentd
+        # to ensure it runs on master as well
+        tolerations:
+          - effect: NoSchedule
+            operator: Exists
+        volumes:
+        - hostPath:
+            path: /var/log
+          name: varlog
+        - hostPath:
+            path: /var/lib/docker/containers
+          name: defaultdocker
+        - hostPath:
+            path: /mnt/ephemeral/docker/containers
+          name: awsdocker
+        - hostPath:
+            path: /mnt/sda1/var/lib/docker/containers
+          name: minikubedocker
+---
+# Source: fluentd/templates/rbac.yaml
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    labels:
+      app: fluentd
+      group: com.stakater.platform
+      provider: stakater
+      version: "1.2.0-1.1.0"
+      chart: "fluentd-1.0.14"
+      release: "release-name"
+      heritage: "Helm"
+    name: fluentd
+
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: ClusterRole
+  metadata:
+    name: fluentd
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    - namespaces
+    verbs:
+    - get
+    - list
+    - watch
+
+- kind: ClusterRoleBinding
+  apiVersion: rbac.authorization.k8s.io/v1beta1
+  metadata:
+    name: fluentd
+  roleRef:
+    kind: ClusterRole
+    name: fluentd
+    apiGroup: rbac.authorization.k8s.io
+  subjects:
+  - kind: ServiceAccount
+    name: fluentd
+    namespace: tools

@@ -1,0 +1,319 @@
+---
+# Source: onlinejudge/templates/oj-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-secret
+  namespace: default
+type: Opaque
+data:
+  JUDGE_SERVER_TOKEN: "Y2hhbmdlVGhpc1Rva2Vu"
+  POSTGRES_USER: "b25saW5lanVkZ2U="
+  POSTGRES_PASSWORD: "b25saW5lanVkZ2U="
+---
+# Source: onlinejudge/templates/oj-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  namespace: default
+data:
+  POSTGRES_HOST: release-name-postgres-srv
+  POSTGRES_DB: onlinejudge
+  SERVICE_URL: "http://release-name-judge-server-srv:8080"
+  BACKEND_URL: "http://release-name-backend-srv:8000/api/judge_server_heartbeat/"
+  REDIS_HOST: release-name-redis-srv
+---
+# Source: onlinejudge/templates/oj-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-pvc
+  namespace: default
+spec:
+  resources:
+    requests:
+      storage: 2Gi
+  volumeMode: Filesystem
+  storageClassName: default
+  accessModes:
+    - ReadWriteOnce
+---
+# Source: onlinejudge/templates/oj-backend-depl.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-backend-srv
+spec:
+  selector:
+    app: release-name-backend
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: web
+  - port: 1443
+    targetPort: 1443
+    name: judge-server
+---
+# Source: onlinejudge/templates/oj-judge-server-depl.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-judge-server-srv
+spec:
+  selector:
+    app: release-name-judge-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Source: onlinejudge/templates/oj-postgres-depl.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres-srv
+  namespace: default
+spec:
+  selector:
+    app: release-name-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+# Source: onlinejudge/templates/oj-redis-depl.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-srv
+spec:
+  selector:
+    app: release-name-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+# Source: onlinejudge/templates/oj-backend-depl.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-backend-depl
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: release-name-backend
+  template:
+    metadata:
+      labels:
+        app: release-name-backend
+    spec:
+      volumes:
+        - name: release-name-storage
+          persistentVolumeClaim:
+            claimName: release-name-pvc
+      containers:
+        - name: backend
+          image: registry.cn-hangzhou.aliyuncs.com/onlinejudge/oj_backend
+          ports:
+            - containerPort: 8000
+            - containerPort: 1443
+          volumeMounts:
+            - name: release-name-storage
+              mountPath: /data
+              subPath: backend
+          resources:
+            limits:
+              memory: "400Mi"
+              cpu: "100m"
+            requests:
+              memory: "256Mi"
+              cpu: "20m"
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: POSTGRES_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: POSTGRES_PASSWORD
+            - name: JUDGE_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: JUDGE_SERVER_TOKEN
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: REDIS_HOST
+---
+# Source: onlinejudge/templates/oj-judge-server-depl.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-judge-server-depl
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-judge-server
+  template:
+    metadata:
+      labels:
+        app: release-name-judge-server
+    spec:
+      volumes:
+        - name: release-name-storage
+          persistentVolumeClaim:
+            claimName: release-name-pvc
+      containers:
+        - name: judge
+          image: registry.cn-hangzhou.aliyuncs.com/onlinejudge/judge_server
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: release-name-storage
+              mountPath: /test_case
+              subPath: backend/test_case
+              readOnly: true
+            - name: release-name-storage
+              mountPath: /log
+              subPath: judge_server/log
+            - name: release-name-storage
+              mountPath: /judger
+              subPath: judge_server/run
+          resources:
+            limits:
+              memory: "350Mi"
+              cpu: "500m"
+            requests:
+              memory: "128Mi"
+              cpu: "150m"
+          env:
+            - name: SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: SERVICE_URL
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: BACKEND_URL
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: JUDGE_SERVER_TOKEN
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - /code/service.py
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          securityContext:
+            capabilities:
+              drop:
+                - SETPCAP
+                - MKNOD
+                - NET_BIND_SERVICE
+                - SYS_CHROOT
+                - SETFCAP
+                - FSETID
+      restartPolicy: Always
+---
+# Source: onlinejudge/templates/oj-postgres-depl.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-postgres-depl
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: release-name-postgres
+  template:
+    metadata:
+      labels:
+        app: release-name-postgres
+    spec:
+      volumes:
+        - name: release-name-storage
+          persistentVolumeClaim:
+            claimName: release-name-pvc
+      containers:
+        - name: postgres
+          image: postgres:10-alpine
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: release-name-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres
+          resources:
+            limits:
+              memory: "150Mi"
+              cpu: "30m"
+            requests:
+              memory: "80Mi"
+              cpu: "10m"
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-configmap
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-secret
+                  key: POSTGRES_PASSWORD
+---
+# Source: onlinejudge/templates/oj-redis-depl.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-redis-depl
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-redis
+  template:
+    metadata:
+      labels:
+        app: release-name-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.2.4-alpine3.14
+        resources:
+          limits:
+            memory: "16Mi"
+            cpu: "10m"
+          requests:
+            memory: "8Mi"
+            cpu: "5m"
+        ports:
+        - containerPort: 6379

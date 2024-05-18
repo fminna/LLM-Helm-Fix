@@ -1,0 +1,64 @@
+---
+# Source: mysql-check/templates/secret-env.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mysql-check-secret-env
+stringData:
+  MYSQL_HOST: mysql-primary
+  MYSQL_PASSWORD: password_here
+  MYSQL_USER: root
+  SLEEP_BEFORE_RUN_SECONDS: "5"
+---
+# Source: mysql-check/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-mysql-check
+  labels:
+    app: mysql-check
+    chart: mysql-check-0.3.0
+    release: release-name
+    heritage: Helm
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  jobTemplate:
+    metadata:
+      labels:
+        app: mysql-check
+        release: release-name
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: mysql-check
+            release: release-name
+        spec:
+          restartPolicy: Never
+          serviceAccountName: default
+          automountServiceAccountToken: true
+          containers:
+            - name: mysql-check
+              securityContext:
+                readOnlyRootFilesystem: true
+              image: "kfirfer/mysql-client:0.0.4"
+              imagePullPolicy: IfNotPresent
+
+              command:
+                - sh
+                - -c
+                - sleep ${SLEEP_BEFORE_RUN_SECONDS} && mysqlcheck --all-databases --skip-database=mysql
+                  --auto-repair --optimize --host=${MYSQL_HOST} --user=${MYSQL_USER} --password=${MYSQL_PASSWORD}  &&
+                  echo "Finished"
+              envFrom:
+                - secretRef:
+                    name: release-name-mysql-check-secret-env
+              env:
+              resources:
+                {}
+          securityContext:
+            runAsUser: 16

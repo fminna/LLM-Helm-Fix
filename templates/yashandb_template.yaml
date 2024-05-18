@@ -1,0 +1,426 @@
+---
+# Source: yashandb/templates/configmaps.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yashandb-configs
+  labels:
+    helm.sh/chart: yashandb-0.0.2
+    app.kubernetes.io/name: yashandb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "personal-23.1.1.100"
+    app.kubernetes.io/managed-by: Helm
+data:
+  install.ini: |-
+    [install]
+    YASDB_HOME=$YASDB_MOUNT_HOME/yasdb_home
+    YASDB_DATA=$YASDB_MOUNT_HOME/yasdb_data
+    REDO_FILE_SIZE=100M
+    REDO_FILE_NUM=4
+    INSTALL_SIMPLE_SCHEMA_SALES=N
+    NLS_CHARACTERSET=UTF8
+    [instance]
+    LISTEN_ADDR=0.0.0.0:1688
+    DB_BLOCK_SIZE=8K
+    {{- $phy_memory := getContainerMemory ( index $.podSpec.containers 0 ) }}
+    {{- $phy_memory_mb := div $phy_memory ( mul 1024 1024 ) }}
+    {{- $buffer_pool_mb := mulf $phy_memory_mb 0.5 | int }}
+    DATA_BUFFER_SIZE={{- printf "%dM" $buffer_pool_mb}}
+    SHARE_POOL_SIZE=256M
+    WORK_AREA_POOL_SIZE=32M
+    LARGE_POOL_SIZE=32M
+    REDO_BUFFER_SIZE=8M
+    UNDO_RETENTION=300
+    OPEN_CURSORS=310
+    MAX_SESSIONS=1024
+    RUN_LOG_LEVEL=INFO
+    NODE_ID=1-1:1
+---
+# Source: yashandb/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yashandb-scripts
+  labels:
+    helm.sh/chart: yashandb-0.0.2
+    app.kubernetes.io/name: yashandb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "personal-23.1.1.100"
+    app.kubernetes.io/managed-by: Helm
+data:
+  
+  initDB.sh: |-
+    #!/bin/bash
+    #initDB.sh
+    WORK_DIR=${WORK_DIR:-/home/yashan}
+    
+    YASDB_TEMP_FILE="${YASDB_MOUNT_HOME}/.temp.ini"
+    YASDB_INSTALL_FILE="${YASDB_MOUNT_HOME}/install.ini"
+    INSTALL_INI_FILE="${YASDB_INSTALL_FILE}"
+    
+    YASDB_PASSWORD="yasdb_123"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_TEMP_FILE}"
+    YASDB_ENV_FILE="${YASDB_HOME}/conf/yasdb.bashrc"
+    YASDB_HOME_BIN_PATH="${YASDB_HOME}/bin"
+    YASDB_BIN="${YASDB_HOME_BIN_PATH}/yasdb"
+    YASQL_BIN="${YASDB_HOME_BIN_PATH}/yasql"
+    YASPWD_BIN="${YASDB_HOME_BIN_PATH}/yaspwd"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_ENV_FILE}"
+    
+    e_i=$(sed -n '$=' "$INSTALL_INI_FILE")
+    s_i=$(sed -n -e '/\<instance\>/=' "$INSTALL_INI_FILE")
+    n_i=$((s_i + 1))
+    
+    sed -n "${n_i},${e_i} p" "$INSTALL_INI_FILE" >>"$YASDB_DATA"/config/yasdb.ini
+    
+    if [ ! -f "$YASDB_HOME/admin/yasdb.pwd" ]; then
+        "$YASPWD_BIN" file="$YASDB_HOME"/admin/yasdb.pwd password="$YASDB_PASSWORD"
+    else
+        rm -f "$YASDB_HOME"/admin/yasdb.pwd
+        "$YASPWD_BIN" file="$YASDB_HOME"/admin/yasdb.pwd password="$YASDB_PASSWORD"
+    fi
+    cp "$YASDB_HOME"/admin/yasdb.pwd "$YASDB_DATA"/instance/yasdb.pwd
+    
+    REDOFILE="("
+    for ((i = 0; i < "$REDO_FILE_NUM"; i++)); do
+        if [ $i == $((REDO_FILE_NUM - 1)) ]; then
+            REDOFILE=${REDOFILE}"'redo${i}'"" size $REDO_FILE_SIZE)"
+        else
+            REDOFILE=${REDOFILE}"'redo${i}'"" size $REDO_FILE_SIZE,"
+        fi
+    done
+    
+    START_LOG_FILE="$YASDB_DATA/log/start.log"
+    rm -rf "${START_LOG_FILE}"
+    "${YASDB_BIN}" nomount -D "$YASDB_DATA" >"$START_LOG_FILE" 2>&1 &
+    i=0
+    while ((i < 5))
+    do
+        sleep 2
+        # shellcheck disable=SC2002 disable=SC2126
+        alive=$(cat "$START_LOG_FILE" | grep "Instance started" | wc -l)
+        if [ "$alive" -ne 0 ]; then
+            echo "process started!"
+            break
+        fi
+        i=$((i+1))
+    done
+    
+    if [ "$i" -eq "5" ];then
+        echo "start process failed. read $START_LOG_FILE"
+        cat "$START_LOG_FILE"
+        exit 1
+    fi
+    
+    "${YASQL_BIN}" sys/$YASDB_PASSWORD >>"$START_LOG_FILE" <<EOF
+    create database yasdb CHARACTER SET $NLS_CHARACTERSET logfile $REDOFILE;
+    exit;
+    EOF
+    
+    i=0
+    while ((i < 60))
+    do
+        sleep 1
+        alive=$($YASQL_BIN sys/$YASDB_PASSWORD -c "select open_mode from v\$database" | grep -c READ_WRITE)
+        if [ "$alive" -eq 1 ]; then
+            echo "Database open succeed !"
+            break
+        fi
+        i=$((i+1))
+    done
+    
+    if [ "$i" -eq "60" ];then
+        echo "Failed ! please check logfile $START_LOG_FILE ."
+        exit 1
+    fi
+    
+    if [ "$INSTALL_SIMPLE_SCHEMA_SALES" == 'Y' ] || [ "$INSTALL_SIMPLE_SCHEMA_SALES" == 'y' ]; then
+        "${YASQL_BIN}" sys/$YASDB_PASSWORD -f "$YASDB_HOME"/admin/simple_schema/sales.sql >>"$START_LOG_FILE"
+    fi
+    
+    sleep infinity
+  install.sh: |-
+    #!/bin/bash
+    #install.sh
+    WORK_DIR=${WORK_DIR:-/home/yashan}
+    
+    YASDB_TEMP_FILE="${YASDB_MOUNT_HOME}/.temp.ini"
+    YASDB_INSTALL_FILE="${YASDB_MOUNT_HOME}/install.ini"
+    
+    # copy file if not exists
+    if [ ! -f "$YASDB_INSTALL_FILE" ]; then
+        cp "/home/yashan/kbconfigs/install.ini" "${YASDB_INSTALL_FILE}"
+        # shellcheck disable=SC2002
+        cat "${YASDB_INSTALL_FILE}" | grep "=" > "${YASDB_TEMP_FILE}"
+    fi
+        # shellcheck disable=SC1090
+    source "${YASDB_TEMP_FILE}"
+    
+    if [ -f "$YASDB_DATA"/config/yasdb.ini ]; then
+        echo "yasdb.ini is already exists"
+        sed -i '/'"source ${YASDB_HOME//\//\\/}\/conf\/yasdb.bashrc"'/d' ~/.bashrc
+    
+        YASDB_ENV_FILE="${YASDB_HOME}/conf/yasdb.bashrc"
+    
+        cat >"${YASDB_ENV_FILE}" <<EOF
+        export YASDB_HOME=$YASDB_HOME
+        export YASDB_DATA=$YASDB_DATA
+        export PATH=\$YASDB_HOME/bin:\$PATH
+        export LD_LIBRARY_PATH=\$YASDB_HOME/lib:\$LD_LIBRARY_PATH
+    EOF
+    
+        cat >>~/.bashrc <<EOF
+        [ -f $YASDB_ENV_FILE ] && source $YASDB_ENV_FILE
+    EOF
+        source /home/yashan/kbscripts/startup.sh
+    else
+        mkdir -p "$YASDB_HOME"
+        cp -ra "$WORK_DIR"/{admin,bin,conf,gitmoduleversion.dat,include,java,lib,plug-in,scripts} "$YASDB_HOME"
+        mkdir -p "$YASDB_HOME"/client
+        touch "$YASDB_HOME"/client/yasc_service.ini
+    
+        mkdir -p "$YASDB_DATA"/{config,data,dbfiles,instance,archive,local_fs,log/{run,audit,trace,alarm,alert,listener},diag/{metadata,hm,blackbox}}
+    
+        sed -i '/'"source ${YASDB_HOME//\//\\/}\/conf\/yasdb.bashrc"'/d' ~/.bashrc
+    
+        YASDB_ENV_FILE="${YASDB_HOME}/conf/yasdb.bashrc"
+    
+        cat >"${YASDB_ENV_FILE}" <<EOF
+        export YASDB_HOME=$YASDB_HOME
+        export YASDB_DATA=$YASDB_DATA
+        export PATH=\$YASDB_HOME/bin:\$PATH
+        export LD_LIBRARY_PATH=\$YASDB_HOME/lib:\$LD_LIBRARY_PATH
+    EOF
+    
+        cat >>~/.bashrc <<EOF
+        [ -f $YASDB_ENV_FILE ] && source $YASDB_ENV_FILE
+    EOF
+    
+        source /home/yashan/kbscripts/initDB.sh
+    fi
+  startup.sh: |-
+    #!/bin/bash
+    #startup.sh
+    WORK_DIR=${WORK_DIR:-/home/yashan}
+    
+    YASDB_TEMP_FILE="${YASDB_MOUNT_HOME}/.temp.ini"
+    YASDB_INSTALL_FILE="${YASDB_MOUNT_HOME}/install.ini"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_TEMP_FILE}"
+    YASDB_ENV_FILE="${YASDB_HOME}/conf/yasdb.bashrc"
+    YASDB_BIN="${YASDB_HOME}/bin/yasdb"
+    START_LOG_FILE="$YASDB_DATA/log/start.log"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_ENV_FILE}"
+    
+    is_yasdb_running() {
+        # shellcheck disable=SC2009 disable=SC2126
+        alive=$(ps -aux | grep -w "$YASDB_BIN"  | grep -w "$YASDB_DATA" | grep -v -w grep | wc -l)
+        if [ "$alive" -eq 0 ]; then
+            return 1
+        fi
+        return 0
+    }
+    
+    is_yasdb_running
+    ret=$?
+    if [ "$ret" -eq 0 ]; then
+        echo "yasdb is already running"
+        sleep infinity
+    fi
+    rm -rf "${START_LOG_FILE}"
+    "${YASDB_BIN}" open -D "$YASDB_DATA" >"$START_LOG_FILE" 2>&1 &
+    i=0
+    while ((i < 5))
+    do
+        sleep 2
+        # shellcheck disable=SC2002 disable=SC2126
+        alive=$(cat "$START_LOG_FILE" | grep "Instance started" | wc -l)
+        if [ "$alive" -ne 0 ]; then
+            echo "process started!"
+            break
+        fi
+        i=$((i+1))
+    done
+    
+    if [ "$i" -eq "5" ];then
+        echo "start process failed. read $START_LOG_FILE"
+        cat "$START_LOG_FILE"
+        exit 1
+    fi
+    
+    sleep infinity
+  stop.sh: |-
+    #!/bin/bash
+    #stop.sh
+    WORK_DIR=${WORK_DIR:-/home/yashan}
+    YASDB_TEMP_FILE="${YASDB_MOUNT_HOME}/.temp.ini"
+    YASDB_INSTALL_FILE="${YASDB_MOUNT_HOME}/install.ini"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_TEMP_FILE}"
+    YASDB_ENV_FILE="${YASDB_HOME}/conf/yasdb.bashrc"
+    YASDB_BIN="${YASDB_HOME}/bin/yasdb"
+    
+    # shellcheck disable=SC1090
+    source "${YASDB_ENV_FILE}"
+    
+    is_yasdb_running() {
+        # shellcheck disable=SC2009 disable=SC2126
+        alive=$(ps -aux | grep -w "$YASDB_BIN"  | grep -w "$YASDB_DATA" | grep -v -w grep | wc -l)
+        if [ "$alive" -eq 0 ]; then
+            return 1
+        fi
+        return 0
+    }
+    
+    wait_yasdb_stop() {
+        i=0
+        retval=1
+        while ((i < 5))
+        do
+            sleep 1
+            is_yasdb_running
+            ret=$?
+            if [ "$ret" -eq 0 ]; then
+                retval=0
+                break
+            fi
+            i=$((i+1))
+        done
+        return $retval
+    }
+    
+    is_yasdb_running
+    ret=$?
+    if [ "$ret" -ne 0 ]; then
+        echo "yasdb is already stopped"
+        exit 0
+    fi
+    
+    # shellcheck disable=SC2009
+    pid=$(ps -aux | grep -w "$YASDB_BIN"  | grep -w "$YASDB_DATA" | grep -v -w grep | awk '{print $2}')
+    kill -15 "$pid"
+    
+    wait_yasdb_stop
+    if [ "$ret" -eq 0 ]; then
+        echo "Succeed !"
+        exit 0
+    else
+        echo "Failed !"
+        exit 1
+    fi
+---
+# Source: yashandb/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: yashandb
+  labels:
+    helm.sh/chart: yashandb-0.0.2
+    app.kubernetes.io/name: yashandb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "personal-23.1.1.100"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: yashandb
+  connectionCredential:
+    username: sys
+    password: "yasdb_123"
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_yashandb)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_yashandb)"
+  componentDefs:
+    - name: yashandb-compdef
+      characterType: yashandb
+      workloadType: Stateful
+      service:
+        ports:
+          - name: yashandb
+            port: 1688
+            targetPort: yashandb
+      configSpecs:
+        - name: yashandb-configs
+          templateRef: yashandb-configs
+          volumeName: yashandb-configs
+          namespace: default
+      scriptSpecs:
+        - name: yashandb-scripts
+          templateRef: yashandb-scripts
+          namespace: default
+          volumeName: yashandb-scripts
+      logConfigs:
+        - name: run
+          filePathPattern: /home/yashan/mydb/yasdb_data/log/run/run.log
+        - name: slow
+          filePathPattern: /home/yashan/mydb/yasdb_data/log/slow/slow.log
+      podSpec:
+        # hostNetwork: true
+        # dnsPolicy: ClusterFirstWithHostNet
+        initContainers:
+          - name: volume-permissions
+            image: busybox:1.35
+            imagePullPolicy: IfNotPresent
+            command:
+              - /bin/sh
+              - -ec
+              - |
+                chown -R 1000:1000 /home/yashan/mydb
+            securityContext:
+              runAsUser: 0
+            volumeMounts:
+              - mountPath: /home/yashan/mydb
+                name: data
+        containers:
+          - name: yashandb-container
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 1000
+              runAsGroup: 1000
+            command:
+              - /bin/sh
+              - /home/yashan/kbscripts/install.sh
+            volumeMounts:
+              - mountPath: /home/yashan/mydb
+                name: data
+              - mountPath: /home/yashan/kbconfigs
+                name: yashandb-configs
+              - mountPath: /home/yashan/kbscripts
+                name: yashandb-scripts
+            ports:
+              - containerPort: 1688
+                name: yashandb
+            env:
+              - name: WORK_DIR
+                value: /home/yashan
+              - name: YASDB_MOUNT_HOME
+                value: /home/yashan/mydb
+            workingDir: /home/yashan/
+---
+# Source: yashandb/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: yashandb-personal-23.1.1.100
+  labels:
+    helm.sh/chart: yashandb-0.0.2
+    app.kubernetes.io/name: yashandb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "personal-23.1.1.100"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: yashandb
+  componentVersions:
+  - componentDefRef: yashandb-compdef
+    versionsContext:
+      containers:
+      - name: yashandb-container
+        image: registry.cn-shenzhen.aliyuncs.com/jesseatyashan/yashandb-personal:23.1.1.100
+        imagePullPolicy: IfNotPresent

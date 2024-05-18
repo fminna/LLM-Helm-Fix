@@ -1,0 +1,385 @@
+---
+# Source: rainbond-console/templates/mysql/mysql-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rainbond-mysql-secret
+  labels:
+    rainbond: mysql-secret
+type: Opaque
+data:
+  MYSQL_USER: YWRtaW4=
+  MYSQL_PASSWORD: YWRtaW4=
+  MYSQL_ROOT_PASSWORD: cm9vdA==
+  MYSQL_DATABASE: Y29uc29sZQ==
+---
+# Source: rainbond-console/templates/redis/redis-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rainbond-redis-secret
+  labels:
+    rainbond: redis-pass
+type: Opaque
+data:
+  REDISC_REQUIREPASS: MTIzNDU2
+---
+# Source: rainbond-console/templates/mysql/mysql-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rainbond-mysql-cm
+data:
+  # 类文件键
+  mysql.cnf: |
+    [client]
+    default-character-set = utf8
+    [mysqld]
+    character_set_server = utf8
+    pid-file        = /var/run/mysqld/mysqld.pid
+    socket          = /var/run/mysqld/mysqld.sock
+    datadir         = /var/lib/mysql
+    symbolic-links=0
+
+    max_allowed_packet = 10M
+    sort_buffer_size = 1M
+    read_rnd_buffer_size = 2M
+    max_connections=2000
+
+    lower_case_table_names=1
+    character-set-server=utf8
+
+    max_allowed_packet = 1G
+    sql_mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
+    group_concat_max_len = 102400
+    default-time-zone = '+08:00'
+    [mysql]
+    default-character-set = utf8
+---
+# Source: rainbond-console/templates/redis/redis-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rainbond-redis-cm
+  labels:
+    rainbond: redis
+data:
+  redis.conf: |
+    requirepass 123456
+---
+# Source: rainbond-console/templates/allinone/allinone-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rainbond-allinone-pvc-data
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: rainbond-console/templates/allinone/allinone-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rainbond-allinone-pvc-ssh
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: rainbond-console/templates/mysql/mysql-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rainbond-mysql-pvc
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: rainbond-console/templates/redis/redis-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rainbond-redis-pvc
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: rainbond-console/templates/allinone/allinone-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rainbond-allinone
+  labels:
+    rainbond: allinone
+spec:
+  type: NodePort
+  selector:
+    rainbond: allinone
+  ports:
+    - port: 7070
+      targetPort: 7070
+      
+      nodePort: 30707
+---
+# Source: rainbond-console/templates/mysql/mysql-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rainbond-mysql
+  labels:
+    rainbond: mysql
+spec:
+  ports:
+  - port: 3306
+    name: tcp
+  clusterIP: None
+  selector:
+    rainbond: mysql
+---
+# Source: rainbond-console/templates/redis/redis-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rainbond-redis
+  labels:
+    rainbond: redis
+spec:
+  ports:
+  - port: 6379
+    name: tcp
+  clusterIP: None
+  selector:
+    rainbond: redis
+---
+# Source: rainbond-console/templates/allinone/allinone-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rainbond-allinone
+  labels:
+    rainbond: allinone
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      rainbond: allinone
+  template:
+    metadata:
+      labels:
+        rainbond: allinone
+    spec:
+      containers:
+        - name: allinone
+          image: "registry.cn-hangzhou.aliyuncs.com/goodrain/rainbond:v5.5.0-release-allinone"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: rainbond-mysql-secret
+            - secretRef:
+                name: rainbond-redis-secret
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: DB_TYPE
+              value: "mysql"
+            - name: MYSQL_HOST
+              value: "rainbond-mysql"
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: MYSQL_PASS
+              value: "$(MYSQL_PASSWORD)"
+            - name: REDIS_HOST
+              value: "rainbond-redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASS
+              value: "$(REDISC_REQUIREPASS)"
+          ports:
+            - name: tcp
+              containerPort: 7070
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /console/config/info
+              port: 7070
+              scheme: HTTP
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 20
+          volumeMounts:
+          - mountPath: /app/data
+            name: allinone-data
+          - mountPath: /root/.ssh
+            name: allinone-ssh
+          resources:
+            {}
+      volumes:
+      - name: allinone-data
+        persistentVolumeClaim:
+          claimName: rainbond-allinone-pvc-data
+      - name: allinone-ssh
+        persistentVolumeClaim:
+          claimName: rainbond-allinone-pvc-ssh
+---
+# Source: rainbond-console/templates/mysql/mysql-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rainbond-mysql
+  labels:
+    rainbond: mysql
+spec:
+  serviceName: rainbond-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      rainbond: mysql
+  template:
+    metadata:
+      labels:
+        rainbond: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: "mysql:5.7.23"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+          envFrom:
+            - secretRef:
+                name: rainbond-mysql-secret
+          ports:
+            - name: tcp
+              containerPort: 3306
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            successThreshold: 1
+            tcpSocket:
+              port: 3306
+            timeoutSeconds: 30
+          volumeMounts:
+          - mountPath: /var/lib/mysql
+            name: mysql-data
+          - mountPath: /etc/mysql/conf.d/mysql.cnf
+            name: mysql-config
+            subPath: mysql.cnf
+          resources:
+            limits:
+              cpu: 640m
+              memory: 512Mi
+            requests:
+              cpu: 120m
+              memory: 512Mi
+      volumes:
+      - name: mysql-data
+        persistentVolumeClaim:
+          claimName: rainbond-mysql-pvc
+      - name: mysql-config
+        configMap:
+          name: rainbond-mysql-cm
+---
+# Source: rainbond-console/templates/redis/redis-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rainbond-redis
+  labels:
+    rainbond: redis
+spec:
+  serviceName: rainbond-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      rainbond: redis
+  template:
+    metadata:
+      labels:
+        rainbond: redis
+    spec:
+      containers:
+        - name: redis
+          image: "redis:4.0.12"
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /redis/redis.conf
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: REDISC_DATABASES
+              value: "16"
+            - name: REDISC_DBFILENAME
+              value: "dump.rdb"
+            - name: REDISC_LOGFILE
+              value: "/data/redis.log"
+            - name: REDISC_LOGLEVEL
+              value: "notice"
+            - name: REDISC_MAXCLIENTS
+              value: "10000"
+            - name: REDISC_NOTIFY-KEYSPACE-EVENTS
+              value: "Ex"
+            - name: REDISC_PROTECTED-MODE
+              value: "yes"
+            - name: REDISC_SLOWLOG-LOG-SLOWER-THAN
+              value: "10000"
+            - name: REDISC_SLOWLOG-MAX-LEN
+              value: "128"
+            - name: REDISC_TCP-KEEPALIVE
+              value: "300"
+            - name: REDISC_TIMEOUT
+              value: "0"
+          ports:
+            - name: tcp
+              containerPort: 6379
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+          - mountPath: /data
+            name: redis-data
+          - mountPath: /redis/redis.conf
+            name: rainbond-redis-conf
+            subPath: redis.conf
+          resources:
+            limits:
+              cpu: 80m
+              memory: 64Mi
+            requests:
+              cpu: 30m
+              memory: 64Mi
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: rainbond-redis-pvc
+      - name: rainbond-redis-conf
+        configMap:
+          name: rainbond-redis-cm

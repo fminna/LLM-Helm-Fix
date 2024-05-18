@@ -1,0 +1,114 @@
+---
+# Source: spark-hs/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-spark-hs
+  labels:
+    app: release-name-spark-hs
+    chart: "spark-hs-0.2.4"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+---
+# Source: spark-hs/templates/spark-configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-spark-hs-spark-hs-config
+data:
+  spark-defaults.conf: |-
+---
+# Source: spark-hs/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-spark-hs
+  labels:
+    app: release-name-spark-hs
+    chart: "spark-hs-0.2.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 18080
+    protocol: TCP
+    name: spark-hs
+  selector:
+    app: release-name-spark-hs
+---
+# Source: spark-hs/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-spark-hs
+  labels:
+    app: release-name-spark-hs
+    chart: "spark-hs-0.2.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: release-name-spark-hs
+        chart: "spark-hs-0.2.4"
+        release: "release-name"
+        heritage: "Helm"
+    spec:
+      initContainers:
+      - name: spark-hs-init-config
+        image: "banzaicloud/spark:v2.3.2.146"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+          - secretRef:
+              name: release-name-spark-hs
+        command:
+          - '/bin/sh'
+          - '-c'
+          - >
+            envsubst < /opt/spark/prepared_conf/spark-defaults.conf > /opt/spark/conf/spark-defaults.conf;
+        volumeMounts:
+          - name: config-volume
+            mountPath: /opt/spark/conf/
+          - name: config-init-volume
+            mountPath: /opt/spark/prepared_conf/spark-defaults.conf
+            subPath: spark-defaults.conf
+      containers:
+      - name: spark-hs
+        image: "banzaicloud/spark:v2.3.2.146"
+        imagePullPolicy: IfNotPresent
+        command:
+          - '/opt/spark/sbin/start-history-server.sh'
+        env:
+          - name: SPARK_NO_DAEMONIZE
+            value: "false"
+          - name: SPARK_HISTORY_OPTS
+            value: -Dspark.history.fs.logDirectory=
+        volumeMounts:
+          - name: config-volume
+            mountPath: /opt/spark/conf/spark-defaults.conf
+            subPath: spark-defaults.conf
+        ports:
+          - name: http
+            containerPort: 18080
+            protocol: TCP
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        resources:
+            limits:
+              cpu: 500m
+              memory: 1024Mi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config-volume
+          emptyDir: {}
+        - name: config-init-volume
+          configMap:
+            name: release-name-spark-hs-spark-hs-config

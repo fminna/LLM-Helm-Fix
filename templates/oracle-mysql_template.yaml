@@ -1,0 +1,573 @@
+---
+# Source: oracle-mysql/templates/configmap-perf.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-mysql-perf-config-template
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+data:
+  my.cnf: |-
+    [mysqld]
+    {{- $phy_memory := getContainerMemory ( index $.podSpec.containers 0 ) }}
+    {{- $pool_buffer_size := ( callBufferSizeByResource ( index $.podSpec.containers 0 ) ) }}
+    {{- if $pool_buffer_size }}
+    innodb_buffer_pool_size={{ $pool_buffer_size }}
+    {{- end }}
+    
+    {{- $thread_stack := 262144 }}
+    {{- $binlog_cache_size := 32768 }}
+    {{- $join_buffer_size := 262144 }}
+    {{- $sort_buffer_size := 262144 }}
+    {{- $read_buffer_size := 262144 }}
+    {{- $read_rnd_buffer_size := 524288 }}
+    {{- $single_thread_memory := add $thread_stack $binlog_cache_size $join_buffer_size $sort_buffer_size $read_buffer_size $read_rnd_buffer_size }}
+    
+    {{- if gt $phy_memory 0 }}
+    # Global_Buffer = innodb_buffer_pool_size = PhysicalMemory *3/4
+    # max_connections = (PhysicalMemory  - Global_Buffer) / single_thread_memory
+    max_connections={{ div ( div $phy_memory 4 ) $single_thread_memory }}
+    {{- end}}
+    
+    # if memory less than 8Gi, disable performance_schema
+    {{- if lt $phy_memory 8589934592 }}
+    performance_schema=OFF
+    {{- end }}
+    
+    read_buffer_size={{ $read_buffer_size }}
+    read_rnd_buffer_size={{ $read_rnd_buffer_size }}
+    join_buffer_size={{ $join_buffer_size }}
+    sort_buffer_size={{ $sort_buffer_size }}
+    
+    # gtid
+    gtid_mode=ON
+    enforce_gtid_consistency=ON
+    
+    port=3306
+    mysqlx-port=33060
+    mysqlx=0
+    
+    pid-file=/var/run/mysqld/mysqld.pid
+    socket=/var/run/mysqld/mysqld.sock
+    
+    innodb_flush_log_at_trx_commit = 2
+    sync_binlog = 1000
+    
+    [client]
+    port=3306
+    socket=/var/run/mysqld/mysqld.sock
+---
+# Source: oracle-mysql/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-mysql-config-template
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+data:
+  my.cnf: |-
+    [mysqld]
+    {{- $phy_memory := getContainerMemory ( index $.podSpec.containers 0 ) }}
+    {{- $pool_buffer_size := ( callBufferSizeByResource ( index $.podSpec.containers 0 ) ) }}
+    {{- if $pool_buffer_size }}
+    innodb_buffer_pool_size={{ $pool_buffer_size }}
+    {{- end }}
+    
+    {{- $thread_stack := 262144 }}
+    {{- $binlog_cache_size := 32768 }}
+    {{- $join_buffer_size := 262144 }}
+    {{- $sort_buffer_size := 262144 }}
+    {{- $read_buffer_size := 262144 }}
+    {{- $read_rnd_buffer_size := 524288 }}
+    {{- $single_thread_memory := add $thread_stack $binlog_cache_size $join_buffer_size $sort_buffer_size $read_buffer_size $read_rnd_buffer_size }}
+    
+    {{- if gt $phy_memory 0 }}
+    # Global_Buffer = innodb_buffer_pool_size = PhysicalMemory *3/4
+    # max_connections = (PhysicalMemory  - Global_Buffer) / single_thread_memory
+    max_connections={{ div ( div $phy_memory 4 ) $single_thread_memory }}
+    {{- end}}
+    
+    # if memory less than 8Gi, disable performance_schema
+    {{- if lt $phy_memory 8589934592 }}
+    performance_schema=OFF
+    {{- end }}
+    
+    read_buffer_size={{ $read_buffer_size }}
+    read_rnd_buffer_size={{ $read_rnd_buffer_size }}
+    join_buffer_size={{ $join_buffer_size }}
+    sort_buffer_size={{ $sort_buffer_size }}
+    
+    # gtid
+    gtid_mode=ON
+    enforce_gtid_consistency=ON
+    
+    port=3306
+    mysqlx-port=33060
+    mysqlx=0
+    
+    pid-file=/var/run/mysqld/mysqld.pid
+    socket=/var/run/mysqld/mysqld.sock
+    
+    [client]
+    port=3306
+    socket=/var/run/mysqld/mysqld.sock
+---
+# Source: oracle-mysql/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-mysql-reload-script
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+data:
+  reload.tpl: |-
+    {{- /* mysql global variable update */}}
+    {{- /* mysql using system variables reference docs: https://dev.mysql.com/doc/refman/8.0/en/using-system-variables.html */}}
+    {{- /*  1. system variable names must be written using underscores, not dashes. */}}
+    {{- /*  2. string variable 'xxx' */}}
+    {{- /*  3. type convert to number */}}
+    {{- range $pk, $pv := $.arg0 }}
+    	{{- $pk = trimPrefix "loose_" $pk }}
+    	{{- $pk = replace "-" "_" $pk }}
+    	{{- $var_int := -1 }}
+        {{- if $pv | regexMatch "^\\d+$" }}
+    		{{- $var_int = atoi $pv }}
+    	{{- end}}
+    	{{- if lt $var_int 0 }}
+    		{{- $tmp := $pv | regexStringSubmatch "^(\\d+)K$" }}
+    		{{- if $tmp }}
+    		{{- $var_int = last $tmp | atoi | mul 1024 }}
+    		{{- end }}
+    	{{- end }}
+    	{{- if lt $var_int 0 }}
+    		{{- $tmp := $pv | regexStringSubmatch "^(\\d+)M$" }}
+    		{{- if $tmp }}
+    		{{- $var_int =  last $tmp | atoi | mul 1024 1024 }}
+    		{{- end }}
+    	{{- end }}
+    	{{- if lt $var_int 0 }}
+    		{{- $tmp := $pv | regexStringSubmatch "^(\\d+)G$" }}
+    		{{- if $tmp }}
+    		{{- $var_int = last $tmp | atoi | mul 1024 1024 1024 }}
+    		{{- end }}
+    	{{- end }}
+    	{{- if ge $var_int 0 }}
+    		{{- execSql ( printf "SET GLOBAL %s = %d" $pk $var_int ) }}
+    	{{- else }}
+    		{{- execSql ( printf "SET GLOBAL %s = '%s'" $pk $pv ) }}
+    	{{- end }}
+    {{- end }}
+  reload.yaml: |-
+    scripts: reload.tpl
+    fileRegex: my.cnf
+    formatterConfig:
+      format: ini
+      iniConfig:
+        sectionName: mysqld
+---
+# Source: oracle-mysql/templates/actionset-xtrabackup.yaml
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: oracle-mysql-xtrabackup
+  labels:
+    clusterdefinition.kubeblocks.io/name: oracle-mysql
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  backupType: Full
+  env:
+  - name: DATA_DIR
+    value: /var/lib/mysql
+  backup:
+    preBackup: []
+    postBackup: []
+    backupData:
+      image: docker.io/perconalab/percona-xtrabackup:8.0.32
+      runOnTargetPodNode: true
+      command:
+      - bash
+      - -c
+      - |
+        #!/bin/bash
+        set -e
+        set -o pipefail
+        export PATH="$PATH:$DP_DATASAFED_BIN_PATH"
+        export DATASAFED_BACKEND_BASE_PATH="$DP_BACKUP_BASE_PATH"
+        
+        # if the script exits with a non-zero exit code, touch a file to indicate that the backup failed,
+        # the sync progress container will check this file and exit if it exists
+        function handle_exit() {
+          exit_code=$?
+          if [ $exit_code -ne 0 ]; then
+            echo "failed with exit code $exit_code"
+            touch "${DP_BACKUP_INFO_FILE}.exit"
+            exit 1
+          fi
+        }
+        trap handle_exit EXIT
+        
+        xtrabackup --backup --safe-slave-backup --slave-info --stream=xbstream \
+          --host=${DP_DB_HOST} --user=${DP_DB_USER} --password=${DP_DB_PASSWORD} --datadir=${DATA_DIR} | datasafed push - "/${DP_BACKUP_NAME}.xbstream"
+        TOTAL_SIZE=$(datasafed stat / | grep TotalSize | awk '{print $2}')
+        echo "{\"totalSize\":\"$TOTAL_SIZE\"}" >"${DP_BACKUP_INFO_FILE}"
+        
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+  restore:
+    prepareData:
+      image: docker.io/perconalab/percona-xtrabackup:8.0.32
+      command:
+      - bash
+      - -c
+      - |
+        #!/bin/bash
+        set -e
+        set -o pipefail
+        export PATH="$PATH:$DP_DATASAFED_BIN_PATH"
+        export DATASAFED_BACKEND_BASE_PATH="$DP_BACKUP_BASE_PATH"
+        mkdir -p ${DATA_DIR}
+        TMP_DIR=/data/mysql/temp
+        mkdir -p ${TMP_DIR} && cd ${TMP_DIR}
+        datasafed pull "${DP_BACKUP_NAME}.xbstream" - | xbstream -x
+        xtrabackup --decompress --remove-original --target-dir=${TMP_DIR}
+        xtrabackup --prepare --target-dir=${TMP_DIR}
+        xtrabackup --move-back --target-dir=${TMP_DIR} --datadir=${DATA_DIR}/
+        rm -rf ${TMP_DIR}
+        chmod -R 0777 ${DATA_DIR}
+        
+    postReady: []
+---
+# Source: oracle-mysql/templates/backuppolicytemplate.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: oracle-mysql-backup-policy-template
+  labels:
+    clusterdefinition.kubeblocks.io/name: oracle-mysql
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: oracle-mysql
+  backupPolicies:
+  - componentDefRef: mysql-compdef
+    backupMethods:
+    - name: xtrabackup
+      snapshotVolumes: false
+      actionSetName: oracle-mysql-xtrabackup
+      targetVolumes:
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+    - name: volume-snapshot
+      snapshotVolumes: true
+      targetVolumes:
+        volumes:
+        - data
+    schedules:
+    - backupMethod: xtrabackup
+      enabled: false
+      cronExpression: "0 18 * * 0"
+      retentionPeriod: 7d
+    - backupMethod: volume-snapshot
+      enabled: false
+      cronExpression: "0 18 * * 0"
+      retentionPeriod: 7d
+---
+# Source: oracle-mysql/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: oracle-mysql
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  connectionCredential:
+    username: root
+    password: "$(RANDOM_PASSWD)"
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_mysql)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_mysql)"
+  componentDefs:
+    - name: mysql-compdef
+      characterType: mysql
+      workloadType: Stateful
+      service:
+        ports:
+          - name: mysql
+            port: 3306
+            targetPort: mysql
+      volumeTypes:
+        - name: data
+          type: data
+      configSpecs:
+        - name: mysql-config
+          templateRef: oracle-mysql-config-template
+          constraintRef: oracle-mysql-config-constraints
+          volumeName: configs
+          namespace: default
+          defaultMode: 0755
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 9104
+          scrapePath: "/metrics"
+      podSpec:
+        containers:
+          - name: mysql-container
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /var/lib/mysql
+                name: data
+              - mountPath: /etc/mysql/conf.d
+                name: configs
+            ports:
+              - containerPort: 3306
+                name: mysql
+            env:
+              - name: MYSQL_ROOT_HOST
+                value: "%"
+              - name: MYSQL_ROOT_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+              - name: MYSQL_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+          - name: mysql-exporter
+            imagePullPolicy: IfNotPresent
+            ports:
+              - name: metrics
+                containerPort: 9104
+                protocol: TCP
+            env:
+              - name: "MYSQL_MONITOR_USER"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+              - name: "MYSQL_MONITOR_PASSWORD"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+              - name: "DATA_SOURCE_NAME"
+                value: "$(MYSQL_MONITOR_USER):$(MYSQL_MONITOR_PASSWORD)@(localhost:3306)/"
+---
+# Source: oracle-mysql/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: oracle-mysql-8.0.32
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: oracle-mysql
+  componentVersions:
+  - componentDefRef: mysql-compdef
+    versionsContext:
+      containers:
+        - name: mysql-container
+          image: docker.io/mysql:8.0.32
+          imagePullPolicy: IfNotPresent
+        - name: mysql-exporter
+          image: prom/mysqld-exporter:v0.14.0
+          imagePullPolicy: IfNotPresent
+---
+# Source: oracle-mysql/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: oracle-mysql-8.0.32-perf
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: oracle-mysql
+  componentVersions:
+  - componentDefRef: mysql-compdef
+    versionsContext:
+      containers:
+        - name: mysql-container
+          image: docker.io/mysql:8.0.32
+          imagePullPolicy: IfNotPresent
+        - name: mysql-exporter
+          image: prom/mysqld-exporter:v0.14.0
+          imagePullPolicy: IfNotPresent
+    # name needs to consistent with the name of the configmap defined in clusterDefinition
+    configSpecs:
+      - name: mysql-config
+        templateRef: oracle-mysql-perf-config-template
+        constraintRef: oracle-mysql-config-constraints
+        volumeName: configs
+        namespace: default
+---
+# Source: oracle-mysql/templates/configconstraint.yaml
+apiVersion: apps.kubeblocks.io/v1beta1
+kind: ConfigConstraint
+metadata:
+  name: oracle-mysql-config-constraints
+  labels:
+    helm.sh/chart: oracle-mysql-0.9.0
+    app.kubernetes.io/name: oracle-mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.0.32"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # mysql configuration file format
+  fileFormatConfig:
+    format: ini
+    iniConfig:
+      sectionName: mysqld
+
+  # mysql reload script for dynamic parameter
+  reloadAction:
+    tplScriptTrigger:
+      sync: true
+      scriptConfigMapRef: oracle-mysql-reload-script
+      namespace: default
+
+  ## define static parameter list
+  staticParameters:
+    - open_files_limit
+    - performance_schema
+    - enforce_gtid_consistency
+
+  ## define dynamic parameter list
+  dynamicParameters:
+    - innodb_buffer_pool_size
+    - max_connections
+    - gtid_mode
+    - read_buffer_size
+    - read_only
+    - read_rnd_buffer_size
+    - join_buffer_size
+    - sort_buffer_size
+    - innodb_flush_log_at_trx_commit
+    - sync_binlog
+    - autocommit
+
+  # define parameter validation rules
+  # ConfigurationSchema that impose restrictions on engine parameter's rule
+  parametersSchema:
+    # top level mysql configuration type
+    topLevelKey: MysqlParameter
+    cue: |-
+      //Copyright (C) 2022-2023 ApeCloud Co., Ltd
+      //
+      //This file is part of KubeBlocks project
+      //
+      //This program is free software: you can redistribute it and/or modify
+      //it under the terms of the GNU Affero General Public License as published by
+      //the Free Software Foundation, either version 3 of the License, or
+      //(at your option) any later version.
+      //
+      //This program is distributed in the hope that it will be useful
+      //but WITHOUT ANY WARRANTY; without even the implied warranty of
+      //MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+      //GNU Affero General Public License for more details.
+      //
+      //You should have received a copy of the GNU Affero General Public License
+      //along with this program.  If not, see <http://www.gnu.org/licenses/>.
+      
+      #MysqlParameter: {
+      
+      	// Sets the autocommit mode
+      	autocommit?: string & "0" | "1" | "OFF" | "ON"
+      
+      	open_files_limit: int | *5000
+      
+      	// Enables or disables the Performance Schema
+      	performance_schema: string & "0" | "1" | "OFF" | "ON" | *"0"
+      
+      	// Prevents execution of statements that cannot be logged in a transactionally safe manner
+      	enforce_gtid_consistency?: string & "OFF" | "WARN" | "ON"
+      
+      	// The size in bytes of the memory buffer innodb uses to cache data and indexes of its tables
+      	innodb_buffer_pool_size?: int & >=5242880 & <=18446744073709551615 @k8sResource(quantity)
+      
+      	// The number of simultaneous client connections allowed.
+      	max_connections?: int & >=1 & <=100000
+      
+      	// GTID Mode
+      	gtid_mode?: string & "0" | "OFF" | "ON" | "1"
+      
+      	// Each thread that does a sequential scan allocates this buffer. Increased value may help perf if performing many sequential scans.
+      	read_buffer_size: int & >=8200 & <=2147479552 | *262144
+      
+      	// When it is enabled, the server permits no updates except from updates performed by slave threads.
+      	read_only?: string & "0" | "1" | "{TrueIfReplica}"
+      
+      	// Avoids disk reads when reading rows in sorted order following a key-sort operation. Large values can improve ORDER BY perf.
+      	read_rnd_buffer_size: int & >=8200 & <=2147479552 | *524288
+      
+      	// Increase the value of join_buffer_size to get a faster full join when adding indexes is not possible.
+      	join_buffer_size?: int & >=128 & <=18446744073709547520
+      
+      	// Larger value improves perf for ORDER BY or GROUP BY operations.
+      	sort_buffer_size?: int & >=32768 & <=18446744073709551615
+      
+      	// Determines Innodb transaction durability
+      	innodb_flush_log_at_trx_commit?: int & >=0 & <=2
+      
+      	// Sync binlog (MySQL flush to disk or rely on OS)
+      	sync_binlog: int & >=0 & <=18446744073709547520 | *1
+      
+      	// Write a core file if mysqld dies.
+      	"core-file"?: string & "0" | "1" | "OFF" | "ON"
+      
+      	// MySQL data directory
+      	datadir?: string
+      
+      	// The number of the port on which the server listens for TCP/IP connections.
+      	port?: int
+      
+      	// The MySQL installation base directory.
+      	basedir?: string
+      
+      	// (UNIX) socket file and (WINDOWS) named pipe used for local connections.
+      	socket?: string
+      
+      	// The path name of the process ID file. This file is used by other programs such as MySQLd_safe to determine the server's process ID.
+      	pid_file?: string
+      
+      	// other parameters
+      	// reference mysql parameters
+      	...
+      }
+      
+      // SectionName is section name
+      [SectionName=_]: #MysqlParameter

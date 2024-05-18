@@ -1,0 +1,153 @@
+---
+# Source: sqream-transform/templates/configmap-sqreamd-log-properties.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sqream-transform-sqreamd-log-properties
+data:
+  "sqreamd_log_properties": |
+    {
+      # this file is the default log4cpp configuration file for sqreamd's loggings.
+
+      # each executable need to have its own logging config file (server picker, sqreamd, metadata server)
+
+      # the default configuration files of each of the executables is within sqream/automation/it/after_install/conf/
+
+      # note there are other copy on etc/ that should be updated.
+
+      # MAKE SURE YOU DONT PUSH ANY OF YOUR OWN CHANGES OF THE LOGGING CONFIGURATION FILES INTO THE GIT REPOSITORY.
+
+      # in order for sqreamd to use this configuration you should NOT give any other configuration file as a command line argument.
+
+      # same goes for other executables, if you wont give other config file as a command line argument, the default one will be used.
+
+      # the external logging file is configured from within the code at sqreamd.cpp/metadata_server.cpp/server_picker.cpp accordingly.
+      # the output logging files for all the executables will be under /tmp/logs/
+      # on default the output log file has max size of 100MB and saves 10 files history.
+
+      # 1. if you dont want logging to the console remove log to console
+      # 2. if you want to change the overall level of the debugging change root's logger INFO level to a different level (INFO, DEBUG, ERROR,WARN, FATAL)
+      log4j.rootLogger=INFO, log_to_console
+      log4j.appender.log_to_console=org.apache.log4j.ConsoleAppender
+
+      log4j.appender.log_to_console.layout=org.apache.log4j.PatternLayout
+      # if you want to change the layout that is being printed to the console change this line
+      log4j.appender.log_to_console.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} [%p] [%X{contextid}][%X{threadname}][%F:%L] %m %n
+
+      # change this line to get more logging to your console (e.g. change the threshold to DEBUG).
+      log4j.appender.log_to_console.threshold=DEBUG
+
+      # you can alter specific logger's level in order to turn it off/on e.g.
+      # log4j.logger.CP=WARN -> this makes the level of the log called CP (which stands for all ChunkProducers) to WARN, since it inherits from the root log it also logs to console and 	to the file configured from within the code.
+      #
+
+      # example to change specific CP logger level:
+      # log4j.logger.CP.ReadTable=WARN -> now only ReadTable will run in WARN level.
+
+      log4j.logger.com.amazon.aws=WARN
+
+      log4j.logger.log4_keys_eval=INFO, log4_keys_eval
+      log4j.appender.log4_keys_eval=org.apache.log4j.RollingFileAppender
+      log4j.additivity.log4_keys_eval= false
+      log4j.appender.log4_keys_eval.fileName=/tmp/logs/keys_evaluate.log
+      log4j.appender.log4_keys_eval.MaxBackupIndex=10
+      log4j.appender.log4_keys_eval.MaxFileSize=100MB
+      log4j.appender.log4_keys_eval.layout=org.apache.log4j.PatternLayout
+      log4j.appender.log4_keys_eval.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} [%p] [%X{contextid}][%X{threadname}][%F:%L][SMSG] %m [EMSG]%n
+
+      log4j.appender.log4_keys_eval.threshold=DEBUG
+    }
+---
+# Source: sqream-transform/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: sqream-transform
+  labels:
+    helm.sh/chart: sqream-transform-0.1.0
+    app.kubernetes.io/name: sqream-transform
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - port: 6543
+    targetPort:  6543
+    protocol: TCP
+    name: transform
+  selector:
+    app.kubernetes.io/name: sqream-transform
+    app.kubernetes.io/instance: release-name
+---
+# Source: sqream-transform/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqream-transform
+  namespace: "sqream"
+  labels:
+    helm.sh/chart: sqream-transform-0.1.0
+    app.kubernetes.io/name: sqream-transform
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sqream-transform
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sqream-transform
+        app.kubernetes.io/instance: release-name
+    spec:
+      nodeSelector:
+      containers:    
+      - name: sqream-transform
+        image: ":1.16.0"
+        imagePullPolicy: IfNotPresent
+        command:
+            - /bin/bash
+            - -c
+        args:
+            - "if ! [ \"$(ls -A /mnt/sqream/sqreamdb)\" ]; then \n  mkdir -p /mnt/sqream/sqreamdb;\n  cp -r /opt/sqream/sqream_cluster/sqreamdb/* /mnt/sqream/sqreamdb; \n  mkdir
+              -p /mnt/sqream/sqreamdb/databases;\n  mkdir -p /mnt/sqream/sqreamdb/leveldb;\nfi\nmd-transform-service  --port 6543 --metadata-ip
+              sqream-metadata --metadata-port 3105 --metadata-path  /mnt/sqream/sqreamdb/leveldb --logconfig=/etc/sqream/sqreamd-log-properties/sqreamd_log_properties\n"
+        envFrom:
+        - configMapRef:
+            name: env-file
+        env:
+        - name: LC_ALL
+          value: en_US.utf8  
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name            
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP            
+        volumeMounts:
+        - mountPath: /etc/sqream/config
+          name: config
+        - mountPath: /etc/sqream/sqreamd-log-properties
+          name: sqream-transform-sqreamd-log-properties
+        resources:
+            limits:
+              memory: 20Gi
+            requests:
+              memory: 20Gi
+      tolerations:
+      volumes:
+      - name: config
+        configMap:
+          name: sqream-db-configmap
+      - name: sqream-transform-sqreamd-log-properties
+        configMap:
+          name: sqream-transform-sqreamd-log-properties

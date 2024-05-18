@@ -1,0 +1,304 @@
+---
+# Source: go-ratelimit/charts/redish/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redish
+  labels:
+    helm.sh/chart: redish
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redish
+      app.kubernetes.io/instance: release-name
+---
+# Source: go-ratelimit/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-go-ratelimit
+  labels:
+    helm.sh/chart: go-ratelimit-1.0.7
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: go-ratelimit
+      app.kubernetes.io/instance: release-name
+---
+# Source: go-ratelimit/charts/redish/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redish
+  labels:
+    helm.sh/chart: redish
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: go-ratelimit/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-go-ratelimit
+  labels:
+    helm.sh/chart: go-ratelimit-1.0.7
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: go-ratelimit/charts/redish/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redish
+  labels:
+    helm.sh/chart: redish
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  redis.conf: |-
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.v
+    save ""
+---
+# Source: go-ratelimit/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: initconfigmap
+data:
+  config-initconfigmap.yaml: |-
+    domain: initconfigmap
+    descriptors:
+      - key: generic_key
+        value: global
+---
+# Source: go-ratelimit/charts/redish/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redish-backend
+  labels:
+    helm.sh/chart: redish
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+  selector:
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+---
+# Source: go-ratelimit/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-go-ratelimit
+  labels:
+    helm.sh/chart: go-ratelimit-1.0.7
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6070
+      targetPort: http-debug
+      protocol: TCP
+      name: http-debug
+    - port: 8081
+      targetPort: grpc-server
+      protocol: TCP
+      name: grpc-server
+    - port: 8080
+      targetPort: http-server
+      protocol: TCP
+      name: http-server
+  selector:
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+---
+# Source: go-ratelimit/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-go-ratelimit
+  labels:
+    helm.sh/chart: go-ratelimit-1.0.7
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: go-ratelimit
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 9dcf436383feb4e365190f6bb72f1cffdee86e6efa6db8e7b0b7b0911009f524
+      labels:
+        app.kubernetes.io/name: go-ratelimit
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-go-ratelimit
+      securityContext:
+        {}
+      containers:
+        - env:
+          - name: LOG_LEVEL
+            value: debug
+          - name: REDIS_SOCKET_TYPE
+            value: tcp
+          - name: REDIS_URL
+            value: redis:6379
+          - name: RUNTIME_ROOT
+            value: /data
+          - name: RUNTIME_SUBDIRECTORY
+            value: ratelimit
+          - name: RUNTIME_IGNOREDOTFILES
+            value: "true"
+          name: go-ratelimit
+          image: "envoyproxy/ratelimit:v1.4.0"
+          imagePullPolicy: "IfNotPresent"
+          command: ["/bin/ratelimit"]
+          ports:
+            - name: http-debug 
+              containerPort: 6070
+            - name: grpc-server
+              containerPort: 8081
+            - name: http-server
+              containerPort: 8080
+          volumeMounts:
+          - mountPath: /data/ratelimit/config
+            name: commonconfig-volume
+          resources:
+            {}
+      volumes:
+      - name: commonconfig-volume
+        projected:
+          defaultMode: 420
+          sources:
+          - configMap:
+              name: initconfigmap
+---
+# Source: go-ratelimit/templates/hpa.yaml
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-go-ratelimit
+  labels:
+    helm.sh/chart: go-ratelimit-1.0.7
+    app.kubernetes.io/name: go-ratelimit
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  maxReplicas: 5
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-go-ratelimit
+  targetCPUUtilizationPercentage: 80
+---
+# Source: go-ratelimit/charts/redish/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redish
+  labels:
+    helm.sh/chart: redish
+    app.kubernetes.io/name: redish
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redish
+      app.kubernetes.io/instance: release-name
+  serviceName: redish-backend
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redish
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/configmap: 329b48e22c2e511ab3ae8b800b76994d1b357a6d667561b1817069ae5d71147e
+    spec:
+      serviceAccountName: redish
+      securityContext:
+        {}
+      containers:
+      - name: redish
+        securityContext:
+          {}
+        image: "redis:6.0.6"
+        imagePullPolicy: IfNotPresent
+        command:
+        - redis-server
+        args:
+        - /etc/redis/redis.conf
+        env:
+        - name: REDIS_REPLICATION_MODE
+          value: master
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: REDIS_PORT
+          value: "6379"
+        ports:
+        - name: redis
+          containerPort: 6379
+        resources:
+          {}
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+          subPath: 
+        - name: config
+          mountPath: /etc/redis/redis.conf
+          subPath: redis.conf
+      - name: metrics
+        image: "oliver006/redis_exporter:v1.9.0"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: REDIS_ALIAS
+          value: redish
+        ports:
+        - name: metrics
+          containerPort: 9121
+        resources:
+          requests:
+            cpu: 5m
+            memory: 16Mi
+      volumes:
+      - name: config
+        configMap:
+          name: redish
+      - name: "redis-data"
+        emptyDir: {}

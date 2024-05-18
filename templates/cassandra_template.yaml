@@ -1,0 +1,250 @@
+---
+# Source: cassandra/templates/pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-cassandra-headless
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: cassandra
+      release: release-name
+  maxUnavailable: 1
+---
+# Source: cassandra/templates/cassandra-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  cassandra-password: "eUh2RUtXR2wxRA=="
+---
+# Source: cassandra/templates/configuration-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cassandra-configuration
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: "release-name"
+    heritage: "Helm"
+data:
+  README.md: |
+    Place your Cassandra configuration files here. This will override the values set in any configuration environment variable. This will not be used in case the value *existingConfiguration* is used.
+  
+    More information [here](https://github.com/bitnami/bitnami-docker-cassandra#configuration)
+---
+# Source: cassandra/templates/initdb-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cassandra-init-scripts
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: "release-name"
+    heritage: "Helm"
+data:
+  README.md: |
+    You can copy here your custom `.sh` or `.cql` file so they are executed during the first boot of the image.
+  
+    More info in the [bitnami-docker-cassandra](https://github.com/bitnami/bitnami-docker-cassandra#initializing-a-new-instance) repository.
+---
+# Source: cassandra/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cassandra-headless
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: release-name
+    heritage: Helm
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: intra
+    port: 7000
+    targetPort: intra
+  - name: tls
+    port: 7001
+    targetPort: tls
+  - name: jmx
+    port: 7199
+    targetPort: jmx
+  - name: cql
+    port: 9042
+    targetPort: cql
+  - name: thrift
+    port: 9160
+    targetPort: thrift
+  selector:
+    app: cassandra
+    release: release-name
+---
+# Source: cassandra/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: cql
+    port: 9042
+    targetPort: cql
+  - name: thrift
+    port: 9160
+    targetPort: thrift
+  selector:
+    app: cassandra
+    release: release-name
+---
+# Source: cassandra/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-2.3.3
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: cassandra
+      release: release-name
+  serviceName: release-name-cassandra-headless
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        app: cassandra
+        release: release-name
+        chart: cassandra-2.3.3
+    spec:
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001      
+      containers:
+      - name: cassandra
+        command:
+          - bash
+          - -ec
+          # Node 0 is the password seeder
+          - |
+              if [[ $HOSTNAME =~ (.*)-0$ ]]; then
+                echo "Setting node as password seeder"
+                export CASSANDRA_PASSWORD_SEEDER=yes
+              else
+                # Only node 0 will execute the startup initdb scripts
+                export CASSANDRA_IGNORE_INITDB_SCRIPTS=1
+              fi
+              /app-entrypoint.sh /run.sh
+        image: docker.io/bitnami/cassandra:3.11.4
+        imagePullPolicy: "Always"
+        resources:
+          {}
+        env:
+        - name: CASSANDRA_CLUSTER_NAME
+          value: cassandra
+        - name: CASSANDRA_SEEDS
+          value: "release-name-cassandra-0.release-name-cassandra-headless.default.svc.cluster.local"
+        - name: CASSANDRA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-cassandra
+              key: cassandra-password
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: CASSANDRA_NUM_TOKENS
+          value: "256"
+        - name: CASSANDRA_DATACENTER
+          value: dc1
+        - name: CASSANDRA_ENDPOINT_SNITCH
+          value: SimpleSnitch
+        - name: CASSANDRA_ENDPOINT_SNITCH
+          value: SimpleSnitch
+        - name: CASSANDRA_RACK
+          value: rack1
+        - name: CASSANDRA_ENABLE_RPC
+          value: "true"
+        livenessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status" ]
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status | grep -E \"^UN\\s+${POD_IP}\"" ]
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        ports:
+        - name: intra
+          containerPort: 7000
+        - name: tls
+          containerPort: 7001
+        - name: jmx
+          containerPort: 7199
+        - name: cql
+          containerPort: 9042
+        - name: thrift
+          containerPort: 9160
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/cassandra
+        - name: init-db
+          mountPath: /docker-entrypoint-initdb.d
+      
+        - name: configurations
+          mountPath: /bitnami/cassandra/conf
+      volumes:
+      - name: configurations
+        configMap:
+          name: release-name-cassandra-configuration
+      - name: init-db
+        configMap:
+          name: release-name-cassandra-init-scripts
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: cassandra
+        chart: cassandra-2.3.3
+        release: release-name
+        heritage: Helm
+    spec:
+      accessModes:
+          - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "8Gi"

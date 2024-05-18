@@ -1,0 +1,779 @@
+---
+# Source: papergirl/templates/app.pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: papergirl
+      app.kubernetes.io/instance: release-name
+---
+# Source: papergirl/templates/preview-app.pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: release-name-papergirl-preview
+      app.kubernetes.io/instance: release-name
+---
+# Source: papergirl/templates/app.sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: papergirl/templates/preview-app.sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: papergirl/templates/app.cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-papergirl-config
+data:
+  kubernetes.env: |
+    SERVICE_NAME=release-name-papergirl
+    QUEUE_URI=nats://release-name-papergirl-nats:4222
+    QUEUE_SUBJECT=papergirl
+    S3_ENDPOINT=minio.minio
+    S3_USESSL=false
+    S3_PORT=9000
+    S3_ACCESSKEY=rootuser
+    S3_SECRETKEY=rootpass123
+    S3_FORCE_PATH_STYLE=true
+    S3_BUCKETNAME=papergirl
+    NGINX_ROOT_DIR=/home/papergirl/nginx/www
+    NGINX_PID_PATH=/home/papergirl/nginx/pid/nginx.pid
+    NGINX_CONFIG_DIR=/home/papergirl/nginx/conf.d
+    NGINX_SITES_DIR=/home/papergirl/nginx/sites.d
+    NGINX_REDIRECTS_DIR=/home/papergirl/nginx/redirects.d
+---
+# Source: papergirl/templates/app.cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-papergirl-nginx-config
+data:
+  nginx.conf: |
+    pid /home/papergirl/nginx/pid/nginx.pid;
+    worker_processes  auto;
+    error_log  /usr/local/openresty/nginx/logs/error.log warn;
+    
+    events {
+        worker_connections  1024;
+    }
+    
+    http {
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path       /tmp/proxy_temp_path;
+        fastcgi_temp_path     /tmp/fastcgi_temp;
+        uwsgi_temp_path       /tmp/uwsgi_temp;
+        scgi_temp_path        /tmp/scgi_temp;
+        include       /usr/local/openresty/nginx/conf/mime.types;
+        default_type  application/octet-stream;
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        access_log  /usr/local/openresty/nginx/logs/access.log  main;
+        sendfile        on;
+        keepalive_timeout  65;
+    
+        map $http_accept $image_type {
+            default "jpeg";
+            "~*webp" "webp";
+        }
+    
+        map $http_x_forwarded_proto $thescheme {
+            default $scheme;
+            https https;
+        }   
+    
+        include /home/papergirl/nginx/sites.d/*.conf;
+    }
+---
+# Source: papergirl/templates/backup.cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-papergirl-backup
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+data:
+  backup.sh: |
+    #!/bin/bash
+    
+    bold() {
+      local BOLD='\033[1m'
+      local NC='\033[0m'
+      printf "${BOLD}${@}${NC}"
+    }
+    
+    info() {
+      local BLUE='\033[1;34m'
+      local NC='\033[0m'
+      printf "[${BLUE}INFO${NC}] $@\n"
+    }
+    
+    error() {
+      local RED='\033[1;31m'
+      local NC='\033[0m'
+      printf "[${RED}ERROR${NC}] $@\n"
+    }
+    
+    warn() {
+      local ORANGE='\033[1;33m'
+      local NC='\033[0m'
+      printf "[${ORANGE}WARN${NC}] $@\n"
+    }
+    
+    silent_exec() {
+      output=`$@`
+    
+      if [ $? -gt 0 ] ; then
+        error "The command $(bold $@) failed: $output"
+        exit 1
+      fi
+    }
+    
+    setup_bucket() {
+      if ! mc ls s3 | grep -q $1 ; then
+          info "Creating bucket $(bold $1)"
+          mc mb s3/$1 &>/dev/null
+      fi
+    
+      info "Add download policy to bucket $(bold $1)"
+      mc policy set download s3/$1 &>/dev/null
+    }
+    
+    backup_bucket() {
+      setup_bucket $2
+      TEMP_DIR=$(mktemp -d)
+      info "Created temporary directory $(bold $TEMP_DIR)"
+      info "Mirroring bucket $(bold $1) to $(bold $TEMP_DIR)"
+      silent_exec mc mirror s3/$1 $TEMP_DIR
+    
+      if [ `mc ls s3/$2 | wc -l` -gt 1 ]; then
+        info "Deleting contents of bucket $(bold $2)"
+        silent_exec mc rm --recursive --force s3/$2
+      fi
+    
+      info "Mirroring $(bold $TEMP_DIR) to $(bold $2)"
+      silent_exec mc mirror $TEMP_DIR s3/$2
+      info "Deleting temporary directory $(bold $TEMP_DIR)"
+      rm -rf $TEMP_DIR
+    }
+    
+    info "Setting up config in $(bold '~/.mc/config.json')"
+    silent_exec mc config host add s3 http://minio.minio:9000 rootuser rootpass123
+    backup_bucket papergirl papergirl-backup
+    backup_bucket papergirl-preview papergirl-preview-backup
+---
+# Source: papergirl/templates/preview-app.cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-papergirl-preview-config
+data:
+  kubernetes.env: |
+    SERVICE_NAME=release-name-papergirl-preview
+    QUEUE_URI=nats://release-name-papergirl-nats:4222
+    QUEUE_SUBJECT=papergirl-preview
+    S3_ENDPOINT=minio.minio
+    S3_USESSL=false
+    S3_PORT=9000
+    S3_ACCESSKEY=rootuser
+    S3_SECRETKEY=rootpass123
+    S3_FORCE_PATH_STYLE=true
+    S3_BUCKETNAME=papergirl-preview
+    NGINX_ROOT_DIR=/home/papergirl/nginx/www
+    NGINX_PID_PATH=/home/papergirl/nginx/pid/nginx.pid
+    NGINX_CONFIG_DIR=/home/papergirl/nginx/conf.d
+    NGINX_SITES_DIR=/home/papergirl/nginx/sites.d
+    NGINX_REDIRECTS_DIR=/home/papergirl/nginx/redirects.d
+---
+# Source: papergirl/templates/preview-app.cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-papergirl-preview-nginx-config
+data:
+  nginx.conf: |
+    pid /home/papergirl/nginx/pid/nginx.pid;
+    worker_processes  auto;
+    error_log  /usr/local/openresty/nginx/logs/error.log warn;
+    
+    events {
+        worker_connections  1024;
+    }
+    
+    http {
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path       /tmp/proxy_temp_path;
+        fastcgi_temp_path     /tmp/fastcgi_temp;
+        uwsgi_temp_path       /tmp/uwsgi_temp;
+        scgi_temp_path        /tmp/scgi_temp;
+        include       /usr/local/openresty/nginx/conf/mime.types;
+        default_type  application/octet-stream;
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        access_log  /usr/local/openresty/nginx/logs/access.log  main;
+        sendfile        on;
+        keepalive_timeout  65;
+    
+        map $http_accept $image_type {
+            default "jpeg";
+            "~*webp" "webp";
+        }
+    
+        map $http_x_forwarded_proto $thescheme {
+            default $scheme;
+            https https;
+        }   
+    
+        include /home/papergirl/nginx/sites.d/*.conf;
+    }
+---
+# Source: papergirl/templates/app.role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["*"]
+---
+# Source: papergirl/templates/preview-app.role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["*"]
+---
+# Source: papergirl/templates/app.rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+- kind: ServiceAccount
+  name: release-name-papergirl
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-papergirl
+---
+# Source: papergirl/templates/preview-app.rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+- kind: ServiceAccount
+  name: release-name-papergirl-preview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-papergirl-preview
+---
+# Source: papergirl/templates/app.svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: papergirl
+    app.kubernetes.io/instance: release-name
+---
+# Source: papergirl/templates/preview-app.svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: release-name-papergirl-preview
+    app.kubernetes.io/instance: release-name
+---
+# Source: papergirl/templates/app.sts.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-papergirl
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: "papergirl"
+  replicas: 2
+  revisionHistoryLimit: 1
+  volumeClaimTemplates:
+    - metadata:
+        name: website-cache
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: 
+        resources:
+          requests:
+            storage: 1Gi
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: papergirl
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: papergirl
+        app.kubernetes.io/instance: release-name
+    spec:
+      shareProcessNamespace: true
+      serviceAccountName: release-name-papergirl
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-papergirl-config
+        - name: nginx-config
+          configMap:
+            name: release-name-papergirl-nginx-config
+      initContainers:
+        - name: connection-check
+          image: "busybox:1.36.1"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ENDPOINT
+              value: minio.minio
+          command:
+            - sh
+            - -c
+            - while ! nc -z $ENDPOINT 9000; do echo 'Wait for MinIO startup...' && sleep 1; done
+          resources:
+            limits:
+              memory: 16Mi
+            requests:
+              cpu: 50m
+              memory: 16Mi
+        - name: volume-setup
+          image: "busybox:1.36.1"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'cd /home/papergirl/nginx && mkdir -p pid && mkdir -p conf.d && mkdir -p sites.d && mkdir -p redirects.d && mkdir -p www/black && mkdir -p www/red && chown -R 33 .']
+          volumeMounts:
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          resources:
+            limits:
+              memory: 16Mi
+            requests:
+              cpu: 50m
+              memory: 16Mi
+      containers:
+        - name: nginx
+          image: "openresty/openresty:1.25.3.1-buster"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 33
+            runAsGroup: 33
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /usr/local/openresty/nginx/conf/nginx.conf
+              subPath: "nginx.conf"
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/sbin/nginx", "-s", "quit"]
+          livenessProbe:
+            tcpSocket:
+              port: http
+          readinessProbe:
+            tcpSocket:
+              port: http
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        - name: papergirl
+          image: "neoskop/papergirl:3.2.6"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONFIG
+              value: kubernetes
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: config
+              mountPath: /home/papergirl/app/config
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          ports:
+            - name: papergirl-http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /probe/liveness
+              port: papergirl-http
+            failureThreshold: 10
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /probe/readiness
+              port: papergirl-http
+            periodSeconds: 5
+            failureThreshold: 10
+          startupProbe:
+            httpGet:
+              path: /probe/startup
+              port: papergirl-http
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 150m
+              memory: 128Mi
+        - name: dnsmasq
+          image: "janeczku/go-dnsmasq:release-1.0.7"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen
+            - "127.0.0.1:53"
+            - --default-resolver
+            - --enable-search
+            - --hostsfile=/etc/hosts
+          resources:
+            limits:
+              memory: 50Mi
+            requests:
+              cpu: 5m
+              memory: 25Mi
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key:  app.kubernetes.io/name
+                operator: In
+                values:
+                - papergirl
+            topologyKey: "kubernetes.io/hostname"
+---
+# Source: papergirl/templates/preview-app.sts.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-papergirl-preview
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: "papergirl"
+  replicas: 2
+  revisionHistoryLimit: 1
+  volumeClaimTemplates:
+    - metadata:
+        name: website-cache
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: 
+        resources:
+          requests:
+            storage: 1Gi
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: release-name-papergirl-preview
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: release-name-papergirl-preview
+        app.kubernetes.io/instance: release-name
+    spec:
+      shareProcessNamespace: true
+      serviceAccountName: release-name-papergirl-preview
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-papergirl-preview-config
+        - name: nginx-config
+          configMap:
+            name: release-name-papergirl-preview-nginx-config
+      initContainers:
+        - name: connection-check
+          image: "busybox:1.36.1"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ENDPOINT
+              value: minio.minio
+          command:
+            - sh
+            - -c
+            - while ! nc -z $ENDPOINT 9000; do echo 'Wait for MinIO startup...' && sleep 1; done
+          resources:
+            limits:
+              memory: 16Mi
+            requests:
+              cpu: 50m
+              memory: 16Mi
+        - name: volume-setup
+          image: "busybox:1.36.1"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'cd /home/papergirl/nginx && mkdir -p pid && mkdir -p conf.d && mkdir -p sites.d && mkdir -p redirects.d && mkdir -p www/black && mkdir -p www/red && chown -R 33 .']
+          volumeMounts:
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          resources:
+            limits:
+              memory: 16Mi
+            requests:
+              cpu: 50m
+              memory: 16Mi
+      containers:
+        - name: nginx
+          image: "openresty/openresty:1.25.3.1-buster"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 33
+            runAsGroup: 33
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /usr/local/openresty/nginx/conf/nginx.conf
+              subPath: "nginx.conf"
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/sbin/nginx", "-s", "quit"]
+          livenessProbe:
+            tcpSocket:
+              port: http
+          readinessProbe:
+            tcpSocket:
+              port: http
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        - name: papergirl
+          image: "neoskop/papergirl:3.2.6"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONFIG
+              value: kubernetes
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: config
+              mountPath: /home/papergirl/app/config/kubernetes.env
+              subPath: "kubernetes.env"
+            - name: website-cache
+              mountPath: /home/papergirl/nginx
+          ports:
+            - name: papergirl-http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /probe/liveness
+              port: papergirl-http
+            failureThreshold: 10
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /probe/readiness
+              port: papergirl-http
+            periodSeconds: 5
+            failureThreshold: 10
+          startupProbe:
+            httpGet:
+              path: /probe/startup
+              port: papergirl-http
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 150m
+              memory: 128Mi
+        - name: dnsmasq
+          image: "janeczku/go-dnsmasq:release-1.0.7"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen
+            - "127.0.0.1:53"
+            - --default-resolver
+            - --enable-search
+            - --hostsfile=/etc/hosts
+          resources:
+            limits:
+              memory: 50Mi
+            requests:
+              cpu: 5m
+              memory: 25Mi
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key:  app.kubernetes.io/name
+                operator: In
+                values:
+                - release-name-papergirl-preview
+            topologyKey: "kubernetes.io/hostname"
+---
+# Source: papergirl/templates/backup.cj.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-papergirl-backup
+  labels:
+    app.kubernetes.io/name: papergirl
+    helm.sh/chart: papergirl-3.2.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 5 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: backup
+            image: "minio/mc:RELEASE.2022-05-09T04-08-26Z"
+            imagePullPolicy: IfNotPresent
+            command: [/usr/local/bin/backup.sh]
+            volumeMounts:
+            - name: backup-script
+              mountPath: /usr/local/bin/backup.sh
+              subPath: backup.sh
+          restartPolicy: OnFailure
+          volumes:
+            - name: backup-script
+              configMap:
+                name: release-name-papergirl-backup
+                defaultMode: 0777

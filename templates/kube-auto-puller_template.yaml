@@ -1,0 +1,667 @@
+---
+# Source: kube-auto-puller/charts/kube-fledged/templates/serviceaccount-controller.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kube-fledged-controller
+  labels:
+    
+    helm.sh/chart: kube-fledged-v0.10.0
+    app.kubernetes.io/name: kube-fledged
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: release-name
+    app.kubernetes.io/version: "v0.10.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kube-auto-puller/templates/exporter.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  name: release-name-kube-auto-puller-kube-eventer
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  hooks.yaml: |
+    - execute-command: /data/cache.sh
+      id: puller
+      incoming-payload-content-type: application/json
+      pass-arguments-to-command:
+      - name: EventMessage
+        source: payload
+    - execute-command: /data/delete.sh
+      id: remover
+      incoming-payload-content-type: application/json
+    - execute-command: /data/status.sh
+      id: status
+      incoming-payload-content-type: text/plain
+      response-message: Online
+  file__data_cache.sh: |
+        #!/bin/bash
+        image=$(echo $1 | tr ' ' '\n' | grep ":" | xargs)
+        name=$(echo $image | cut -d "/" -f2 | sed "s/[^[:alnum:]-]//g")
+        excluded_images=(
+          ".*kube-proxy.*"
+        )
+        included_images=(
+          ".*"
+        )        
+        exclude=false
+        for regex in "${excluded_images[@]}"; do
+          if echo $image | grep -q -x -e "$regex"; then
+            exclude=true
+            echo "Excluded contains $image"
+          fi
+        done
+        for regex in "${included_images[@]}"; do
+          if echo $image | grep -q -v -x -e "$regex"; then
+            exclude=true
+            echo "Included does not contain $image"
+          fi
+        done
+        if [ "$exclude" = false ]; then
+        echo "Creating Cache for Image: $image. Name: $name"
+        cat <<EOF | kubectl apply -f -
+        apiVersion: kubefledged.io/v1alpha2
+        kind: ImageCache
+        metadata:
+          name: $(echo -n $name)
+          labels:
+            app: kubefledged
+            kubefledged: imagecache
+        spec:
+          cacheSpec:
+          - images:
+            - $(echo -n $image)
+        EOF
+        fi
+        
+  file__data_delete.sh: |
+        #!/bin/bash
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        hashed_cached_images=$(kubectl get imagecaches -A -o=custom-columns='DATA:metadata.name' | awk '!seen[$0]++')
+        hashed_cached_images=${hashed_cached_images#*$'\n'}
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        relevant_images=$(kubectl get pods -A -o=custom-columns='DATA:spec.containers[*].image' | tr ',' '\n' | awk '!seen[$0]++')
+        relevant_images=${relevant_images#*$'\n'}
+        SAVEIFS=$IFS
+        IFS=$'\n'
+        relevant_images=($relevant_images)
+        hashed_cached_images=($hashed_cached_images)
+        IFS=$SAVEIFS
+        for i in "${!relevant_images[@]}"; do
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          relevant_images[$i]=$(echo ${relevant_images[$i]} | cut -d "/" -f2 | sed "s/[^[:alnum:]-]//g")
+        done
+        echo ${relevant_images[@]}
+        for i in "${hashed_cached_images[@]}"
+        do
+        echo "Checking image $i"
+        if [[ ! " ${relevant_images[*]} " =~ " ${i} " ]]; then
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          image=$(kubectl get imagecaches $i -o=custom-columns='DATA:spec.cacheSpec[0].images[0]')
+          image=${image#*$'\n'}
+          echo $image is no longer in the cluster. purging cache...
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          kubectl annotate --overwrite imagecaches $i kubefledged.io/purge-imagecache=
+          sleep 1
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          status=$(kubectl get imagecaches $i -o json | jq .status.status | xargs)
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          message=$(kubectl get imagecaches $i -o json | jq .status.message | xargs)
+          until [ $status != "Processing" ]
+          do
+              echo Status: $status
+              echo Status: $message
+              # yamllint disable-line rule:line-length
+              # yamllint disable-line rule:line-length
+              status=$(kubectl get imagecaches $i -o json | jq .status.status | xargs)
+              message=$(kubectl get imagecaches $i -o json | jq .status.message)
+              # yamllint disable-line rule:line-length
+              # yamllint disable-line rule:line-length
+              kubectl annotate --overwrite imagecaches $i kubefledged.io/purge-imagecache=
+          done
+          kubectl delete imagecaches $i
+          echo Status: $status
+          echo Message: $message
+        fi
+        done
+        
+  file__data_status.sh: |
+        #!/bin/sh
+        echo Healthy
+---
+# Source: kube-auto-puller/charts/kube-fledged/templates/clusterrole-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-kube-fledged-controller
+  labels:
+    
+    helm.sh/chart: kube-fledged-v0.10.0
+    app.kubernetes.io/name: kube-fledged
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: release-name
+    app.kubernetes.io/version: "v0.10.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    rbac.authorization.kubernetes.io/autoupdate: "true"
+rules:
+  - apiGroups:
+      - "kubefledged.io"
+    resources:
+      - imagecaches
+    verbs:
+      - get
+      - list
+      - watch
+      - update      
+  - apiGroups:
+      - "kubefledged.io"
+    resources:
+      - imagecaches/status
+    verbs:
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - list
+      - watch
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - patch
+  - apiGroups:
+      - "batch"
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - create
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
+      - watch
+      - get
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: webhook-receiver
+rules:
+  - apiGroups: ["kubefledged.io"]
+    resources: ["imagecaches"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# Source: kube-auto-puller/templates/exporter.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  name: release-name-kube-auto-puller-kube-eventer
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: kube-auto-puller/charts/kube-fledged/templates/clusterrolebinding-controller.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-kube-fledged-controller
+  labels:
+    
+    helm.sh/chart: kube-fledged-v0.10.0
+    app.kubernetes.io/name: kube-fledged
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: release-name
+    app.kubernetes.io/version: "v0.10.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-kube-fledged-controller
+subjects:
+- kind: ServiceAccount
+  name: release-name-kube-fledged-controller
+  namespace: "default"
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: webhook-receiver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: webhook-receiver
+subjects:
+  - kind: ServiceAccount
+    name: webhook-receiver
+    namespace: default
+---
+# Source: kube-auto-puller/templates/exporter.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  name: release-name-kube-auto-puller-kube-eventer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  name: release-name-kube-auto-puller-kube-eventer
+subjects:
+  - kind: ServiceAccount
+    # yamllint disable-line rule:line-length
+    # yamllint disable-line rule:line-length
+    # yamllint disable-line rule:line-length
+    name: release-name-kube-auto-puller-kube-eventer
+    namespace: default
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+---
+# Source: kube-auto-puller/charts/kube-fledged/templates/deployment-controller.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kube-fledged-controller
+  labels:
+    helm.sh/chart: kube-fledged-v0.10.0
+    app.kubernetes.io/name: kube-fledged
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/part-of: release-name
+    app.kubernetes.io/version: "v0.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-fledged
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/part-of: release-name-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-fledged
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/part-of: release-name-controller
+    spec:
+      serviceAccountName: release-name-kube-fledged-controller
+      securityContext:
+        {}
+      containers:
+        - name: kube-fledged
+          securityContext:
+            {}
+          image: docker.io/senthilrch/kubefledged-controller:v0.10.0
+          command: [/opt/bin/kubefledged-controller]
+          args:
+            - "--stderrthreshold=INFO"
+            - "--image-pull-deadline-duration=5m"
+            - "--image-cache-refresh-frequency=1m"
+            - "--image-pull-policy=IfNotPresent"
+            - "--image-delete-job-host-network=false"
+            - "--job-retention-policy=delete"          
+          imagePullPolicy: Always
+          env:
+            - name: KUBEFLEDGED_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: KUBEFLEDGED_CRI_CLIENT_IMAGE
+              value: docker.io/senthilrch/kubefledged-cri-client:v0.10.0
+            - name: BUSYBOX_IMAGE
+              value: senthilrch/busybox:1.35.0
+          resources:
+            {}
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: webhook-receiver
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: webhook-receiver
+        app.kubernetes.io/instance: release-name
+      annotations:
+        # yamllint disable-line rule:line-length
+        checksum/config: 55a0d31c24a4fadd410b5006c1af8d7f5d48b740d578c008c4b4d48b24762bd6
+    spec:
+      serviceAccountName: webhook-receiver
+      securityContext:
+        {}
+      containers:
+        - name: webhook-receiver
+          args:
+            - webhook
+            - -verbose
+            - -hooks=/etc/webhook/hooks.yaml
+            - -hotreload
+            - -template
+          securityContext:
+            {}
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          image: "weibeld/webhook-kubectl:0.0.2"
+          imagePullPolicy: IfNotPresent
+          env:
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /hooks/status
+              port: http
+            failureThreshold: 5
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /hooks/status
+              port: http
+          volumeMounts:
+            - name: configs
+              mountPath: "/etc/webhook/hooks.yaml"
+              subPath: "hooks.yaml"
+            - name: configs
+              mountPath: "/data/cache.sh"
+              subPath: "file__data_cache.sh"
+            - name: configs
+              mountPath: "/data/delete.sh"
+              subPath: "file__data_delete.sh"
+            - name: configs
+              mountPath: "/data/status.sh"
+              subPath: "file__data_status.sh"
+          resources:
+            {}
+      volumes:
+        - name: configs
+          configMap:
+            name: release-name-webhook-receiver
+            defaultMode: 0755
+---
+# Source: kube-auto-puller/templates/exporter.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    name: release-name-kube-auto-puller-kube-eventer
+    helm.sh/chart: kube-auto-puller-1.1.2
+    app.kubernetes.io/name: kube-auto-puller
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  # yamllint disable-line rule:line-length
+  name: release-name-kube-auto-puller-kube-eventer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      # yamllint disable-line rule:line-length
+      # yamllint disable-line rule:line-length
+      # yamllint disable-line rule:line-length
+      app: release-name-kube-auto-puller-kube-eventer
+  template:
+    metadata:
+      labels:
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        app: release-name-kube-auto-puller-kube-eventer
+        app.kubernetes.io/name: kube-auto-puller-kube-eventer
+        app.kubernetes.io/instance: release-name-kube-eventer
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ''
+    spec:
+      # yamllint disable-line rule:line-length
+      # yamllint disable-line rule:line-length
+      # yamllint disable-line rule:line-length
+      serviceAccount: release-name-kube-auto-puller-kube-eventer
+      containers:
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        - image: "registry.aliyuncs.com/acs/kube-eventer-amd64:v1.2.4-0f5aaee-aliyun"
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          name: release-name-kube-auto-puller-kube-eventer
+          command:
+            - "/kube-eventer"
+            - "--source=kubernetes:https://kubernetes.default"
+            # yamllint disable-line rule:line-length
+            # yamllint disable-line rule:line-length
+            # yamllint disable-line rule:line-length
+            - "--sink=webhook:http://release-name-webhook-receiver:9000/hooks/puller?level=Normal&kinds=Pod&reason=Pulled&header=Content-Type=application/json&method=POST"
+            # yamllint disable-line rule:line-length
+            # yamllint disable-line rule:line-length
+            # yamllint disable-line rule:line-length
+            - "--sink=webhook:http://release-name-webhook-receiver:9000/hooks/remover?level=Normal&kinds=Pod&reason=Killing&header=Content-Type=application/json&method=POST"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 250Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-webhook-receiver-test-connection"
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      # yamllint disable-line rule:line-length
+      args: ['release-name-webhook-receiver:9000/hooks/status']
+  restartPolicy: Never
+---
+# Source: kube-auto-puller/charts/webhook-receiver/templates/cache-creator.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-webhook-receiver-auto-cacher
+  labels:
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: 2.8.0
+    helm.sh/chart: "webhook-receiver-1.0.9"
+  labels:
+    helm.sh/chart: webhook-receiver-1.0.9
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    helm.sh/hook-delete-policy: before-hook-creation
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    helm.sh/hook: post-install
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      name: release-name-webhook-receiver-auto-cacher
+      labels:
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/instance: "release-name"
+        helm.sh/chart: "webhook-receiver-1.0.9"
+      labels:
+        app.kubernetes.io/name: webhook-receiver-auto-cacher
+        app.kubernetes.io/instance: release-name-auto-cacher
+    spec:
+      serviceAccountName: webhook-receiver
+      restartPolicy: Never
+      containers:
+      - name: kubectl
+        # yamllint disable-line rule:line-length
+        # yamllint disable-line rule:line-length
+        image: "bitnami/kubectl:1.25.3"
+        imagePullPolicy: IfNotPresent
+        command:
+        - "/bin/bash"
+        - "-c"
+        - |
+          #!/bin/bash
+          # yamllint disable-line rule:line-length
+          # yamllint disable-line rule:line-length
+          relevant_images=$(kubectl get pods -A -o=custom-columns='DATA:spec.containers[*].image' | tr ',' '\n' | awk '!seen[$0]++')
+          relevant_images=${relevant_images#*$'\n'}
+          SAVEIFS=$IFS
+          IFS=$'\n'
+          relevant_images=($relevant_images)
+          IFS=$SAVEIFS
+          echo ${relevant_images[@]}
+          excluded_images=(
+            ".*kube-proxy.*"
+          )
+          included_images=(
+            ".*"
+          )  
+          echo "Excluded Images: ${excluded_images[@]}"
+          for i in "${relevant_images[@]}"
+          do
+          image=$(echo $i)
+          name=$(echo $image | cut -d "/" -f2 | sed "s/[^[:alnum:]-]//g")
+          exclude=false
+          for regex in "${excluded_images[@]}"; do
+            if echo $image | grep -q -x -e "$regex"; then
+              exclude=true
+              echo "Excluded contains $image"
+            fi
+          done
+          for regex in "${included_images[@]}"; do
+            if echo $image | grep -q -v -x -e "$regex"; then
+              exclude=true
+              echo "Included does not contain $image"
+            fi
+          done
+          if [ "$exclude" = false ]; then
+          echo "Creating Cache for Image: $image. Name: $name"
+          cat <<EOF | kubectl apply -f -
+          apiVersion: kubefledged.io/v1alpha2
+          kind: ImageCache
+          metadata:
+            name: $(echo -n $name)
+            labels:
+              app: kubefledged
+              kubefledged: imagecache
+          spec:
+            cacheSpec:
+            - images:
+              - $(echo -n $image)
+          EOF
+          fi
+          done

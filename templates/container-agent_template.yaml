@@ -1,0 +1,204 @@
+---
+# Source: container-agent/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-container-agent
+  namespace: "default"
+automountServiceAccountToken: true
+---
+# Source: container-agent/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logging-collector
+  namespace: "default"
+---
+# Source: container-agent/templates/service-account.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logging-collector-token
+  annotations:
+    kubernetes.io/service-account.name: release-name-container-agent
+type: kubernetes.io/service-account-token
+---
+# Source: container-agent/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-container-agent
+  namespace: "default"
+data:
+  taskpods: |
+    resourceClasses:
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-container-agent
+  namespace: "default"
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"] # if .Values.agent.autodetectPlatform # if rbac.clusterRole.rules
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-container-agent
+  namespace: "default"
+subjects:
+  - kind: ServiceAccount
+    name: release-name-container-agent
+    namespace: "default"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-container-agent # if .Values.agent.autodetectPlatform # if rbac.create
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: circleci-installer-role
+  namespace: "default"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["get", "watch", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["", "events.k8s.io/v1"]
+    resources: ["events"]
+    verbs: ["watch"] # if rbac.role.rules
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: logging-collector
+  namespace: "default"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["watch"]
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: circleci-installer-binding
+  namespace: "default"
+subjects:
+  - kind: ServiceAccount
+    name: release-name-container-agent
+    namespace: "default"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: circleci-installer-role
+---
+# Source: container-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: logging-collector
+  namespace: "default"
+subjects:
+  - kind: ServiceAccount
+    name: logging-collector
+    namespace: "default"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: logging-collector
+---
+# Source: container-agent/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-container-agent
+  namespace: "default"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: container-agent
+  template:
+    metadata:
+      labels:
+        app: container-agent
+      annotations:
+        checksum/config: 52133ddfcd583280388a8bbfb67a417b6b660f75bc63ec1b01beec811d4498ef
+    spec:
+      serviceAccountName: release-name-container-agent
+      terminationGracePeriodSeconds: 18300
+      volumes:
+        - name: taskpod-config
+          configMap:
+            name: release-name-container-agent
+      containers:
+        - name: container-agent
+          command: ["./container-agent"]
+          image: "circleci/container-agent:3"
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: taskpod-config
+              mountPath: /etc/container-agent
+          env:
+            - name: RUNNER_API
+              value: https://runner.circleci.com
+            - name: AGENT_NAME
+              value: release-name-container-agent
+            - name: O11Y_LEVEL
+              value: 
+            - name: MAX_RUN_TIME
+              value: 5h
+            - name: MAX_CONCURRENT_TASKS
+              value: "20"
+            - name: CHECK_ENABLED
+              value: "false"
+            - name: CHECK_THRESHOLD
+              value: "3"
+            - name: CHECK_INTERVAL
+              value: "15m"
+            - name: KUBE_NAMESPACE
+              value: "default"
+            - name: KUBE_GC_ENABLED
+              value: "true"
+            - name: KUBE_GC_THRESHOLD
+              value: 5h5m
+            - name: KUBE_TASK_POD_CONFIG
+              value: /etc/container-agent/taskpods
+            - name: KUBE_TOKEN_SECRETS
+              value:
+            - name: KUBE_LOGGING_IMAGE
+              value: "circleci/logging-collector:edge"
+            - name: KUBE_LOGGING_SECRET
+              value: "logging-collector-token"
+            - name: KUBE_AUTODETECT_PLATFORM
+              value: "true"
+          livenessProbe: 
+            failureThreshold: 5
+            httpGet:
+              path: /live
+              port: 7623
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe: 
+            failureThreshold: 3
+            httpGet:
+              path: /ready
+              port: 7623
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1

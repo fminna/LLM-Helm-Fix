@@ -1,0 +1,378 @@
+---
+# Source: kube-wordpress-mysql/templates/wordpress-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-wordpress
+---
+# Source: kube-wordpress-mysql/templates/mysql-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql
+  namespace: app-wordpress  
+type: Opaque
+data:
+  MYSQL_USER: YW5zZWxtZQ==
+  MYSQL_PASSWORD: YTEyMzQ1Ng==
+  MYSQL_ROOT_PASSWORD: cm9vdA==
+---
+# Source: kube-wordpress-mysql/templates/wordpress-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wordpress
+  namespace: app-wordpress  
+type: Opaque
+data:
+  WORDPRESS_DB_USER: YW5zZWxtZQ==
+  WORDPRESS_DB_PASSWORD: YTEyMzQ1Ng==
+---
+# Source: kube-wordpress-mysql/templates/mysql-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql
+  namespace: app-wordpress  
+data:
+  MYSQL_DATABASE: wordpress_db
+---
+# Source: kube-wordpress-mysql/templates/wordpress-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wordpress
+  namespace: app-wordpress
+data:
+  WORDPRESS_DB_HOST: mysql
+  WORDPRESS_DB_NAME: wordpress_db
+---
+# Source: kube-wordpress-mysql/templates/mysql-statefulset.yaml
+# StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: google-storage
+  namespace: app-wordpress  
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+  fstype: ext4
+  replication-type: none
+---
+# Source: kube-wordpress-mysql/templates/mysql-statefulset.yaml
+# Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: google-pvc
+  namespace: app-wordpress  
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: google-storage
+---
+# Source: kube-wordpress-mysql/templates/mysql-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: app-wordpress
+spec:
+  #type:        # O headless service não possui type definido
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    protocol: TCP
+---
+# Source: kube-wordpress-mysql/templates/wordpress-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  namespace: app-wordpress
+spec:
+  type: ClusterIP
+  externalName: wordpress.app-wordpress.svc.cluster.local
+  selector:
+    app: wordpress
+  ports:
+  - port: 80
+    protocol: TCP
+---
+# Source: kube-wordpress-mysql/templates/wordpress-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  namespace: app-wordpress
+  # annotations:
+  #   kubernetes.io/change-cause: "Testes inciais"
+
+  labels:
+    # Recomendações da kubernets (https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/instance: wordpress-mainapp
+    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: wordpress
+    app.kubernetes.io/managed-by: helm
+
+    # Outros labels comuns
+    envirement: production
+    confidenciality: restrict
+    compliance: none
+
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: wordpress-mainapp
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: wordpress-mainapp
+    spec:
+      containers:
+        - name: wordpress
+          image: wordpress:php8.1-apache
+
+          resources:
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+            requests:
+              memory: "128Mi"
+              cpu: "100m"              
+
+          envFrom:
+            - configMapRef:
+                name: wordpress
+            - secretRef:
+                name: wordpress
+          
+          startupProbe:                 # Estrutura para start apenas desse container. O que parece razoável? Se o banco estiver no ar ok ,mas se não, pode ter que esperar um pouco. Para o start tudo bem.
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 20
+            timeoutSeconds: 2
+            periodSeconds: 5
+            failureThreshold: 5
+
+          readinessProbe:               # Essa é a reação mais rápida a falhas. O tráfego é redirecionado. Provavelmente a falha é externa.
+            httpGet:
+              path: /
+              port: 80
+            timeoutSeconds: 10
+            periodSeconds: 30
+            failureThreshold: 1
+
+          livenessProbe:                # Essa é a reação mais lenta, gerando reboot da maquina. Isso considera que a falha é interna. 
+            httpGet:
+              path: /
+              port: 80
+            timeoutSeconds: 20
+            periodSeconds: 60
+            failureThreshold: 1
+---
+# Source: kube-wordpress-mysql/templates/mysql-hpa.yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mysql
+  namespace: app-wordpress
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet             # a quem esse destina esse HPA
+    name: wordpress
+  minReplicas: 1                  # mínimo de réplicas. O adequado é 2 ou 3
+  maxReplicas: 3                 # máximo de répllicas. Não existe limite adequad
+  behavior:
+    scaleDown:
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 30
+  metrics:                       # Qual métrica será utilizada?
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80  # Consumo acim de 15% de CPU
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 90  # Consumo acim de 15% de CPU
+---
+# Source: kube-wordpress-mysql/templates/wordpress-hpa.yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: wordpress
+  namespace: app-wordpress
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment             # a quem esse destina esse HPA
+    name: wordpress
+  minReplicas: 3                  # mínimo de réplicas. O adequado é 2 ou 3
+  maxReplicas: 20                 # máximo de répllicas. Não existe limite adequad
+  behavior:
+    scaleDown:
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 30
+  metrics:                       # Qual métrica será utilizada?
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80  # Consumo acim de 15% de CPU
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 90  # Consumo acim de 15% de CPU
+---
+# Source: kube-wordpress-mysql/templates/mysql-statefulset.yaml
+# StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: app-wordpress
+
+  labels:
+    # Recomendações da kubernets (https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: mysql-general
+    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wordpress
+    app.kubernetes.io/managed-by: helm
+
+    # Outros labels comuns
+    enviroment: production
+    confidenciality: restrict
+    compliance: none
+
+
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:5.7
+
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "100m"              
+
+        envFrom:
+          - configMapRef:
+              name: mysql
+          - secretRef:
+              name: mysql
+        volumeMounts:
+          - mountPath: /var/lib/mysql2
+            name: mysql-volume-claim
+        startupProbe:
+          tcpSocket:
+            port: 3306
+          initialDelaySeconds: 120
+          timeoutSeconds: 5
+          periodSeconds: 15
+          
+
+        readinessProbe:
+          tcpSocket:
+            port: 3306
+          timeoutSeconds: 5
+          periodSeconds: 30
+
+        livenessProbe:
+          tcpSocket:
+            port: 3306
+          timeoutSeconds: 10
+          periodSeconds: 60         
+
+
+      volumes:
+      - name: mysql-volume-claim
+        persistentVolumeClaim:
+          claimName: google-pvc
+#
+---
+# Source: kube-wordpress-mysql/templates/genreal-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wordpress
+  namespace: app-wordpress
+
+  annotations:                                        
+    kubernetes.io/ingress.class: "nginx"              
+    cert-manager.io/cluster-issuer: "lets-encrypt"    
+    ingress.kubernetes.io/force-ssl-redirect: "true"  
+
+spec:
+  rules:
+  - host: "wp.anselme.com.br"
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: wordpress
+            port: 
+              number: 80
+  tls:
+  - hosts:
+    - "wp.anselme.com.br"  
+    secretName: "lets-encrypt-certificate"
+---
+# Source: kube-wordpress-mysql/templates/genreal-clusterIssuer.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  namespace: cert-manager
+  name: lets-encrypt
+
+spec:
+  acme:                                                        
+    server: https://acme-v02.api.letsencrypt.org/directory     
+    email: thiago@anselme.com.br                                
+    privateKeySecretRef:
+      name: lets-encrypt-certificate                            
+    solvers:
+    - http01:
+        ingress:
+          class: nginx                                            
+
+
+# kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.9.1/cert-manager.yaml

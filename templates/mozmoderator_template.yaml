@@ -1,0 +1,179 @@
+---
+# Source: mozmoderator/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: moderator
+  labels:
+    helm.sh/chart: mozmoderator-0.3.1
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "c285426edacb3a1791bab84f64c16d00e6d865eb"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mozmoderator
+      app.kubernetes.io/instance: release-name
+---
+# Source: mozmoderator/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: moderator
+  labels:
+    helm.sh/chart: mozmoderator-0.3.1
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "c285426edacb3a1791bab84f64c16d00e6d865eb"
+    app.kubernetes.io/managed-by: Helm
+data:
+  "ALLOWED_HOSTS": "kube-internal.cluster.local,cluster.local,localhost"
+  "ANON_ALWAYS": "true"
+  "AWS_DEFAULT_REGION": "us-west-2"
+  "FROM_NOREPLY": "Mozilla Moderator <no-reply@localhost>"
+  "OIDC_OP_AUTHORIZATION_ENDPOINT": "https://auth.mozilla.auth0.com/authorize"
+  "OIDC_OP_DOMAIN": "auth.mozilla.auth0.com"
+  "OIDC_OP_JWKS_ENDPOINT": "https://auth.mozilla.auth0.com/.well-known/jwks.json"
+  "OIDC_OP_TOKEN_ENDPOINT": "https://auth.mozilla.auth0.com/oauth/token"
+  "OIDC_OP_USER_ENDPOINT": "https://auth.mozilla.auth0.com/userinfo"
+  "OIDC_RP_SIGN_ALGO": "RS256"
+  "SESSION_COOKIE_SECURE": "true"
+  "SITE_URL": "https://moderator.allizom.org"
+---
+# Source: mozmoderator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: moderator
+  labels:
+    helm.sh/chart: mozmoderator-0.3.1
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "c285426edacb3a1791bab84f64c16d00e6d865eb"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+  type: ClusterIP
+---
+# Source: mozmoderator/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moderator
+  labels:
+    helm.sh/chart: mozmoderator-0.3.1
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "c285426edacb3a1791bab84f64c16d00e6d865eb"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mozmoderator
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mozmoderator
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: moderator
+          envFrom:
+            - configMapRef:
+                name: moderator
+          image: "783633885093.dkr.ecr.us-west-2.amazonaws.com/moderator:bbae8c1be8431ace923c58caac928917fc2aa31e"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+              # https://github.com/kubernetes/kubernetes/issues/14713
+              httpHeaders:
+              - name: X-Health
+                value:  "Kubernetes-Health"
+              - name: Host
+                value: moderator.allizom.org
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+              # https://github.com/kubernetes/kubernetes/issues/14713
+              httpHeaders:
+              - name: X-Health
+                value:  "Kubernetes-Health"
+              - name: Host
+                value: moderator.allizom.org
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 20m
+              memory: 64Mi
+---
+# Source: mozmoderator/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: moderator
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "Content-Security-Policy: frame-ancestors 'none'";
+  labels:
+    helm.sh/chart: mozmoderator-0.3.1
+    app.kubernetes.io/name: mozmoderator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "c285426edacb3a1791bab84f64c16d00e6d865eb"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "moderator.allizom.org"
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: moderator
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - "moderator.allizom.org"
+      secretName: chart-moderator-allizom-org
+---
+# Source: mozmoderator/templates/issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: it-se@mozilla.com
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt
+    solvers:
+      - http01:
+          ingress:
+            class: nginx

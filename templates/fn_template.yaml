@@ -1,0 +1,455 @@
+---
+# Source: fn/charts/mysql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mysql
+  labels:
+    app: release-name-mysql
+    chart: "mysql-0.3.0"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  
+  mysql-root-password: "MnI0NHNkZTc0Nw=="
+  
+  
+  mysql-password:  "Ym9vbXNhdWNl"
+---
+# Source: fn/charts/mysql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysql
+  labels:
+    app: release-name-mysql
+    chart: "mysql-0.3.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+  selector:
+    app: release-name-mysql
+---
+# Source: fn/charts/redis/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis
+  labels:
+    app: release-name-redis
+    chart: "redis-1.0.4"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+  selector:
+    app: release-name-redis
+---
+# Source: fn/templates/flow-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fn-flow
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  type: ClusterIP
+  ports:
+    - name: flow
+      port: 80
+      targetPort: 8081
+  selector:
+    app: release-name-fn
+    role: flow-service
+---
+# Source: fn/templates/fn-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fn-api
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  type: LoadBalancer
+  ports:
+  - name: fn
+    port: 80
+    targetPort: 8081
+  selector:
+    app: release-name-fn
+    role: fn-lb
+---
+# Source: fn/templates/ui-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fn-ui
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  type: LoadBalancer
+  ports:
+    - name: flow-ui
+      port: 3000
+      targetPort: 3000
+    - name: fn-ui
+      port: 80
+      targetPort: 80
+  selector:
+    app: release-name-fn
+    role: ui
+---
+# Source: fn/templates/fn-daemonset.yaml
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: release-name-fn-api
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        app: release-name-fn
+        chart: fn-0.1.0
+        heritage: Helm
+        release: release-name
+        role: fn-service
+    spec:
+      containers:
+      - name: fn-service
+        image: fnproject/fnserver:0.3.461
+        imagePullPolicy: Always
+        resources:
+            {}
+        securityContext:
+          privileged: true
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /v1/apps
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 3
+        env:
+        - name: LOG_LEVEL
+          value: info
+        - name: FN_PORT
+          value: "80"
+        - name: FN_DB_PASSWD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysql
+              key: mysql-password
+        - name: FN_DB_HOST
+          value: release-name-mysql
+        - name: FN_DB_URL
+          value: mysql://fnapp:$(FN_DB_PASSWD)@tcp($(FN_DB_HOST):3306)/fndb
+        - name: FN_MQ_HOST
+          value: release-name-redis
+#  TODO:
+#        - name: MQ_PASSWD
+#          valueFrom:
+#            secretKeyRef:
+#              name: release-name-redis
+#              key: redis-password
+        - name: FN_MQ_URL
+          value: redis://$(FN_MQ_HOST):6379/
+---
+# Source: fn/charts/mysql/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-mysql
+  labels:
+    app: release-name-mysql
+    chart: "mysql-0.3.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  template:
+    metadata:
+      labels:
+        app: release-name-mysql
+    spec:
+      initContainers:
+      - name: "remove-lost-found"
+        image: "busybox:1.25.0"
+        imagePullPolicy: "IfNotPresent"
+        command:  ["rm", "-fr", "/var/lib/mysql/lost+found"]
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+      containers:
+      - name: release-name-mysql
+        image: "mysql:5.7.14"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysql
+              key: mysql-root-password
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysql
+              key: mysql-password
+        - name: MYSQL_USER
+          value: "fnapp"
+        - name: MYSQL_DATABASE
+          value: "fndb"
+        ports:
+        - name: mysql
+          containerPort: 3306
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+# Source: fn/charts/redis/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-redis
+  labels:
+    app: release-name-redis
+    chart: "redis-1.0.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  template:
+    metadata:
+      labels:
+        app: release-name-redis
+    spec:
+      securityContext:
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: release-name-redis
+        image: "bitnami/redis:4.0.2-r1"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        ports:
+        - name: redis
+          containerPort: 6379
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - name: redis-data
+          mountPath: /bitnami
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+---
+# Source: fn/templates/flow-deployment.yaml
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-fn-flow-depl
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  replicas: 1
+  template:
+    metadata:
+       labels:
+         app: release-name-fn
+         chart: fn-0.1.0
+         heritage: Helm
+         release: release-name
+         role: flow-service
+    spec:
+      containers:
+        - name: flow
+          image: fnproject/flow:0.1.83
+          imagePullPolicy: Always
+          resources:
+            {}
+          ports:
+            - containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          env:
+          - name: LOG_LEVEL
+            value: info
+          - name: LISTEN
+            value: :8081
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-mysql
+                key: mysql-password
+          - name: DB_HOST
+            value: release-name-mysql
+          - name: DB_URL
+            value: mysql://fnapp:$(DB_PASSWD)@tcp($(DB_HOST):3306)/fndb
+          - name: API_URL
+            value: http://release-name-fn-api
+---
+# Source: fn/templates/fnlb-deployment.yaml
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-fn-fnlb-depl
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  replicas: 1
+  template:
+    metadata:
+       labels:
+         app: release-name-fn
+         chart: fn-0.1.0
+         heritage: Helm
+         release: release-name
+         role: fn-lb
+    spec:
+      containers:
+        - name: fnlb
+          image: fnproject/fnlb:0.0.268
+          imagePullPolicy: Always
+          resources:
+            {}
+          ports:
+            - containerPort: 8081
+            - containerPort: 8082
+          readinessProbe:
+            httpGet:
+              path: /1/lb/dash
+              port: 8082
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          env:
+          - name: LOG_LEVEL
+            value: info
+          - name: API_URL
+            value: http://release-name-fn-api
+          args:
+          - "-db=k8s"
+          - "-label-selector=app=release-name-fn,role=fn-service"
+          - "-listen=:8081"
+          - "-mgmt-listen=:8082"
+          - "-target-port=80"
+      serviceAccountName: default
+---
+# Source: fn/templates/ui-deployment.yaml
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-fn-ui
+  labels:
+    app: release-name-fn
+    chart: fn-0.1.0
+    heritage: Helm
+    release: release-name
+spec:
+  replicas: 1
+  template:
+    metadata:
+       labels:
+         app: release-name-fn
+         chart: fn-0.1.0
+         heritage: Helm
+         release: release-name
+         role: ui
+    spec:
+      containers:
+        - name: fn-ui
+          image: fnproject/ui:0.0.26
+          imagePullPolicy: Always
+          resources:
+            {}
+          ports:
+            - containerPort: 80
+          env:
+          - name: PORT
+            value: "80"
+          - name: FN_API_URL
+            value: http://release-name-fn-api
+        - name: flow-ui
+          image: fnproject/flow:ui
+          imagePullPolicy: Always
+          resources:
+            {}
+          ports:
+            - containerPort: 3000
+          env:
+            - name: API_URL
+              value: http://release-name-fn-api
+            - name: COMPLETER_BASE_URL
+              value: http://release-name-fn-flow # if .Values.ui.enabled

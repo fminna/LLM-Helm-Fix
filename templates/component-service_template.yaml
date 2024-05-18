@@ -1,0 +1,268 @@
+---
+# Source: component-service/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: component-service-serviceaccount
+  namespace: services
+---
+# Source: component-service/templates/config-map.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: component-service-config-map
+  namespace: services
+data:
+  environment.yaml: |-
+    {}
+---
+# Source: component-service/templates/rbac.yaml
+# https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+# Service account the client will use to reset the deployment,
+# by default the pods running inside the cluster can do no such things.
+# allow getting status and patching only the one deployment you want
+# to restart
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: component-service-restart
+  namespace: services
+rules:
+  - apiGroups: ["apps", "extensions"]
+    resources: ["deployments"]
+    resourceNames:
+      - component-service
+    verbs: ["get", "patch", "list", "watch"]
+---
+# Source: component-service/templates/rbac.yaml
+# bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: component-service-restart
+  namespace: services
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: component-service-restart
+subjects:
+  - kind: ServiceAccount
+    name: component-service-serviceaccount
+    namespace: services
+---
+# Source: component-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: component-service-service
+  namespace: services
+  labels:
+    app: component-service
+spec:
+  ports:
+    - name: http
+      port: 8810
+      protocol: TCP
+      targetPort: 8810
+  selector:
+    app: component-service
+  type: ClusterIP
+---
+# Source: component-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: component-service-gateway-service
+  namespace: services
+  labels:
+    app: component-service
+spec:
+  ports:
+    - name: http
+      port: 43896
+      protocol: TCP
+      targetPort: 43896
+  selector:
+    app: component-service
+  type: ClusterIP
+---
+# Source: component-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: component-service-load-balancer
+  namespace: services
+  labels:
+    app: component-service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 43896
+  selector:
+    app: component-service
+  type: LoadBalancer
+---
+# Source: component-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: component-service
+  namespace: services
+  labels:
+    app: component-service
+spec:
+  replicas: 2
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: component-service
+  template:
+    metadata:
+      labels:
+        app: component-service
+    spec:
+      serviceAccountName: component-service-serviceaccount
+      nodeSelector:
+        role: service
+      terminationGracePeriodSeconds: 360
+      containers:
+      - name: component-service
+        image: /:0.2.2
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-secret-access-key
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-default-region
+        - name: CLUSTER_ID
+          value: dev
+        - name: USE_KUBE_ENVIRONMENT
+          value: "0"
+        - name: ACCESS_LIBRARY_VERSION
+          value: 0.2.0
+        - name: CLOUD_LIBRARY_VERSION
+          value: 0.2.0
+        - name: COMPONENT_LIBRARY_VERSION
+          value: 0.2.3
+        - name: DATA_LIBRARY_VERSION
+          value: 0.2.0
+        - name: DATAOP_LIBRARY_VERSION
+          value: 0.2.0
+        - name: FACET_LIBRARY_VERSION
+          value: 0.2.7
+        - name: MODEL_LIBRARY_VERSION
+          value: 0.2.24
+        - name: NETWORK_LIBRARY_VERSION
+          value: 0.2.0
+        - name: PIPELINE_LIBRARY_VERSION
+          value: 0.2.0
+        - name: PROTO_LIBRARY_VERSION
+          value: 0.2.0
+        - name: SERVICE_LIBRARY_VERSION
+          value: 0.2.0
+        - name: CLOUD_PROVIDER
+          value: aws
+        ports:
+        - containerPort: 8810
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "0.1"
+            memory: 0.5Gi
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - sleep
+                - "300"
+        startupProbe:
+          exec:
+            command:
+              - cat
+              - /tmp/ready
+          failureThreshold: 50
+          periodSeconds: 10
+        volumeMounts:
+          - name: library-environment-file
+            mountPath: /etc/config/library_environment.yaml
+            subPath: library_environment.yaml
+          - name: environment-file
+            mountPath: /etc/config/environment.yaml
+            subPath: environment.yaml
+        livenessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - /usr/ikigailabs/liveness/liveness_probe.sh
+          initialDelaySeconds: 500
+          periodSeconds: 45
+          successThreshold: 1
+          failureThreshold: 2
+      - name: component-service-gateway
+        image: /:0.2.1
+        ports:
+        - containerPort: 43896
+        args:
+          - "bash"
+          - "launch.sh"
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "0.1"
+            memory: 0.5Gi
+      volumes:
+        - name: library-environment-file
+          configMap:
+            name: library-config-map
+        - name: environment-file
+          configMap:
+            name: component-service-config-map
+---
+# Source: component-service/templates/cron-job.yaml
+# https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restart-component-service
+  namespace: services
+spec:
+  concurrencyPolicy: Forbid
+  schedule: '20 */6 * * *'
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 10800
+      template:
+        spec:
+          serviceAccountName: component-service-serviceaccount
+          restartPolicy: Never
+          containers:
+            - name: kubectl
+              image: 
+              command:
+                - 'kubectl'
+                - 'rollout'
+                - 'restart'
+                - deployment/component-service

@@ -1,0 +1,191 @@
+---
+# Source: kai/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: anchore-kai
+  labels:
+    helm.sh/chart: kai-0.5.1
+    app.kubernetes.io/name: kai
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kai/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-kai
+  labels:
+    app: release-name-kai
+    chart: kai-0.5.1
+    release: release-name
+    heritage: Helm
+type: Opaque
+stringData:
+  KAI_ANCHORE_PASSWORD: foobar
+---
+# Source: kai/templates/configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-kai
+  labels:
+    app: release-name-kai
+    chart: kai-0.5.1
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |
+    kubeconfig:
+      path: use-in-cluster
+      cluster: docker-desktop
+    output: json
+    quiet: false
+    log:
+      structured: false
+      level: debug
+      file: 
+    namespaces:
+      null
+    namespace-selectors:
+      exclude: []
+      include: []
+    mode: periodic
+    polling-interval-seconds: 60
+    kubernetes-request-timeout-seconds: 
+    kubernetes:
+      request-timeout-seconds: 60
+      request-batch-size: 100
+      worker-pool-size: 100
+    ignore-not-running: true
+    missing-tag-policy:
+      policy: digest
+      tag: UNKNOWN
+    anchore:
+      url: 
+      user: admin
+      password: $KAI_ANCHORE_PASSWORD
+      account: admin
+      http:
+        insecure: true
+        timeout-seconds: 10
+    verbose-inventory-reports: false
+---
+# Source: kai/templates/cluster-role-readonly.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-kai-read-only
+rules:
+- apiGroups: [""]
+  resources: ["pods","namespaces"]
+  verbs: ["get", "watch", "list"]
+---
+# Source: kai/templates/cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-kai-read-only-binding
+subjects:
+  - kind: ServiceAccount
+    name: anchore-kai
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-kai-read-only
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: kai/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kai
+  labels:
+    helm.sh/chart: kai-0.5.1
+    app.kubernetes.io/name: kai
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kai
+    app.kubernetes.io/instance: release-name
+---
+# Source: kai/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kai
+  labels:
+    helm.sh/chart: kai-0.5.1
+    app.kubernetes.io/name: kai
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kai
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: a674c26f8756db8d64bbf754e7684c8d5a3c362bb3b33b5c46d22fc512c0a1ef
+      labels:
+        app.kubernetes.io/name: kai
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: anchore-kai
+      securityContext:
+        {}
+      containers:
+        - name: kai
+          securityContext:
+            {}
+          image: "anchore/kai:v0.5.0"
+          imagePullPolicy: IfNotPresent
+          command: ["kai"]
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - kai
+                - version
+            initialDelaySeconds: 1
+            timeoutSeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+            successThreshold: 1
+          readinessProbe:
+            exec:
+              command:
+                - kai
+                - version
+            timeoutSeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+            successThreshold: 1
+          resources:
+            {}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/xdg/kai/config.yaml
+              subPath: config.yaml
+          envFrom:
+            - secretRef:
+                name: release-name-kai
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-kai

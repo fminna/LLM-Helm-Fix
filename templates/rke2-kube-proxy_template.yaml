@@ -1,0 +1,158 @@
+---
+# Source: rke2-kube-proxy/templates/serviceaccount.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: kube-proxy
+  namespace: kube-system
+---
+# Source: rke2-kube-proxy/templates/config.yaml
+apiVersion: v1
+data:
+  config.conf: |-
+    apiVersion: kubeproxy.config.k8s.io/v1alpha1
+    bindAddress: "0.0.0.0"
+    clientConnection:
+      acceptContentTypes: 
+      burst: 
+      contentType: 
+      kubeconfig: "/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig"
+      qps: 5 
+    clusterCIDR: "10.42.0.0/16" 
+    configSyncPeriod: 15m0s
+    conntrack:
+      maxPerCore: 32768
+      min: 131072
+      tcpCloseWaitTimeout: 
+      tcpEstablishedTimeout: 
+    detectLocalMode: 
+    enableProfiling: 
+    healthzBindAddress: "0.0.0.0:10256"
+    hostnameOverride: 
+    iptables:
+      masqueradeAll: 
+      masqueradeBit: 14
+      
+      syncPeriod: 30s
+    ipvs:
+      excludeCIDRs: 
+      
+      scheduler: 
+      strictARP: 
+      syncPeriod: 30s
+      
+      
+      
+    kind: KubeProxyConfiguration
+    metricsBindAddress: "127.0.0.1:10249"
+    mode: 
+    nodePortAddresses: null
+    oomScoreAdj: -999
+    portRange: 
+    showHiddenMetricsForVersion: 
+    udpIdleTimeout: "250ms"
+    featureGates:
+    winkernel:
+      enableDSR: false
+      networkName: ""
+      sourceVip: ""
+kind: ConfigMap
+metadata:
+  labels:
+    app: kube-proxy
+  name: kube-proxy
+  namespace: kube-system
+---
+# Source: rke2-kube-proxy/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rke2:node-proxier
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-proxier
+subjects:
+- kind: ServiceAccount
+  name: kube-proxy
+  namespace: kube-system
+---
+# Source: rke2-kube-proxy/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    k8s-app: kube-proxy
+  name: kube-proxy
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-proxy
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-proxy
+    spec:
+      containers:
+      - command:
+        - /usr/local/bin/kube-proxy
+        - --config=/var/lib/kube-proxy/config.conf
+        - --hostname-override=$(NODE_NAME)
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        image: rancher/hardened-kube-proxy:v1.20.2
+        imagePullPolicy: IfNotPresent
+        name: kube-proxy
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /var/lib/kube-proxy
+          name: kube-proxy
+        - mountPath: /var/lib/rancher/rke2/agent
+          name: rke2config
+          readOnly: true
+        - mountPath: /run/xtables.lock
+          name: xtables-lock
+        - mountPath: /lib/modules
+          name: lib-modules
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-node-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: kube-proxy
+      serviceAccountName: kube-proxy
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - operator: Exists
+      volumes:
+      - hostPath:
+          path: /var/lib/rancher/rke2/agent
+          type: ""
+        name: rke2config
+      - configMap:
+          name: kube-proxy
+        name: kube-proxy
+      - hostPath:
+          path: /run/xtables.lock
+          type: FileOrCreate
+        name: xtables-lock
+      - hostPath:
+          path: /lib/modules
+          type: ""
+        name: lib-modules
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate

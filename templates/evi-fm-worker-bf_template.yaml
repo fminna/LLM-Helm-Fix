@@ -1,0 +1,221 @@
+---
+# Source: evi-fm-worker-bf/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: fm
+  name: evi-fm-worker-bf
+  labels:
+    account: evi-fm-worker-bf
+---
+# Source: evi-fm-worker-bf/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: fm
+  name: evi-fm-worker-bf
+data:
+  worker.conf: |
+    [Local]
+    method=0 #0 for brutal force, 1 for approximate search
+    name=WorkerName-1# workerName
+    logDir=/tmp/
+    maxLogFileSize=16777216
+    maxLogFileNum=20
+    logSeverity=0#0:trace,1:debug,2:info,3:notice,4:warning,5:error,6:critical,7:alert,8:emergence,9:off
+    heartBeatIntervals=900#ms
+    cpu=1
+    cpuSetting= 1:2|#coreCountForPod0:cpuStartForPod0|coreCountForPod1:cpuStartForPod1
+    scaleFactor=411.317
+    loadFrom=local #`hbase` for brutalforce, `local` for brutal force with a local file, `postgresql` for approximate search
+    maxRetry=3
+    retryInterval=1000#ms
+    [Master]
+    name=MasterName
+    [RedisSentinels]
+    masterName=mymaster
+    sentinel=tcp://evi-redis-standalone-master.smartedge-apps
+    sentinel=redis-redis-ha-announce-1
+    sentinel=tcp://127.0.0.1
+    port=6379
+    port=26379
+    port=26379
+    [Connection]
+    poolSize=3
+---
+# Source: evi-fm-worker-bf/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: evi-fm-worker-bf
+  namespace: fm
+  labels:
+    app: evi-fm-worker-bf
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+  selector:
+    app: evi-fm-worker-bf
+---
+# Source: evi-fm-worker-bf/templates/deployment.yaml
+apiVersion: apps/v1
+#kind: Deployment
+kind: StatefulSet
+metadata:
+  name: release-name-evi-fm-worker-bf
+  namespace: fm
+spec:
+  selector:
+    matchLabels:
+      app: evi-fm-worker-bf
+  serviceName: "evi-fm-worker-bf"
+  replicas: 1
+  minReadySeconds: 10 # by default is 0
+  podManagementPolicy: "OrderedReady"
+  template:
+    metadata:
+      labels:
+        app: evi-fm-worker-bf
+        sidecar.istio.io/inject: "true"
+        version: v1
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - evi-fm-worker-bf
+            topologyKey: "kubernetes.io/hostname"
+      serviceAccountName: evi-fm-worker-bf
+      containers:
+      - name: evi-fm-worker-bf
+        image: fm-worker:master-c8d66502f0864e634a642d1062836050248fd81f
+        command: ["/bin/sh"]
+        args: ["-c", 'cp /opt/feature_matching_service/featurematchingservice/worker/worker.conf /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^method=.*/method=${METHOD}/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^sentinel=.*/sentinel=$tcp://evi-redis-standalone-master.smartedge-apps:$6379/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^cpuSetting=.*/cpuSetting=${FM_CPU_SETTING}/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^name=WorkerName.*/name=${HOSTNAME}/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^name=MasterName.*/name=Master-bf/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^cpu=.*/cpu=${FM_CORE_COUNT}/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sed -i "s/^loadFrom=.*/loadFrom=${FM_LOAD_FROM}/g" /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf; sleep 3; /opt/featurematchingservice/worker/bin/fmsWorker -C /opt/featurematchingservice/worker/worker-${HOSTNAME}.conf']
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+            cpu: "120"
+            memory: 64Gi
+          requests:
+            cpu: 5m
+            memory: 30Mi
+        env:
+        - name: NODE_NAME
+          value: release-name-evi-fm-worker-bf
+        - name: FeatureStorage_HBaseVehicleFeatureServerAddress
+          value: "evi-hbase-hbase-master.smartedge-apps"
+        - name: FeatureStorage_HBaseVehicleFeatureServerPort
+          value: "9090"
+        - name: FeatureStorage_PSQL_ServerAddress
+          value: "evi-postgresql.postgresql"
+        - name: FeatureStorage_PSQL_ServerPort
+          value: "5432"
+        - name: FeatureStorage_localFilePath
+          value: "features_quantized_scale475.099.dat"
+        - name: FeatureStorage_PSQL_Password
+          valueFrom:
+              secretKeyRef:
+                  name: sqldbsecret
+                  key: password
+        - name: FeatureStorage_PSQL_Database
+          value: "hce"
+          #valueFrom:
+          #  fieldRef:
+          #    fieldPath: metadata.name
+        - name: FM_WORKER_COUNT
+          value: "1"
+        - name: FM_CORE_COUNT
+          value: "1"
+        - name: FM_CPU_SETTING
+          value: "1:0|1:1"
+        - name: FM_LOAD_FROM
+          value: "local"
+        - name: METHOD
+          value: "0"
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - mountPath: /opt/feature_matching_service/featurematchingservice/worker/worker.conf
+          subPath: worker.conf
+          name: config-volume
+        - mountPath: /opt/data/
+          name: fmlocal
+      volumes:
+      - name: config-volume
+        configMap:
+          name: evi-fm-worker-bf
+      - name: fmlocal
+        hostPath:
+          path: /home/fmlocal/
+---
+# Source: evi-fm-worker-bf/templates/Namespace.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-fm-worker-bf/templates/configmap.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-fm-worker-bf/templates/deployment.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022-2023 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-fm-worker-bf/templates/service.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-fm-worker-bf/templates/serviceaccount.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.

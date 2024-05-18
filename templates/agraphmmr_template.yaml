@@ -1,0 +1,217 @@
+---
+# Source: agraphmmr/templates/secrets.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: release-name-agraphsecrets
+stringData:
+  user: "test"
+  password: "xyzzy"
+  port: "10035"
+  reponame: "myrepl"
+  license: ""
+---
+# Source: agraphmmr/templates/controlling-lb.yaml
+#
+# This will create a service with an external IP through which
+# one can access the controlling instance.
+# Since there's just one controlling instance we don't need to worry
+# about the fact that the load balancer has no support for sessions.
+#
+# The external IP will be chosen by the cloud provider
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-controlling-loadbalancer
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 10035
+    targetPort: 10035
+  selector:
+    app: release-name-controlling
+---
+# Source: agraphmmr/templates/controlling-service.yaml
+#
+# this service exposes the internal IP address
+# of the controlling instance and makes it
+# available via dns at the
+# name 'releasename-controlling'
+# using the dns search list
+#
+apiVersion: v1
+kind: Service
+metadata:
+ name: release-name-controlling
+spec:
+ clusterIP:  None
+ selector:
+   app: release-name-controlling
+ ports:
+ - name: http
+   port: 10035
+   targetPort: 10035
+---
+# Source: agraphmmr/templates/copy-0-lb.yaml
+#
+# This will create a service with an external IP address through which
+# one can access the the copy-0  instance.
+# Since there's just one copy-0 instance we don't need to worry
+# about the fact that the load balancer has no support for sessions.
+#
+# The external IP will be chosen by the cloud provider
+#
+# This is just an example of how one specifies a particular instance
+# of a StatefulSet.   We won't normally use this load balancer
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-copy-0-loadbalancer
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 10035
+    targetPort: 10035
+  selector:
+    app: release-name-copy
+    statefulset.kubernetes.io/pod-name: release-name-copy-0
+---
+# Source: agraphmmr/templates/copy-lb.yaml
+#
+# This will create a service with an external IP address
+# through which one can access a randomly chosen copy instance.
+# There is no support for sessions so don't create an agraph session
+# using the external IP address.  This is mainly useful for
+# simple non-session transactions or for queries to one of the
+# copies of the repo
+#
+# The external IP will be chosen by the cloud provider
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-copy-loadbalancer
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 10035
+    targetPort: 10035
+  selector:
+    app: release-name-copy
+---
+# Source: agraphmmr/templates/copy-service.yaml
+#
+#
+apiVersion: v1
+kind: Service
+metadata:
+ name: release-name-copy
+spec:
+ clusterIP: None
+ selector:
+   app: release-name-copy
+ ports:
+ - name: release-name-main
+   port: 10035
+   targetPort: 10035
+---
+# Source: agraphmmr/templates/controlling-ss.yaml
+#
+# stateful set of controlling instance
+#
+
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: release-name-controlling
+spec:
+  serviceName: release-name-controlling
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: release-name-controlling
+    spec:
+        containers:
+        - name: release-name-controlling
+          image: franzinc/agmmr:7.0.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /version
+              port: 10035
+            initialDelaySeconds: 30
+          volumeMounts:
+          - name: shm
+            mountPath: /dev/shm
+          - name: release-name-data
+            mountPath: /app/rootcatalog
+          - name: secrets
+            mountPath: /app/secrets
+            readOnly: true
+          env:
+          - name: Controlling
+            value: "yes"
+          - name: ControllingHost
+            value: "release-name-controlling"
+        volumes:
+        - name: shm
+          emptyDir:
+             medium: Memory
+        - name: secrets
+          secret:
+             secretName: release-name-agraphsecrets
+  volumeClaimTemplates:
+         - metadata:
+            name: release-name-data
+           spec:
+            resources:
+              requests:
+                storage: 20Gi
+            accessModes:
+            - ReadWriteOnce
+---
+# Source: agraphmmr/templates/copy-ss.yaml
+#
+# stateful set of copies of the copy instance
+#
+
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: release-name-copy
+spec:
+  serviceName: release-name-copy
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: release-name-copy
+    spec:
+        volumes:
+         - name: shm
+           emptyDir:
+             medium: Memory
+         - name: secrets
+           secret:
+               secretName: release-name-agraphsecrets
+        containers:
+        - name: release-name-controlling
+          image: franzinc/agmmr:7.0.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /version
+              port: 10035
+            initialDelaySeconds: 30
+          volumeMounts:
+          - name: shm
+            mountPath: /dev/shm
+          - name: secrets
+            mountPath: /app/secrets
+            readOnly: true
+          env:
+          - name: ControllingHost
+            value: "release-name-controlling"

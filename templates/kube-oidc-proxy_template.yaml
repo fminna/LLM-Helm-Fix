@@ -1,0 +1,258 @@
+---
+# Source: kube-oidc-proxy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+  name: release-name-kube-oidc-proxy
+---
+# Source: kube-oidc-proxy/templates/secret_config.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-kube-oidc-proxy-config
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  oidc.signing-algs: UlMyNTY=
+---
+# Source: kube-oidc-proxy/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+  name: release-name-kube-oidc-proxy
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - "users"
+  - "groups"
+  - "serviceaccounts"
+  verbs:
+  - "impersonate"
+- apiGroups:
+  - ""
+  resources:
+  - "secrets"
+  - "configmaps"
+  verbs:
+  - "get"
+  - "list"
+  - "watch"
+  - "update"
+- apiGroups:
+  - "authentication.k8s.io"
+  resources:
+  - "userextras/scopes"
+  - "userextras/remote-client-ip"
+  verbs:
+  - "impersonate"
+- apiGroups:
+    - "authentication.k8s.io"
+  resources:
+    - "tokenreviews"
+  verbs:
+    - "create"
+    - "get"
+    - "list"
+    - "watch"
+    - "update"
+# kube-oidc-proxy init container requires to list services in order to get
+# load balancer hostname
+- apiGroups:
+  - ""
+  resources:
+  - "services"
+  verbs:
+  - "get"
+  - "list"
+  - "watch"
+---
+# Source: kube-oidc-proxy/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+  name: release-name-kube-oidc-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-kube-oidc-proxy
+subjects:
+- kind: ServiceAccount
+  name: release-name-kube-oidc-proxy
+  namespace: default
+---
+# Source: kube-oidc-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kube-oidc-proxy
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: kube-oidc-proxy
+    app.kubernetes.io/instance: release-name
+---
+# Source: kube-oidc-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kube-oidc-proxy
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-oidc-proxy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-oidc-proxy
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-kube-oidc-proxy
+      containers:
+      - name: kube-oidc-proxy
+        image: "quay.io/jetstack/kube-oidc-proxy:v0.3.0"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 443
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        command: ["kube-oidc-proxy"]
+        args:
+          - "--secure-port=443"
+          - "--tls-cert-file=/etc/oidc/tls/crt.pem"
+          - "--tls-private-key-file=/etc/oidc/tls/key.pem"
+          - "--oidc-client-id=$(OIDC_CLIENT_ID)"
+          - "--oidc-issuer-url=$(OIDC_ISSUER_URL)"
+          - "--oidc-username-claim=$(OIDC_USERNAME_CLAIM)"
+          - "--oidc-ca-file=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          
+          - "--oidc-signing-algs=$(OIDC_SIGNING_ALGS)"
+          
+        resources:
+            {}
+        env:
+        - name: OIDC_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: release-name-kube-oidc-proxy-config
+              key: oidc.client-id
+        - name: OIDC_ISSUER_URL
+          valueFrom:
+            secretKeyRef:
+              name: release-name-kube-oidc-proxy-config
+              key: oidc.issuer-url
+        - name: OIDC_USERNAME_CLAIM
+          valueFrom:
+            secretKeyRef:
+              name: release-name-kube-oidc-proxy-config
+              key: oidc.username-claim
+        - name: OIDC_SIGNING_ALGS
+          valueFrom:
+            secretKeyRef:
+              name: release-name-kube-oidc-proxy-config
+              key: oidc.signing-algs
+        
+        volumeMounts:
+          - name: kube-oidc-proxy-tls
+            mountPath: /etc/oidc/tls
+            readOnly: true
+      volumes:
+        - name: kube-oidc-proxy-tls
+          secret:
+            secretName: release-name-kube-oidc-proxy-server-tls
+            items:
+            - key: tls.crt
+              path: crt.pem
+            - key: tls.key
+              path: key.pem
+---
+# Source: kube-oidc-proxy/templates/certificate.yaml
+apiVersion: certmanager.k8s.io/v1alpha1
+kind: Certificate
+metadata:
+  name: kube-oidc-proxy
+  namespace: default
+spec:
+  secretName: release-name-kube-oidc-proxy-server-tls
+  duration: 87600h
+  issuerRef:
+    name: kubernetes-ca
+    kind: ClusterIssuer
+  commonName: kube-oidc-proxy
+  organization:
+    - D2iQ
+  dnsNames:
+    # names are the <name of the service>.<namespace>.svc.<domain> and
+    # shortened variations. However, there is no way to determine the domain,
+    # so we only include up to svc.
+    - release-name-kube-oidc-proxy
+    - release-name-kube-oidc-proxy.default
+    - release-name-kube-oidc-proxy.default.svc
+---
+# Source: kube-oidc-proxy/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-kube-oidc-proxy-test-connection"
+  labels:
+    app.kubernetes.io/name: kube-oidc-proxy
+    helm.sh/chart: kube-oidc-proxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.3.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-kube-oidc-proxy:443']
+  restartPolicy: Never

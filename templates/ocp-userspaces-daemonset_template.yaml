@@ -1,0 +1,174 @@
+---
+# Source: ocp-userspaces-daemonset/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-ocp-userspaces-daemonset
+  labels:
+    helm.sh/chart: ocp-userspaces-daemonset-0.1.1
+    app.kubernetes.io/name: ocp-userspaces-daemonset
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.14"
+    app.kubernetes.io/managed-by: Helm
+data:
+  update-userspace.sh: |
+    #!/usr/bin/env bash
+
+    if [[ -z "${NODE_NAME}" ]]; then
+      echo "NODE_NAME environment variable not set"
+      exit 1
+    fi
+
+    set -m
+    set -x
+
+    chroot /host
+    echo "user.max_user_namespaces = 31477" > /etc/sysctl.d/99-usernamespaces.conf
+    sysctl --system
+    cat /proc/sys/user/max_user_namespaces
+
+    while true; do
+      sleep 60
+    done
+---
+# Source: ocp-userspaces-daemonset/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-ocp-userspaces-daemonset
+  labels:
+    helm.sh/chart: ocp-userspaces-daemonset-0.1.1
+    app.kubernetes.io/name: ocp-userspaces-daemonset
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.14"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    checksum/config: bbaaab0ffdc08757181f69a15b8fd779e8b38820ecec5c3641097baf2bc13677
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ocp-userspaces-daemonset
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: bbaaab0ffdc08757181f69a15b8fd779e8b38820ecec5c3641097baf2bc13677
+      labels:
+        app.kubernetes.io/name: ocp-userspaces-daemonset
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: ocp-userspaces-daemonset
+      securityContext:
+        {}
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-ocp-userspaces-daemonset
+            defaultMode: 0777
+        - hostPath:
+            path: /
+            type: Directory
+          name: host
+      containers:
+        - name: ocp-userspaces-daemonset
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          image: quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:1c51afb011192544ed1d92d0ec6b9660ede8af0bc90506f2e208ebe8b14aacc0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          command:
+            - /bin/sh
+          args:
+            - -c
+            - /scripts/update-userspace.sh
+          volumeMounts:
+            - mountPath: /scripts
+              name: scripts
+            - mountPath: /host
+              name: host
+          livenessProbe:
+            exec:
+              command:
+                - cat
+                - /host/proc/sys/user/max_user_namespaces
+          readinessProbe:
+            exec:
+              command:
+                - cat
+                - /host/proc/sys/user/max_user_namespaces
+          resources:
+            {}
+---
+# Source: ocp-userspaces-daemonset/charts/service-account/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: default
+  name: ocp-userspaces-daemonset
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "-5"
+  labels:
+    helm.sh/chart: service-account-0.6.0
+    app.kubernetes.io/name: ocp-userspaces-daemonset
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: ocp-userspaces-daemonset/charts/service-account/templates/scc-privileged.yaml
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "-3"
+    argocd.argoproj.io/sync-options: Validate=false
+    kubernetes.io/description: 'privileged allows access to all privileged and host
+      features and the ability to run as any user, any group, any fsGroup, and with
+      any SELinux context.  WARNING: this is the most relaxed SCC and should be used
+      only for cluster administration. Grant with caution.'
+  name: default-ocp-userspaces-daemonset-privileged
+  labels:
+    helm.sh/chart: service-account-0.6.0
+    app.kubernetes.io/name: ocp-userspaces-daemonset
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: true
+allowedCapabilities:
+  - '*'
+allowedUnsafeSysctls:
+  - '*'
+defaultAddCapabilities: null
+fsGroup:
+  type: RunAsAny
+groups:
+  - system:cluster-admins
+  - system:nodes
+  - system:masters
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities: null
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+seccompProfiles:
+  - '*'
+supplementalGroups:
+  type: RunAsAny
+users:
+  - system:serviceaccount:default:ocp-userspaces-daemonset
+volumes:
+  - '*'

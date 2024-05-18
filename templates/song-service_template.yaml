@@ -1,0 +1,199 @@
+---
+# Source: song-service/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgres-secret
+  namespace: default
+type: Opaque
+data:
+  PGUSER: cG9zdGdyZXM=
+  PGPASSWORD: cG9zdGdyZXM=
+  PGDATABASE: cG9zdGdyZXM=
+  POSTGRES_USER: cG9zdGdyZXM=
+  POSTGRES_PASSWORD: cG9zdGdyZXM=
+  POSTGRES_DB: cG9zdGdyZXM=
+---
+# Source: song-service/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  namespace: default
+  labels:
+    date: 2024-05-15
+    version: 1.2.0
+data:
+  DATABASE_DESTINATION_HOST: release-name-postgres.default
+  SPRING_APPLICATION_NAME: release-name
+---
+# Source: song-service/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: release-name-postgres-pv
+spec:
+  storageClassName: manual
+  persistentVolumeReclaimPolicy: Retain
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: "/mnt/data"
+---
+# Source: song-service/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-postgres-pvc
+  namespace: default
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: release-name-postgres-pv
+---
+# Source: song-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres
+  namespace: default
+spec:
+  selector:
+    name: release-name-postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: postgres-port
+---
+# Source: song-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  selector:
+    name: release-name
+  ports:
+    - name: web-port
+      protocol: TCP
+      port: 8080
+      targetPort: service-port
+---
+# Source: song-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    name: release-name
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: release-name
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 20%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        name: release-name
+    spec:
+      containers:
+      - name: service
+        image: maksimkavalenka/microservices-learning.song-service:latest
+        ports:
+        - name: service-port
+          containerPort: 8080
+        env:
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-postgres-secret
+              key: POSTGRES_USER
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-postgres-secret
+              key: POSTGRES_PASSWORD
+        envFrom:
+        - configMapRef:
+            name: release-name-configmap
+        startupProbe:
+          httpGet:
+            path: /api/actuator/health
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /api/actuator/health
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+# Source: song-service/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgres
+  namespace: default
+  labels:
+    name: release-name-postgres
+spec:
+  selector:
+    matchLabels:
+      name: release-name-postgres
+  template:
+    metadata:
+      labels:
+        name: release-name-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres
+        ports:
+        - name: postgres-port
+          containerPort: 5432
+        envFrom:
+        - secretRef:
+            name: release-name-postgres-secret
+        startupProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: postgres-volume-mount
+            mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-volume-mount
+          persistentVolumeClaim:
+            claimName: release-name-postgres-pvc

@@ -1,0 +1,117 @@
+---
+# Source: openshift-etcd-backup/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-openshift-etcd-backup
+  labels:
+    helm.sh/chart: openshift-etcd-backup-1.8.7
+    app.kubernetes.io/name: openshift-etcd-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.8.6"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: openshift-etcd-backup/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-openshift-etcd-backup
+  labels:
+    helm.sh/chart: openshift-etcd-backup-1.8.7
+    app.kubernetes.io/name: openshift-etcd-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.8.6"
+    app.kubernetes.io/managed-by: Helm
+data:
+  OCP_BACKUP_S3: "false"
+  OCP_BACKUP_SUBDIR: "/"
+  OCP_BACKUP_DIRNAME: "+etcd-backup-%FT%T%:z"
+  OCP_BACKUP_EXPIRE_TYPE: "days"
+  OCP_BACKUP_KEEP_DAYS: "30"
+  OCP_BACKUP_KEEP_COUNT: "10"
+  OCP_BACKUP_UMASK: "0027"
+---
+# Source: openshift-etcd-backup/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-openshift-etcd-backup-use-privileged-scc
+rules:
+  - apiGroups:
+      - security.openshift.io
+    resources:
+      - securitycontextconstraints
+    verbs:
+      - use
+    resourceNames:
+      - privileged
+---
+# Source: openshift-etcd-backup/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-openshift-etcd-backup-sa-privileged
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-openshift-etcd-backup-use-privileged-scc
+subjects:
+  - kind: ServiceAccount
+    name: release-name-openshift-etcd-backup
+---
+# Source: openshift-etcd-backup/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-openshift-etcd-backup
+spec:
+  startingDeadlineSeconds: 600
+  schedule: "0 0 * * *"
+  jobTemplate:
+    spec:
+      # Retrying this job is not considered safe, because of that we fail the
+      # job immediately if the first execution fails.
+      backoffLimit: 0
+      template:
+        spec:
+          securityContext:
+            {}
+          containers:
+          - command:
+            - /bin/sh
+            - /usr/local/bin/backup.sh
+            image: "ghcr.io/adfinis/openshift-etcd-backup:v1.8.6"
+            imagePullPolicy: Always
+            name: openshift-etcd-backup
+            envFrom:
+            - configMapRef:
+                name: release-name-openshift-etcd-backup
+            resources:
+              {}
+            securityContext:
+              privileged: true
+              runAsGroup: 0
+              runAsUser: 0
+            volumeMounts:
+            - name: host
+              mountPath: /host
+            - name: volume-backup
+              mountPath: /backup
+          nodeSelector:
+            node-role.kubernetes.io/master: ""
+          tolerations:
+            - effect: NoSchedule
+              key: node-role.kubernetes.io/master
+          hostNetwork: true
+          hostPID: true
+          serviceAccountName: release-name-openshift-etcd-backup
+          restartPolicy: Never
+          volumes:
+          - name: host
+            hostPath:
+              path: /
+              type: Directory
+          - name: volume-backup
+            hostPath:
+              path: "/mnt/etcd-backups"
+              type: Directory

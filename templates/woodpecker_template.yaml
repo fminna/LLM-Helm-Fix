@@ -1,0 +1,286 @@
+---
+# Source: woodpecker/charts/agent/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-agent
+  labels:
+    helm.sh/chart: agent-0.3.0
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: woodpecker/charts/server/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: woodpecker-secret
+  namespace: 
+type: Opaque
+data:
+---
+# Source: woodpecker/charts/agent/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-agent
+  labels:
+    helm.sh/chart: agent-0.3.0
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [''] # '' indicates core apiGroup (don't remove)
+    resources: ['persistentvolumeclaims']
+    verbs: ['create','delete']
+  - apiGroups: ['']
+    resources: ['services']
+    verbs: ['create','delete']
+  - apiGroups: ['']
+    resources:
+      - pods
+      - pods/log
+    verbs: ['watch','create','delete','get','list']
+---
+# Source: woodpecker/charts/agent/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-agent
+  labels:
+    helm.sh/chart: agent-0.3.0
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: release-name-agent
+    namespace: default
+roleRef:
+  kind: Role
+  name: release-name-agent
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: woodpecker/charts/server/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-server-headless
+  labels:
+    helm.sh/chart: server-1.0.0
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - protocol: TCP
+      name: http
+      port: 80
+      targetPort: http
+    - protocol: TCP
+      name: grpc
+      port: 9000
+      targetPort: grpc
+  selector:
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: release-name
+---
+# Source: woodpecker/charts/server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-server
+  labels:
+    helm.sh/chart: server-1.0.0
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      name: http
+      port: 80
+      targetPort: http
+    - protocol: TCP
+      name: grpc
+      port: 9000
+      targetPort: grpc
+
+  selector:
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: release-name
+---
+# Source: woodpecker/charts/agent/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-agent
+  labels:
+    helm.sh/chart: agent-0.3.0
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-agent
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-agent
+      securityContext:
+        {}
+      initContainers:
+      containers:
+        - name: agent
+          securityContext:
+            {}
+          image: "docker.io/woodpeckerci/woodpecker-agent:v2.4.1"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+            - name: agent-config
+              mountPath: /etc/woodpecker
+          env:
+            - name: WOODPECKER_BACKEND
+              value: "kubernetes"
+            - name: WOODPECKER_BACKEND_K8S_NAMESPACE
+              value: "woodpecker"
+            - name: WOODPECKER_BACKEND_K8S_POD_ANNOTATIONS
+              value: ""
+            - name: WOODPECKER_BACKEND_K8S_POD_LABELS
+              value: ""
+            - name: WOODPECKER_BACKEND_K8S_STORAGE_CLASS
+              value: ""
+            - name: WOODPECKER_BACKEND_K8S_STORAGE_RWX
+              value: "true"
+            - name: WOODPECKER_BACKEND_K8S_VOLUME_SIZE
+              value: "10G"
+            - name: WOODPECKER_CONNECT_RETRY_COUNT
+              value: "1"
+            - name: WOODPECKER_SERVER
+              value: "woodpecker-server:9000"
+          envFrom:
+            - secretRef:
+                name: woodpecker-secret
+  volumeClaimTemplates:
+    - metadata:
+        name: agent-config
+        namespace: 
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Source: woodpecker/charts/server/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-server
+  labels:
+    helm.sh/chart: server-1.0.0
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-server-headless
+  revisionHistoryLimit: 5
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: server
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: server
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      initContainers:
+      containers:
+        - name: server
+          securityContext:
+            {}
+          image: "docker.io/woodpeckerci/woodpecker-server:v2.4.1"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: grpc
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/woodpecker
+          env:
+            - name: WOODPECKER_ADMIN
+              value: "woodpecker,admin"
+            - name: WOODPECKER_HOST
+              value: "https://xxxxxxx"
+          envFrom:
+            - secretRef:
+                name: woodpecker-secret
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+# Source: woodpecker/charts/server/templates/secret-check-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pre-install-agent-secret-check
+  annotations:
+    'helm.sh/hook': pre-install
+spec:
+  template:
+    spec:
+      containers:
+        - name: check-agent-secret
+          image: finalgene/openssh:9
+          command: ['openssl']
+          args: ['rand', '-hex', '32']
+      restartPolicy: OnFailure

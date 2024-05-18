@@ -1,0 +1,235 @@
+---
+# Source: tempo/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tempo
+  labels:
+    helm.sh/chart: tempo-0.7.3
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: tempo/templates/configmap-tempo-query.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-query
+  namespace: default
+  labels:
+    helm.sh/chart: tempo-0.7.3
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  tempo-query.yaml: |
+    backend: tempo:3100
+---
+# Source: tempo/templates/configmap-tempo.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo
+  namespace: default
+  labels:
+    helm.sh/chart: tempo-0.7.3
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  overrides.yaml: |
+    overrides:
+  tempo.yaml: |
+    auth_enabled: false
+    compactor:
+      compaction:
+        compacted_block_retention: 24h
+    distributor:
+      receivers:
+        jaeger:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            thrift_binary:
+              endpoint: 0.0.0.0:6832
+            thrift_compact:
+              endpoint: 0.0.0.0:6831
+            thrift_http:
+              endpoint: 0.0.0.0:14268
+    ingester:
+      {}
+    server:
+      http_listen_port: 3100
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+        wal:
+          path: /var/tempo/wal
+---
+# Source: tempo/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: default
+  labels:
+    helm.sh/chart: tempo-0.7.3
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: tempo-prom-metrics
+    port: 3100
+    targetPort: 3100
+  - name: tempo-query-jaeger-ui
+    port: 16686
+    targetPort: 16686
+  - name: tempo-jaeger-thrift-compact
+    port: 6831
+    protocol: UDP
+    targetPort: 6831
+  - name: tempo-jaeger-thrift-binary
+    port: 6832
+    protocol: UDP
+    targetPort: 6832
+  - name: tempo-jaeger-thrift-http
+    port: 14268
+    protocol: TCP
+    targetPort: 14268
+  - name: tempo-jaeger-grpc
+    port: 14250
+    protocol: TCP
+    targetPort: 14250
+  - name: tempo-zipkin
+    port: 9411
+    protocol: TCP
+    targetPort: 9411
+  - name: tempo-otlp-legacy
+    port: 55680
+    protocol: TCP
+    targetPort: 55680
+  - name: tempo-otlp-http
+    port: 55681
+    protocol: TCP
+    targetPort: 55681
+  - name: tempo-otlp-grpc
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: tempo-opencensus
+    port: 55678
+    protocol: TCP
+    targetPort: 55678
+  selector:
+    app.kubernetes.io/name: tempo
+---
+# Source: tempo/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: default
+  labels:
+    helm.sh/chart: tempo-0.7.3
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  serviceName: tempo-headless
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tempo
+      annotations:
+    spec:
+      serviceAccountName: tempo
+      containers:
+      - args:
+        - -config.file=/conf/tempo.yaml
+        - -mem-ballast-size-mbs=1024
+        image: registry.cn-beijing.aliyuncs.com/kubegemsapp/tempo:1.0.1
+        imagePullPolicy: IfNotPresent
+        name: tempo
+        ports:
+        - containerPort: 3100
+          name: prom-metrics
+        - containerPort: 6831
+          name: jaeger-thrift-c
+          protocol: UDP
+        - containerPort: 6832
+          name: jaeger-thrift-b
+          protocol: UDP
+        - containerPort: 14268
+          name: jaeger-thrift-h
+        - containerPort: 14250
+          name: jaeger-grpc
+        - containerPort: 9411
+          name: zipkin
+        - containerPort: 55680
+          name: otlp-legacy
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 55681
+          name: otlp-http
+        - containerPort: 55678
+          name: opencensus
+        resources:
+          limits:
+            cpu: "2"
+            memory: 6Gi
+          requests:
+            cpu: 200m
+            memory: 4Gi
+        env:
+        volumeMounts:
+        - mountPath: /conf
+          name: tempo-conf
+        - mountPath: /var/tempo
+          name: storage
+      - args:
+        - --query.base-path=/
+        - --grpc-storage-plugin.configuration-file=/conf/tempo-query.yaml
+        image: registry.cn-beijing.aliyuncs.com/kubegemsapp/tempo-query:1.0.1
+        imagePullPolicy: IfNotPresent
+        name: tempo-query
+        ports:
+        - containerPort: 16686
+          name: jaeger-ui
+        - containerPort: 16687
+          name: jaeger-metrics
+        env:
+        resources:
+          null
+        volumeMounts:
+        - mountPath: /conf
+          name: tempo-query-conf
+      volumes:
+      - configMap:
+          name: tempo-query
+        name: tempo-query-conf
+      - configMap:
+          name: tempo
+        name: tempo-conf
+  updateStrategy:
+    type:
+      RollingUpdate
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+        annotations:
+          null
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "20Gi"
+        storageClassName: local-path

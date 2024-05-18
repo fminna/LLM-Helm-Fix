@@ -1,0 +1,227 @@
+---
+# Source: linkrecommendation/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: linkrecommendation-release-name
+  labels:
+    app: linkrecommendation
+    chart: linkrecommendation-0.2.16
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: linkrecommendation
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8000
+        protocol: TCP
+---
+# Source: linkrecommendation/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: linkrecommendation-release-name-secret-config
+  labels:
+    app: linkrecommendation
+    chart: linkrecommendation-0.2.16
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  DB_ADMIN_PASSWORD: "c25ha2VvaWw="
+  DB_PASSWORD: "c25ha2VvaWw="
+---
+# Source: linkrecommendation/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: linkrecommendation-release-name
+  labels:
+    app: linkrecommendation
+    chart: linkrecommendation-0.2.16
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: linkrecommendation
+    release: release-name
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 8000
+      port: 8000
+---
+# Source: linkrecommendation/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linkrecommendation-release-name
+  labels:
+    app: linkrecommendation
+    chart: linkrecommendation-0.2.16
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: linkrecommendation
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: linkrecommendation
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/secrets: 8a121c73d97ffb00e2736668d8bb550ea320710ef21c67ab1fb229e66d5039cc
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:
+        # The main application container
+        - name: linkrecommendation-release-name
+          image: "docker-registry.wikimedia.org/wikimedia/research-mwaddlink:stable"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: linkrecommendation-release-name
+            - name: ANALYTICS_BASE_URL
+              value: "https://analytics.wikimedia.org/published/datasets/one-off/research-mwaddlink/"
+            - name: DB_ADMIN_USER
+              value: "adminlinkrecommendation"
+            - name: DB_BACKEND
+              value: "mysql"
+            - name: DB_DATABASE
+              value: "mwaddlink"
+            - name: DB_HOST
+              value: ""
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_USER
+              value: "linkrecommendation"
+            - name: GUNICORN_TIMEOUT
+              value: "30"
+            - name: MEDIAWIKI_PROXY_API_BASE_URL
+              value: "http://localhost:6500/w/"
+            - name: MEDIAWIKI_PROXY_API_URL
+              value: "http://localhost:6500/w/rest.php"
+            - name: DB_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linkrecommendation-release-name-secret-config
+                  key: DB_ADMIN_PASSWORD
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linkrecommendation-release-name-secret-config
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: 750m
+              memory: 200Mi
+            limits:
+              cpu: 1600m
+              memory: 550Mi
+---
+# Source: linkrecommendation/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: linkrecommendation-release-name-load-datasets
+  labels:
+    app: linkrecommendation
+    chart: linkrecommendation-0.2.16
+    release: release-name
+    heritage: Helm
+spec:
+  schedule: "@hourly"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    metadata:
+      labels:
+        app: linkrecommendation
+        chart: linkrecommendation-0.2.16
+        release: release-name
+        heritage: Helm
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: linkrecommendation
+            release: release-name
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: linkrecommendation-release-name-load-datasets
+            image: "docker-registry.wikimedia.org/wikimedia/research-mwaddlink:stable"
+            env:
+            - name: ANALYTICS_BASE_URL
+              value: "https://analytics.wikimedia.org/published/datasets/one-off/research-mwaddlink/"
+            - name: DB_ADMIN_USER
+              value: "adminlinkrecommendation"
+            - name: DB_BACKEND
+              value: "mysql"
+            - name: DB_DATABASE
+              value: "mwaddlink"
+            - name: DB_HOST
+              value: ""
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_USER
+              value: "linkrecommendation"
+            - name: GUNICORN_TIMEOUT
+              value: "30"
+            - name: MEDIAWIKI_PROXY_API_BASE_URL
+              value: "http://localhost:6500/w/"
+            - name: MEDIAWIKI_PROXY_API_URL
+              value: "http://localhost:6500/w/rest.php"
+            - name: DB_USER
+              value: adminlinkrecommendation
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linkrecommendation-release-name-secret-config
+                  key: DB_ADMIN_PASSWORD
+            imagePullPolicy: IfNotPresent
+            command: [ "/usr/bin/python3", "load-datasets.py", "--download", "--path=/tmp/datasets", "--output-format=json" ]
+            resources:
+              requests:
+                cpu: 750m
+                memory: 200Mi
+              limits:
+                cpu: 1600m
+                memory: 550Mi
+---
+# Source: linkrecommendation/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'linkrecommendation-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'linkrecommendation-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(LINKRECOMMENDATION_RELEASE_NAME_SERVICE_HOST)', 'http://linkrecommendation-release-name:8000']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

@@ -1,0 +1,125 @@
+---
+# Source: caliper/templates/manager/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-caliper-manager
+  labels:
+    helm.sh/chart: caliper-0.1.7
+    app.kubernetes.io/name: caliper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: manager
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::270595624100:role/programmable-benchmark
+---
+# Source: caliper/templates/manager/configmap-env.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-caliper-manager-envmap
+  labels:
+    helm.sh/chart: caliper-0.1.7
+    app.kubernetes.io/name: caliper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: manager
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+data:
+---
+# Source: caliper/templates/manager/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-caliper-manager-job
+  labels:
+    helm.sh/chart: caliper-0.1.7
+    app.kubernetes.io/name: caliper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: caliper
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: manager
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: caliper-0.1.7
+        app.kubernetes.io/name: caliper
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.0.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: manager
+    spec:
+      restartPolicy: Never
+      serviceAccountName: release-name-caliper-manager
+      initContainers:
+        - name: release-name-caliper-manager-run-benchmark
+          image: "hyperledger/caliper:develop"
+          imagePullPolicy: Always
+          resources:
+            {}
+          args:
+            - launch
+            - manager
+          env:
+            - name: CALIPER_WORKSPACE
+              value: /hyperledger/caliper/workspace
+            - name: CALIPER_BIND_SUT
+              value: ethereum:latest
+            - name: CALIPER_BENCHCONFIG
+              value: /config/config.yaml
+            - name: CALIPER_NETWORKCONFIG
+              value: /config/networkconfig.json
+            - name: CALIPER_BIND_ARGS
+              value: -g
+          envFrom:
+            - configMapRef:
+                name: release-name-caliper-manager-envmap
+          volumeMounts:
+            - name: caliper-all-configs
+              mountPath: "/config"
+              readOnly: true
+            - name: workspace
+              mountPath: /hyperledger/caliper/workspace
+      containers:
+        - name: release-name-caliper-manager-upload-report
+          image: "amazon/aws-cli:latest"
+          imagePullPolicy: Always
+          resources:
+            {}
+          env:
+            - name: BUCKET_NAME
+              value: "programmable-benchmark-results-rollup-ops-dev-ohio"
+            - name: RUN_ID
+              value: "1715761835"
+          command:
+            - aws
+          args:
+            - s3
+            - cp
+            - /hyperledger/caliper/workspace/report.html
+            - s3://$(BUCKET_NAME)/$(RUN_ID)/
+          envFrom:
+            - configMapRef:
+                name: release-name-caliper-manager-envmap
+          volumeMounts:
+            - name: workspace
+              mountPath: /hyperledger/caliper/workspace
+      volumes:
+        - name: workspace
+          emptyDir: { }
+        - name: caliper-all-configs
+          projected:
+            sources:
+  manualSelector: true
+  parallelism:

@@ -1,0 +1,461 @@
+---
+# Source: flow/charts/mariadb/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mariadb
+  labels:
+    app: mariadb
+    chart: mariadb-2.1.18
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  mariadb-root-password: "amV1azY1WFRjUA=="
+  mariadb-password: "c3Ryb25nUGFzc3dvcmQ="
+---
+# Source: flow/templates/secret.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: release-name-flow
+  labels:
+    app: flow
+    component: app
+    chart: flow-0.1.0
+    release: release-name
+    heritage: Helm
+data:
+  DB_USER: bmVvcw==
+  DB_PASS: c3Ryb25nUGFzc3dvcmQ=
+---
+# Source: flow/charts/mariadb/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mariadb
+  labels:
+    app: mariadb
+    chart: mariadb-2.1.18
+    release: "release-name"
+    heritage: "Helm"
+data:
+  my.cnf: |-
+    # [mysqld]
+    # innodb_buffer_pool_size=2G
+---
+# Source: flow/charts/mariadb/templates/tests.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mariadb-tests
+data:
+  run.sh: |-
+    @test "Testing MariaDB is accessible" {
+      mysql -h release-name-mariadb -uroot -p$MARIADB_ROOT_PASSWORD -e 'show databases;'
+    }
+---
+# Source: flow/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-flow
+  labels:
+    app: flow
+    chart: flow-0.1.0
+    release: release-name
+    heritage: Helm
+data:
+  
+  Caches.yaml: |
+  
+    Yeebase_Readiness_Lock:
+      backend: Neos\Cache\Backend\RedisBackend
+      backendOptions:
+        hostname: 'release-name-redis'
+        database: 2
+  
+    Yeebase_Readiness_LocalLock:
+      frontend: Neos\Cache\Frontend\StringFrontend
+      backend: Neos\Cache\Backend\FileBackend
+  Settings.yaml: |
+    Neos:
+      Flow:
+        persistence:
+          backendOptions:
+            driver: "pdo_mysql"
+            host: release-name-mariadb
+            user: "%env:DB_USER%"
+            password: "%env:DB_PASS%"
+            dbname: "db-neos"
+---
+# Source: flow/charts/mariadb/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-mariadb
+  labels:
+    app: mariadb
+    chart: mariadb-2.1.18
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1Gi"
+---
+# Source: flow/charts/redis/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-redis
+  labels:
+    app: release-name-redis
+    chart: "redis-1.2.2"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1Gi"
+---
+# Source: flow/charts/mariadb/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb
+  labels:
+    app: mariadb
+    chart: mariadb-2.1.18
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+  selector:
+    app: mariadb
+---
+# Source: flow/charts/redis/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis
+  labels:
+    app: release-name-redis
+    chart: "redis-1.2.2"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+  selector:
+    app: release-name-redis
+---
+# Source: flow/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-flow
+  labels:
+    app: flow
+    component: app
+    chart: flow-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: flow
+    component: app
+    release: release-name
+---
+# Source: flow/charts/mariadb/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-mariadb
+  labels:
+    app: mariadb
+    chart: mariadb-2.1.18
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      securityContext:
+        runAsUser: 1001
+        fsGroup: 1001
+      initContainers:
+      - name: "copy-custom-config"
+        image: "busybox"
+        imagePullPolicy: "IfNotPresent"
+        command: ["sh", "-c", "mkdir -p /bitnami/mariadb/conf && cp /bitnami/mariadb_config/my.cnf /bitnami/mariadb/conf/my_custom.cnf"]
+        volumeMounts:
+        - name: config
+          mountPath: /bitnami/mariadb_config
+        - name: data
+          mountPath: /bitnami/mariadb
+      containers:
+      - name: mariadb
+        image: "bitnami/mariadb:10.1.32-r0"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: MARIADB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb
+              key: mariadb-root-password
+        - name: MARIADB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb
+              key: mariadb-password
+        - name: MARIADB_USER
+          value: "neos"
+        - name: MARIADB_DATABASE
+          value: "db-neos"
+        ports:
+        - name: mysql
+          containerPort: 3306
+        livenessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - mysqladmin ping -uroot -p$MARIADB_ROOT_PASSWORD
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - mysqladmin ping -uroot -p$MARIADB_ROOT_PASSWORD
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/mariadb
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-mariadb
+      - name: data
+        persistentVolumeClaim:
+          claimName: release-name-mariadb
+---
+# Source: flow/charts/redis/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-redis
+  labels:
+    app: release-name-redis
+    chart: "redis-1.2.2"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  template:
+    metadata:
+      labels:
+        app: release-name-redis
+    spec:
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      containers:
+      - name: release-name-redis
+        image: "docker.io/bitnami/redis:4.0.9"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: REDIS_DISABLE_COMMANDS
+          value: FLUSHDB,FLUSHALL
+        ports:
+        - name: redis
+          containerPort: 6379
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - name: redis-data
+          mountPath: /bitnami
+          subPath: 
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: release-name-redis
+---
+# Source: flow/templates/deployment-app.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-flow
+  labels:
+    app: flow
+    component: app
+    chart: flow-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: flow
+      component: app
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: flow
+        component: app
+        release: release-name
+      annotations:
+        
+        checksum/config: 75690f1ba107ede3d51cdc58a1587f118cedf75ac79143c6db66ebb07242dd37
+    spec:
+      containers:
+        - name: flow
+          image: "quay.io/yeebase/neos-demo:latest"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: FLOW_CONTEXT
+              value: Production
+            - name: FLOW_REWRITEURLS
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: release-name-flow
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 180
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            periodSeconds: 25
+            failureThreshold: 5
+            timeoutSeconds: 10
+            exec:
+              command: ["su", "www-data", "-s", "/bin/bash", "-m", "-c", "php /app/flow app:isready"]
+          resources:
+            
+            {}
+          volumeMounts:
+            - name: config
+              mountPath: /app/Configuration/Production
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-flow
+---
+# Source: flow/templates/ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: release-name-flow
+  labels:
+    app: flow
+    chart: flow-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  rules:
+    - host: neos-demo.local
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: release-name-flow
+              servicePort: http
+---
+# Source: flow/charts/mariadb/templates/test-runner.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-mariadb-test-dzbuw"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  initContainers:
+    - name: "test-framework"
+      image: "dduportal/bats:0.4.0"
+      command:
+        - "bash"
+        - "-c"
+        - |
+          set -ex
+          # copy bats to tools dir
+          cp -R /usr/local/libexec/ /tools/bats/
+      volumeMounts:
+      - mountPath: /tools
+        name: tools
+  containers:
+    - name: mariadb-test
+      image: bitnami/mariadb:10.1.32-r0
+      command: ["/tools/bats/bats", "-t", "/tests/run.sh"]
+      env:
+        - name: MARIADB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb
+              key: mariadb-root-password
+      volumeMounts:
+      - mountPath: /tests
+        name: tests
+        readOnly: true
+      - mountPath: /tools
+        name: tools
+  volumes:
+  - name: tests
+    configMap:
+      name: release-name-mariadb-tests
+  - name: tools
+    emptyDir: {}
+  restartPolicy: Never

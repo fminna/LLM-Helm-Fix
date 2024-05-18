@@ -1,0 +1,125 @@
+---
+# Source: airports-postgres/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-auth
+type: kubernetes.io/basic-auth
+stringData:
+  database: db_airports
+  username: postgres
+  password: postgres
+---
+# Source: airports-postgres/templates/configMap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  labels:
+    app: postgres
+data:
+  developer1_email: dan.iacob.ext@siemens.com
+  developer2_email: elena.dascalu.ext@siemens.com
+---
+# Source: airports-postgres/templates/persistentVolume.yaml
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: postgres-pv-volume
+  labels:
+    type: local
+    app: postgres
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: /mnt/data
+---
+# Source: airports-postgres/templates/persistentVolume.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: postgres-pv-claim
+  labels:
+    app: postgres
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: airports-postgres/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  ports:
+   - port: 5432
+  selector:
+   app: postgres
+---
+# Source: airports-postgres/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis
+          readinessProbe:
+            exec:
+              command: ["psql", "-Upostgres", "-ddb_airports", "-c", "SELECT 1"]
+            initialDelaySeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["psql", "-Upostgres", "-ddb_airports", "-c", "SELECT 1"]
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: secret-auth
+                  key: database
+            - name: POSTGRES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: secret-auth
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: secret-auth
+                  key: password
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: postgres-config
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgredb
+      volumes:
+        - name: postgredb
+          persistentVolumeClaim:
+            claimName: postgres-pv-claim

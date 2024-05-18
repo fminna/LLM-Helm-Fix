@@ -1,0 +1,212 @@
+---
+# Source: glpi/templates/mariadb-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mariadb-secret
+type: Opaque
+data:
+  username: dXNlcl9nbHBp
+  password: UnlmaTdJYkRIamlOMjVwYg==
+  root_password: ZWZHcXJnNk1LeFY2STd2SA==
+---
+# Source: glpi/templates/glpi-storage.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: glpi/templates/mariadb-storage.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-mariadb-pv-claim
+  labels:
+    app: release-name-mariadb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+# Source: glpi/templates/glpi-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name:  release-name-service
+spec:
+  selector:
+    app:  release-name
+  type: ClusterIP
+  ports:
+  - name:  http
+    port:  80
+    targetPort:  80
+---
+# Source: glpi/templates/mariadb-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb-service
+spec:
+  ports:
+  - port: 3306
+  selector:
+    app: release-name-mariadb
+  clusterIP: None
+---
+# Source: glpi/templates/phpadmin-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name:  release-name-phpadmin-service
+spec:
+  selector:
+    app:  release-name-phpadmin
+  type: ClusterIP
+  ports:
+  - name:  http
+    port:  8080
+    targetPort:  80
+---
+# Source: glpi/templates/glpi.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name
+        version: v10.0.3
+    spec:
+      initContainers:
+      - name: init-glpi
+        image: "vdiogov/glpi-conteiner:latest"
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c", "cp -R /var/www/html/* /tmp/"]
+        volumeMounts:
+        - name: release-name-pv-storage
+          mountPath: /tmp
+      containers:
+      - image: "vdiogov/glpi-conteiner:latest"
+        imagePullPolicy: IfNotPresent
+        name:  release-name
+        ports:
+        - containerPort: 80
+        volumeMounts:
+          - name: release-name-pv-storage
+            mountPath: /var/www/html
+      volumes:
+      - name: release-name-pv-storage
+        persistentVolumeClaim:
+          claimName: release-name-pv-claim
+---
+# Source: glpi/templates/mariadb.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mariadb
+spec:
+  selector:
+    matchLabels:
+      app: release-name-mariadb
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: release-name-mariadb
+    spec:
+      containers:
+      - image: mariadb:latest
+        name: release-name-mariadb
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb-secret
+              key: root_password
+              optional: false
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb-secret
+              key: username
+              optional: false
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mariadb-secret
+              key: password
+              optional: false
+        - name: MYSQL_DATABASE
+          value: glpi
+        ports:
+        - containerPort: 3306
+          name: release-name-db
+        volumeMounts:
+        - name: release-name-mariadb-pv-storage
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: release-name-mariadb-pv-storage
+        persistentVolumeClaim:
+          claimName: release-name-mariadb-pv-claim
+---
+# Source: glpi/templates/phpadmin.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-phpadmin
+spec:
+  selector:
+    matchLabels:
+      app: release-name-phpadmin
+  template:
+    metadata:
+      labels:
+        app: release-name-phpadmin
+    spec:
+      containers:
+      - image:  phpmyadmin:latest
+        name:  release-name-phpadmin
+        env:
+        - name: PMA_ARBITRARY
+          value: "1"
+        - name: PMA_HOST
+          value: mariadb-service
+        ports:
+        - containerPort: 80
+---
+# Source: glpi/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-glpi-test-connection"
+  labels:
+    helm.sh/chart: glpi-0.1.0
+    app.kubernetes.io/name: glpi
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-glpi:80']
+  restartPolicy: Never

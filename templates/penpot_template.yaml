@@ -1,0 +1,457 @@
+---
+# Source: penpot/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-penpot
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: penpot/templates/frontend/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-penpot-frontend-nginx"
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+data:
+  nginx.conf: |
+    user www-data;
+    worker_processes auto;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+
+    events {
+        worker_connections 2048;
+        # multi_accept on;
+    }
+
+    http {
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_requests 30;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+
+        server_tokens off;
+
+        reset_timedout_connection on;
+        client_body_timeout 30s;
+        client_header_timeout 30s;
+
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        error_log /dev/stdout;
+        access_log /dev/stdout;
+
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_static on;
+        gzip_comp_level 4;
+        gzip_buffers 16 8k;
+        gzip_http_version 1.1;
+
+        gzip_types text/plain text/css text/javascript application/javascript application/json application/transit+json;
+
+        resolver 127.0.0.11;
+
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            ''      close;
+        }
+
+        server {
+            listen 80 default_server;
+            server_name _;
+
+            client_max_body_size 100M;
+            charset utf-8;
+
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Scheme $scheme;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+            etag off;
+            root /var/www/app/;
+
+            location ~* \.(js|css).*$ {
+                add_header Cache-Control "max-age=86400" always; # 24 hours
+            }
+
+            location ~* \.(html).*$ {
+                add_header Cache-Control "no-cache, max-age=0" always;
+            }
+
+            location /api/export {
+                proxy_pass http://release-name-penpot-exporter:6061;
+            }
+
+            location /api {
+                proxy_pass http://release-name-penpot-backend:6060/api;
+            }
+
+            location /ws/notifications {
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_pass http://release-name-penpot-backend:6060/ws/notifications;
+            }
+
+            location @handle_redirect {
+                set $redirect_uri "$upstream_http_location";
+                set $redirect_host "$upstream_http_x_host";
+                set $redirect_cache_control "$upstream_http_cache_control";
+
+                proxy_buffering off;
+
+                proxy_set_header Host "$redirect_host";
+                proxy_hide_header etag;
+                proxy_hide_header x-amz-id-2;
+                proxy_hide_header x-amz-request-id;
+                proxy_hide_header x-amz-meta-server-side-encryption;
+                proxy_hide_header x-amz-server-side-encryption;
+                proxy_pass $redirect_uri;
+
+                add_header x-internal-redirect "$redirect_uri";
+                add_header x-cache-control "$redirect_cache_control";
+                add_header cache-control "$redirect_cache_control";
+            }
+
+            location /assets {
+                proxy_pass http://release-name-penpot-backend:6060/assets;
+                recursive_error_pages on;
+                proxy_intercept_errors on;
+                error_page 301 302 307 = @handle_redirect;
+            }
+
+            location /internal/assets {
+                internal;
+                alias /opt/data/assets;
+                add_header x-internal-redirect "$upstream_http_x_accel_redirect";
+            }
+        }
+    }
+---
+# Source: penpot/templates/backend/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-penpot-backend
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6060
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: penpot-backend
+    app.kubernetes.io/instance: release-name
+---
+# Source: penpot/templates/exporter/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-penpot-exporter
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6061
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: penpot-exporter
+    app.kubernetes.io/instance: release-name
+---
+# Source: penpot/templates/frontend/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-penpot
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+---
+# Source: penpot/templates/backend/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-penpot-backend
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: penpot-backend
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: penpot-backend
+        app.kubernetes.io/instance: release-name
+    spec:
+    
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-penpot
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                - release-name
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: penpot-backend
+        
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - all
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          image: "penpotapp/backend:1.16.0-beta"
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /opt/data
+              name: app-data
+              readOnly: false
+          env:
+            - name: PENPOT_PUBLIC_URI
+              value: "http://localhost:8080"
+            - name: PENPOT_FLAGS
+              value: "$PENPOT_FLAGS enable-registration enable-login disable-demo-users disable-demo-warning"
+            - name: PENPOT_SECRET_KEY
+              value: "b46a12cb4bedc6b9df8cb3f18c708b65"
+            - name: PENPOT_DATABASE_URI
+              value: "postgresql://postgresql.penpot.svc.cluster.local:5432/"
+            - name: PENPOT_DATABASE_USERNAME
+              value: ""
+            - name: PENPOT_DATABASE_PASSWORD
+              value: ""
+            - name: PENPOT_REDIS_URI
+              value: "redis://redis-headless.penpot.svc.cluster.local:6379/0"
+            - name: PENPOT_ASSETS_STORAGE_BACKEND
+              value: "assets-fs"
+            - name: PENPOT_STORAGE_ASSETS_FS_DIRECTORY
+              value: "/opt/data/assets"
+            - name: PENPOT_TELEMETRY_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 6060
+              protocol: TCP
+          resources:
+            limits: {}
+            requests: {}
+      volumes:
+      - name: app-data
+        emptyDir: {}
+---
+# Source: penpot/templates/exporter/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-penpot-exporter
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: penpot-exporter
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: penpot-exporter
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-penpot
+    
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: penpot-exporter
+        
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - all
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          image: "penpotapp/exporter:1.16.0-beta"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PENPOT_PUBLIC_URI
+              value: "http://localhost:8080"
+            - name: PENPOT_FLAGS
+              value: "$PENPOT_FLAGS enable-registration enable-login disable-demo-users disable-demo-warning"
+            - name: PENPOT_SECRET_KEY
+              value: "b46a12cb4bedc6b9df8cb3f18c708b65"
+            - name: PENPOT_DATABASE_URI
+              value: "postgresql://postgresql.penpot.svc.cluster.local:5432/"
+            - name: PENPOT_DATABASE_USERNAME
+              value: ""
+            - name: PENPOT_DATABASE_PASSWORD
+              value: ""
+            - name: PENPOT_REDIS_URI
+              value: "redis://redis-headless.penpot.svc.cluster.local:6379/0"
+            - name: PENPOT_ASSETS_STORAGE_BACKEND
+              value: "assets-fs"
+            - name: PENPOT_STORAGE_ASSETS_FS_DIRECTORY
+              value: "/opt/data/assets"
+            - name: PENPOT_TELEMETRY_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 6061
+              protocol: TCP
+          resources:
+            limits: {}
+            requests: {}
+---
+# Source: penpot/templates/frontend/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-penpot-frontend
+  namespace: default
+  labels:
+    helm.sh/chart: penpot-1.0.10
+    app.kubernetes.io/name: penpot-frontend
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0-beta"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: penpot-frontend
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: penpot-frontend
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-penpot
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                - release-name
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: penpot-frontend
+          image: "penpotapp/frontend:1.16.0-beta"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PENPOT_PUBLIC_URI
+              value: "http://localhost:8080"
+            - name: PENPOT_FLAGS
+              value: "$PENPOT_FLAGS enable-registration enable-login disable-demo-users disable-demo-warning"
+            - name: PENPOT_SECRET_KEY
+              value: "b46a12cb4bedc6b9df8cb3f18c708b65"
+            - name: PENPOT_DATABASE_URI
+              value: "postgresql://postgresql.penpot.svc.cluster.local:5432/"
+            - name: PENPOT_DATABASE_USERNAME
+              value: ""
+            - name: PENPOT_DATABASE_PASSWORD
+              value: ""
+            - name: PENPOT_REDIS_URI
+              value: "redis://redis-headless.penpot.svc.cluster.local:6379/0"
+            - name: PENPOT_ASSETS_STORAGE_BACKEND
+              value: "assets-fs"
+            - name: PENPOT_STORAGE_ASSETS_FS_DIRECTORY
+              value: "/opt/data/assets"
+            - name: PENPOT_TELEMETRY_ENABLED
+              value: "true"
+          volumeMounts:
+            - mountPath: /opt/data
+              name: app-data
+              readOnly: false
+            - mountPath: /etc/nginx/nginx.conf
+              name: "release-name-penpot-frontend-nginx"
+              readOnly: true
+              subPath: nginx.conf
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            limits: {}
+            requests: {}
+      volumes:
+      - name: app-data
+        emptyDir: {}
+      - configMap:
+          defaultMode: 420
+          name: "release-name-penpot-frontend-nginx"
+        name: "release-name-penpot-frontend-nginx"

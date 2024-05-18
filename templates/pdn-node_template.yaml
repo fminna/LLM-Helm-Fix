@@ -1,0 +1,258 @@
+---
+# Source: pdn-node/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-pdn-node
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+secrets:
+  - name: release-name-pdn-node
+---
+# Source: pdn-node/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-pdn-node
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+---
+# Source: pdn-node/templates/system-yaml.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-pdn-node-systemyaml
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  system.yaml: |
+    pdnNode:
+      disableBasicAuth: true
+      logLevel: info
+      internalTls: false
+      metrics:
+        enabled: true
+---
+# Source: pdn-node/templates/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-pdn-node-endpoint-reader
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+# Source: pdn-node/templates/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-pdn-node-endpoint-reader
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: release-name-pdn-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-pdn-node-endpoint-reader
+---
+# Source: pdn-node/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pdn-node
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: secure-grpc
+      port: 8088
+      targetPort: secure-grpc
+    - name: http-server
+      port: 8089
+      targetPort: http-server
+  selector:
+    app.kubernetes.io/name: pdn-node
+    app.kubernetes.io/instance: release-name
+---
+# Source: pdn-node/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-pdn-node
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: pdn-node
+    helm.sh/chart: pdn-node-101.9.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-pdn-node-headless
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pdn-node
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pdn-node
+        helm.sh/chart: pdn-node-101.9.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+        systemYaml/checksum: 23e5a0d72611374b9071d5608565ea033a305f80ff28dbcaa76c4b797bfb05fa
+    spec:
+      
+      serviceAccountName: release-name-pdn-node
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: pdn-node
+                  app.kubernetes.io/instance: release-name
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 11045
+        runAsUser: 11045
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        - name: 'copy-system-yaml'
+          image: releases-docker.jfrog.io/ubi9/ubi-minimal:9.2.691
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          command:
+          - '/bin/bash'
+          - '-c'
+          - >
+            echo "Copy system.yaml to /var/opt/jfrog/pdnnode/etc";
+            mkdir -p /var/opt/jfrog/pdnnode/etc;
+            cp -fv /tmp/etc/system.yaml /var/opt/jfrog/pdnnode/etc/system.yaml;
+            echo "Remove /var/opt/jfrog/pdnnode/lost+found folder if exists";
+            rm -rfv /var/opt/jfrog/pdnnode/lost+found
+          env:
+          volumeMounts:
+            - name: data
+              mountPath: "/var/opt/jfrog/pdnnode"
+            - name: systemyaml
+              mountPath: "/tmp/etc/system.yaml"
+              subPath: system.yaml
+      containers:
+        - name: pdn-node
+          image: releases-docker.jfrog.io/jfrog/pdn/node:1.9.1
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            {}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - NET_RAW
+            runAsNonRoot: true
+          env:
+            - name: JF_PDNNODE_JOINKEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-pdn-node
+                  key: pdn-join-key
+            - name: POD_LOCAL_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: JF_PDNNODE_SELFGRPCADDRESS
+              value: "$(POD_LOCAL_IP):8088"
+            - name: JF_PDNNODE_SELFHTTPADDRESS
+              value: "http://release-name-pdn-node:8089"
+            - name: JF_PDNNODE_PDNSERVERURL
+              value: "pdn-server:8095"
+            - name: JF_PDNNODE_CLIENTTLS
+              value: "false"
+          ports:
+            - name: secure-grpc
+              containerPort: 8088
+            - name: http-server
+              containerPort: 8089
+          volumeMounts:
+            - name: data
+              mountPath: /var/opt/jfrog/pdnnode
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -k -s --fail --max-time 5 http://localhost:8089/api/v1/system/readiness
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+            successThreshold: 1
+            
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -k -s --fail --max-time 5 http://localhost:8089/api/v1/system/liveness
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+            successThreshold: 1
+            
+      volumes:
+        - name: systemyaml
+          secret:
+            secretName: release-name-pdn-node-systemyaml
+        - name: data
+          emptyDir:
+            sizeLimit: 64Gi

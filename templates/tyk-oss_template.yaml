@@ -1,0 +1,443 @@
+---
+# Source: tyk-oss/charts/tyk-gateway/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secrets-release-name-tyk-gateway
+  labels:
+    app: secrets-data-release-name-tyk-gateway
+    chart: release-name-tyk-gateway
+    release: release-name
+    heritage: Helm
+type: Opaque
+stringData:
+  redisPass: ""
+  APISecret: "CHANGEME"
+---
+# Source: tyk-oss/templates/tyk-operator-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+    name: tyk-operator-conf
+type: Opaque
+stringData:
+    TYK_MODE: "ce"
+    TYK_AUTH: "CHANGEME"
+    TYK_URL: "http://gateway-svc-release-name-tyk-gateway.default.svc:8080"
+    TYK_ORG: "orgid"
+---
+# Source: tyk-oss/charts/tyk-gateway/templates/service-gw.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-svc-release-name-tyk-gateway
+  labels:
+    app: gateway-svc-release-name-tyk-gateway
+    chart: tyk-gateway-1.4.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: "http"
+  selector:
+    app: gateway-release-name-tyk-gateway
+    release: release-name
+---
+# Source: tyk-oss/charts/tyk-gateway/templates/deployment-gw-repset.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-release-name-tyk-gateway
+  labels:
+    app: gateway-release-name-tyk-gateway
+    chart: tyk-gateway-1.4.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  minReadySeconds: 5
+  strategy:
+    # indicate which strategy we want for rolling update
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: gateway-release-name-tyk-gateway
+      release: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/secret: c773f64b7ae725dbbbfeaba919fd18ab125b681f9866409da520928e2b43dae7
+      labels:
+        app: gateway-release-name-tyk-gateway
+        release: release-name        
+    spec:
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+      initContainers:
+      - name: "setup-directories"
+        image: "busybox:1.32"
+        command: ['sh','-c','mkdir -p apps middleware policies && touch policies/policies.json']
+        workingDir: /mnt/tyk-gateway
+        securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault      
+        volumeMounts:
+          - name: tyk-scratch
+            mountPath: /mnt/tyk-gateway
+      containers:
+      - name: gateway-tyk-gateway
+        image: "docker.tyk.io/tyk-gateway/tyk-gateway:v5.3.1"
+        imagePullPolicy: IfNotPresent
+        securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+        env:
+          - name: TYK_GW_LISTENPORT
+            value: "8080"
+          
+          - name: TYK_GW_OAS_VALIDATE_EXAMPLES
+            value: "false"
+          - name: TYK_GW_OAS_VALIDATE_SCHEMA_DEFAULTS
+            value: "false"
+          
+          # Redis TLS configurations            
+
+          # Legacy support for Redis Cluster driver. Driver dropped in v3.0.0.
+          - name: REDIGOCLUSTER_SHARDCOUNT
+            value: "128"
+          - name: TYK_GW_STORAGE_TYPE
+            value: "redis"
+          - name: TYK_GW_STORAGE_ADDRS
+            value: "redis.default.svc:6379"
+          
+          - name: TYK_GW_STORAGE_ENABLECLUSTER
+            value: "false"
+         
+
+          - name: TYK_GW_STORAGE_DATABASE
+            value: "0"
+          - name: TYK_GW_STORAGE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: secrets-release-name-tyk-gateway
+                key: redisPass
+          - name: TYK_GW_STORAGE_USESSL
+            value: "false"
+          - name: TYK_GW_SECRET
+            valueFrom:
+              secretKeyRef:
+                name:  secrets-release-name-tyk-gateway 
+                key: APISecret
+          - name: TYK_GW_NODESECRET
+            valueFrom:
+              secretKeyRef:
+                name:  secrets-release-name-tyk-gateway 
+                key: APISecret
+
+          - name: TYK_GW_POLICIES_ALLOWEXPLICITPOLICYID
+            value: "true"
+          - name: TYK_GW_HTTPSERVEROPTIONS_USESSL
+            value: "false"
+          - name: TYK_GW_TEMPLATEPATH
+            value: "/opt/tyk-gateway/templates"
+          - name: TYK_GW_TYKJSPATH
+            value: "/opt/tyk-gateway/js/tyk.js"
+          - name: TYK_GW_MIDDLEWAREPATH
+            value: "/mnt/tyk-gateway/middleware"
+          - name: TYK_GW_APPPATH
+            value: "/mnt/tyk-gateway/apps"
+          - name: TYK_GW_POLICIES_POLICYPATH
+            value: "/mnt/tyk-gateway/policies"
+          - name: TYK_GW_STORAGE_MAXIDLE
+            value: "1000"
+          - name: TYK_GW_ENABLENONTRANSACTIONALRATELIMITER
+            value: "true"
+          - name: TYK_GW_POLICIES_POLICYSOURCE
+            value: "file"
+
+        # Set this environment variable only if either analyticsEnabled or global.components.pump is set
+        
+
+          - name: TYK_GW_ANALYTICSCONFIG_TYPE
+            value: ""
+          - name: TYK_GW_POLICIES_POLICYRECORDNAME
+            value: "/mnt/tyk-gateway/policies/policies.json"
+          - name: TYK_GW_HASHKEYS
+            value: "true"
+          - name: TYK_GW_HASHKEYFUNCTION
+            value: "murmur128"
+          - name: TYK_GW_HTTPSERVEROPTIONS_ENABLEWEBSOCKETS
+            value: "true"
+          - name: TYK_GW_HTTPSERVEROPTIONS_MINVERSION
+            value: "771"
+          - name: TYK_GW_HTTPSERVEROPTIONS_CERTIFICATES
+            value: '[{"cert_file":"/etc/certs/tyk-gateway/tls.crt","domain_name":"*","key_file":"/etc/certs/tyk-gateway/tls.key"}]'
+          - name: TYK_GW_HTTPSERVEROPTIONS_SSLINSECURESKIPVERIFY
+            value: "false"
+          - name: TYK_GW_ALLOWINSECURECONFIGS
+            value: "true"
+          - name: TYK_GW_COPROCESSOPTIONS_ENABLECOPROCESS
+            value: "true"
+          - name: TYK_GW_GLOBALSESSIONLIFETIME
+            value: "100"
+          - name: TYK_GW_MAXIDLECONNSPERHOST
+            value: "500"
+          - name: TYK_GW_ENABLECUSTOMDOMAINS
+            value: "true"
+          - name: TYK_GW_PIDFILELOCATION
+            value: "/mnt/tyk-gateway/tyk.pid"
+          - name: TYK_GW_DBAPPCONFOPTIONS_NODEISSEGMENTED
+            value: "false"
+        workingDir: /opt/tyk-gateway
+        ports:
+        - containerPort: 8080
+        resources:
+            {}
+        volumeMounts:
+          
+
+          - name: tyk-scratch
+            mountPath: /mnt/tyk-gateway
+        livenessProbe:
+          httpGet:
+            scheme: "HTTP"
+            path: /hello
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 3
+          failureThreshold: 2
+        readinessProbe:
+          httpGet:
+            scheme: "HTTP"
+            path: /hello
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      securityContext:
+          fsGroup: 2000
+          runAsNonRoot: true
+          runAsUser: 1000
+      volumes:
+        - name: tyk-scratch
+          emptyDir: {}
+---
+# Source: tyk-oss/templates/tests/script-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-tyk-oss-map
+  annotations:
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook": test
+data:
+  oss-test.sh: |-
+    apk --no-cache add curl jq
+  
+    TYK_GW_ADDR="${TYK_GW_PROTO}://${TYK_GW_SVC}.${TYK_POD_NAMESPACE}.svc:${TYK_GW_LISTENPORT}"
+    TYK_GW_SECRET=${TYK_GW_SECRET}
+  
+    checkGateway() {
+      count=0
+      while [ $count -le 10 ]
+      do
+        healthCheck="$(curl -sS ${TYK_GW_ADDR}/hello --connect-timeout 5)"
+        result=$(echo "${healthCheck}" | jq -r '.details.redis.status')
+  
+        if [[ "${result}" != "pass" ]]
+        then
+          echo "Redis is not ready, healthCheck: ${healthCheck}."
+          echo "${healthCheck}"
+          count=$((count+1))
+          sleep 2
+          continue
+        fi
+  
+        break
+      done
+  
+      if [[ $count -ge 10 ]]
+      then
+        echo "All components required for the Tyk Gateway to work are NOT available"
+      else
+        echo "All components required for the Tyk Gateway to work are available"
+      fi
+    }
+  
+    createKeylessAPI() {
+        curl --fail-with-body -sS -H "x-tyk-authorization: ${TYK_GW_SECRET}" -H "Content-Type: application/json" -X POST \
+          -d '{
+            "name": "Hello-World",
+            "use_keyless": true,
+            "api_id": "random",
+            "version_data": {
+              "not_versioned": true,
+              "versions": {
+                "Default": {
+                  "name": "Default",
+                  "use_extended_paths": true
+                }
+              }
+            },
+            "proxy": {
+              "listen_path": "/hello-world/",
+              "target_url": "http://httpbin.org:8080/",
+              "strip_listen_path": true
+            },
+            "active": true
+        }' ${TYK_GW_ADDR}/tyk/apis
+  
+        if [[ $? -ne 0 ]]; then
+          echo "fail to create API"
+          exit 1
+        fi
+  
+        reloadGateway
+        echo "API is created successfully"
+    }
+  
+    createKey() {
+        curl --fail-with-body -X POST -H "x-tyk-authorization: ${TYK_GW_SECRET}" \
+          -s \
+          -H "Content-Type: application/json" \
+          -X POST \
+          -d '{
+            "allowance": 1000,
+            "rate": 1000,
+            "per": 1,
+            "expires": -1,
+            "quota_max": -1,
+            "org_id": "1",
+            "quota_renews": 1449051461,
+            "quota_remaining": -1,
+            "quota_renewal_rate": 60,
+            "access_rights": {
+              "random": {
+                "api_id": "random",
+                "api_name": "Hello-World",
+                "versions": ["Default"]
+              }
+            },
+            "meta_data": {}
+          }' ${TYK_GW_ADDR}/tyk/keys/create
+  
+        if [[ $? -ne 0 ]]; then
+          echo "failed to create Policy"
+          exit 1
+        fi
+  
+        echo "Policy is created successfully"
+  
+        reloadGateway
+    }
+  
+    reloadGateway() {
+      curl --fail-with-body -H "x-tyk-authorization: ${TYK_GW_SECRET}" -s ${TYK_GW_ADDR}/tyk/reload/group
+  
+      if [[ $? -ne 0 ]]; then
+        echo "failed to reload Gateway"
+        exit 1
+      fi
+  
+      echo "Tyk Gateway is reloaded successfully"
+    }
+  
+    clean() {
+      count=0
+      while [ $count -le 10 ]
+      do
+        echo "Cleaning system, attempt: $count"
+        curl --fail-with-body -X DELETE -H "x-tyk-authorization: ${TYK_GW_SECRET}" -s ${TYK_GW_ADDR}/tyk/apis/random
+  
+        if [[ $? -ne 0 ]]; then
+          echo "failed to delete API"
+        fi
+  
+        count=$((count+1))
+  
+        sleep 2
+        reloadGateway
+      done
+  
+      echo "API deleted successfully"
+    }
+  
+    main() {
+      checkGateway
+      createKeylessAPI
+      createKey
+      clean
+      echo "Tests passed"
+    }
+  
+    main
+---
+# Source: tyk-oss/templates/tests/oss-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-tyk-oss-test-tyk-oss"
+  labels:
+    chart: tyk-oss-1.4.0
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: health-check-container
+      image: alpine:3.17
+      command:
+        - /bin/sh
+        - -c
+        - /tests/oss-test.sh
+      volumeMounts:
+        - mountPath: "/tests"
+          name: test-tyk-oss
+      env:
+        - name: TYK_GW_PROTO
+          value: http
+        - name: TYK_GW_SVC
+          value: gateway-svc-release-name-tyk-oss-tyk-gateway
+        - name: TYK_GW_LISTENPORT
+          value: "8080"
+        - name: TYK_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: TYK_GW_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: secrets-release-name-tyk-oss-tyk-gateway
+              key: APISecret
+  volumes:
+    - name: test-tyk-oss
+      configMap:
+        name: test-tyk-oss-map
+        defaultMode: 0777

@@ -1,0 +1,197 @@
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-ambassador
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: 'release-name-ambassador-config'
+data:
+  exporterConfiguration: ''
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: release-name-ambassador
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups: [""]
+    resources:
+    - services
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+    - configmaps
+    verbs: ["create", "update", "patch", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+    - secrets
+    verbs: ["get", "list", "watch"]
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-ambassador
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-ambassador
+subjects:
+  - name: release-name-ambassador
+    namespace: "default"
+    kind: ServiceAccount
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/admin-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ambassador-admin
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8877
+      targetPort: admin
+      protocol: TCP
+      name: admin
+  selector:
+    app: ambassador
+    release: release-name
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ambassador
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app: ambassador
+    release: release-name
+---
+# Source: jx-app-ambassador/charts/ambassador/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-ambassador
+  labels:
+    app: ambassador
+    chart: ambassador-0.40.1
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ambassador
+      release: release-name
+  template:
+    metadata:
+      labels:
+        service: ambassador
+        app: ambassador
+        release: release-name
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+    spec:
+      serviceAccountName: release-name-ambassador
+      volumes:
+      - name: stats-exporter-mapping-config
+        configMap:
+          name: 'release-name-ambassador-config'
+          items:
+          - key: exporterConfiguration
+            path: mapping-config.yaml
+      containers:
+        - name: statsd-sink
+          image: "prom/statsd-exporter:v0.6.0"
+          ports:
+          - name: metrics
+            containerPort: 9102
+          - name: listener
+            containerPort: 8125
+          args: ["-statsd.listen-address=:8125", "-statsd.mapping-config=/statsd-exporter/mapping-config.yaml"]
+          volumeMounts:
+          - name: stats-exporter-mapping-config
+            mountPath: /statsd-exporter/
+            readOnly: true
+        - name: ambassador
+          image: "quay.io/datawire/ambassador:0.40.1"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+            - name: admin
+              containerPort: 8877
+          env:
+          - name: AMBASSADOR_ID
+            value: "default"
+          - name: AMBASSADOR_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          livenessProbe:
+            httpGet:
+              path: /ambassador/v0/check_alive
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /ambassador/v0/check_ready
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 3
+          resources:
+            {}
+---
+# Source: jx-app-ambassador/templates/app.yaml
+apiVersion: jenkins.io/v1
+kind: App
+metadata:
+  name: release-name-jx-app-ambassador
+  labels:
+    chart: "jx-app-ambassador-0.0.1"
+spec:
+  exposedServices:

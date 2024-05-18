@@ -1,0 +1,362 @@
+---
+# Source: cosmo-traefik/charts/traefik/templates/rbac/serviceaccount.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: traefik
+  namespace: cosmo-system
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+---
+# Source: cosmo-traefik/charts/traefik/templates/extra-objects.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: traefik-dashboard-auth-secret
+  namespace: cosmo-system
+stringData:
+  password: adminadmin
+  username: admin
+type: kubernetes.io/basic-auth
+---
+# Source: cosmo-traefik/templates/cosmo-auth-middleware.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cosmo-auth-env
+  namespace: "default"
+stringData:
+  COOKIE_DOMAIN: ""
+  COOKIE_HASHKEY: "U5zHfAWTwxKaBXHAkI9VkDDe80t6Mdq6RMF6HjW1oyjlNRqiMazjoZZHDbMXAng5"
+  COOKIE_BLOCKKEY: "rDyzO83t3jbURHS0GxNCLMBjBbwDD7lM"
+  COOKIE_SESSION_NAME: "NuMIDKgcrs"
+  SIGNIN_URL: ""
+---
+# Source: cosmo-traefik/charts/traefik/templates/rbac/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: traefik-default
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingressclasses
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - endpoints
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+  - apiGroups:
+      - traefik.io
+      - traefik.containo.us
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - tlsoptions
+      - tlsstores
+      - traefikservices
+      - serverstransports
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: cosmo-traefik/charts/traefik/templates/rbac/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: traefik-default
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-default
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: cosmo-system
+---
+# Source: cosmo-traefik/charts/traefik/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: cosmo-system
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+  ipFamilyPolicy: PreferDualStack
+  ports:
+  - port: 80
+    name: "web"
+    targetPort: web
+    protocol: TCP
+  - port: 443
+    name: "websecure"
+    targetPort: websecure
+    protocol: TCP
+---
+# Source: cosmo-traefik/charts/traefik/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: cosmo-system
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+      app.kubernetes.io/instance: release-name-default
+  strategy: 
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  minReadySeconds: 0
+  template: 
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9100"
+      labels:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/instance: release-name-default
+        helm.sh/chart: traefik-23.0.1
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: traefik
+      terminationGracePeriodSeconds: 60
+      hostNetwork: false
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -r /plugins-local/* /local-plugins/
+        image: ghcr.io/cosmo-workspace/cosmo-traefik-plugins:v0.9.1
+        imagePullPolicy: Always
+        name: copy-plugins
+        volumeMounts:
+        - mountPath: /local-plugins
+          name: local-plugins
+      containers:
+      - image: docker.io/traefik:v2.10.1
+        imagePullPolicy: IfNotPresent
+        name: traefik
+        resources:
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 9000
+            scheme: HTTP
+          failureThreshold: 1
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 9000
+            scheme: HTTP
+          failureThreshold: 3
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        lifecycle:
+        ports:
+        - name: "metrics"
+          containerPort: 9100
+          protocol: "TCP"
+        - name: "traefik"
+          containerPort: 9000
+          protocol: "TCP"
+        - name: "web"
+          containerPort: 8000
+          protocol: "TCP"
+        - name: "websecure"
+          containerPort: 8443
+          protocol: "TCP"
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: tmp
+            mountPath: /tmp
+          - name: plugins
+            mountPath: "/plugins-storage"
+          - mountPath: /plugins-local
+            name: local-plugins
+        args:
+          - "--global.sendanonymoususage"
+          - "--serversTransport.insecureSkipVerify=true"
+          - "--entrypoints.metrics.address=:9100/tcp"
+          - "--entrypoints.traefik.address=:9000/tcp"
+          - "--entrypoints.web.address=:8000/tcp"
+          - "--entrypoints.websecure.address=:8443/tcp"
+          - "--api.dashboard=true"
+          - "--ping=true"
+          - "--metrics.prometheus=true"
+          - "--metrics.prometheus.entrypoint=metrics"
+          - "--providers.kubernetescrd"
+          - "--providers.kubernetescrd.allowCrossNamespace=true"
+          - "--providers.kubernetesingress"
+          - "--providers.kubernetesingress.ingressendpoint.publishedservice=default/traefik"
+          - "--entrypoints.web.forwardedHeaders.insecure"
+          - "--entrypoints.websecure.http.tls=true"
+          - "--entrypoints.websecure.forwardedHeaders.insecure"
+          - "--log.level=DEBUG"
+          - "--accesslog=true"
+          - "--accesslog.fields.defaultmode=keep"
+          - "--accesslog.fields.headers.defaultmode=drop"
+          - "--log.level=DEBUG"
+          - "--experimental.localPlugins.cosmoauth.modulename=github.com/cosmo-workspace/cosmoauth"
+        envFrom:
+          - secretRef:
+              name: cosmo-auth-env
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - emptyDir: {}
+          name: local-plugins
+        - name: plugins
+          emptyDir: {}
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+      priorityClassName: system-cluster-critical
+      securityContext:
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+---
+# Source: cosmo-traefik/charts/traefik/templates/ingressclass.yaml
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "false"
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+  name: traefik
+spec:
+  controller: traefik.io/ingress-controller
+---
+# Source: cosmo-traefik/charts/traefik/templates/dashboard-ingressroute.yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard
+  namespace: cosmo-system
+  annotations:
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: release-name-default
+    helm.sh/chart: traefik-23.0.1
+    app.kubernetes.io/managed-by: Helm
+spec:
+  entryPoints:
+  - web
+  - websecure
+  - traefik
+  routes:
+  - match: Host(`traefik-dashboard-xxx.domain`)
+    kind: Rule
+    services:
+    - name: api@internal
+      kind: TraefikService
+    middlewares:
+      - name: traefik-dashboard-auth
+---
+# Source: cosmo-traefik/charts/traefik/templates/extra-objects.yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: traefik-dashboard-auth
+  namespace: cosmo-system
+spec:
+  basicAuth:
+    secret: traefik-dashboard-auth-secret
+---
+# Source: cosmo-traefik/templates/cosmo-auth-middleware.yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: cosmo-auth
+  namespace: "default"
+spec:
+  plugin:
+    cosmoauth:
+      logLevel: DEBUG
+      cookieSessionName: "${COOKIE_SESSION_NAME}"
+      cookieDomain: "${COOKIE_DOMAIN}"
+      cookieHashKey: "${COOKIE_HASHKEY}"
+      cookieBlockKey: "${COOKIE_BLOCKKEY}"
+      signInUrl: "${SIGNIN_URL}"

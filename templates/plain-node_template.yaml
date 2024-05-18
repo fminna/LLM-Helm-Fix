@@ -1,0 +1,138 @@
+---
+# Source: plain-node/templates/plain-node-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plain-node-x
+spec:
+  type: ClusterIP
+  # We want all pods to have their addresses published for the sake of the
+  # other testnet pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  selector:
+    app: plain-node-x
+  ports:
+  - name: tcp-p2p
+    port: 10909
+    targetPort: external-port
+---
+# Source: plain-node/templates/plain-node.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plain-node-x
+  labels:
+    app: plain-node-x
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plain-node-x
+  template:
+    metadata:
+      labels:
+        app: plain-node-x
+        testnet: testnet
+        role: seed
+        class: "plain-node"
+        version: 1.2.0b
+        syncStatus: INIT
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: "10001"
+        prometheus.io/path: '/metrics'
+    spec:
+      initContainers:
+      containers:
+      - name: mina
+        resources:
+          limits:
+          requests:
+            memory: 12.0Gi
+            cpu: 6
+        image: gcr.io/o1labs-192920/mina-daemon:1.2.0beta8-5b35b27-devnet
+        
+        args: [ "daemon",
+          "-log-level", "Debug",
+          "-log-json",
+          "-log-snark-work-gossip", "true",
+          "-config-directory", "/root/.mina-config",
+          "-client-port", "$(DAEMON_CLIENT_PORT)",
+          "-rest-port", "$(DAEMON_REST_PORT)",
+          "-external-port", "$(DAEMON_EXTERNAL_PORT)",
+          "-metrics-port", "$(DAEMON_METRICS_PORT)",
+          "-enable-peer-exchange", "true",
+          "-log-precomputed-blocks", "true",
+          "--max-connections", "200",
+          "-peer", "/ip4/35.185.66.37/tcp/10105/p2p/12D3KooWQ7Pz3SPizarzx9ZhCJ6jNmQ2iDPgHQxVzRzqYU2SgRSd",
+          "-peer", "/ip4/35.237.214.144/tcp/10120/p2p/12D3KooWGtjWnCcvkaSEbKuNbPivEogxqtLWcsJiQtURydptvrsA",
+          "-generate-genesis-proof", "true",
+        ]
+        env:
+        - name: "RAYON_NUM_THREADS"
+          value: "6"
+        - name: DAEMON_REST_PORT
+          value: "3085"
+        - name: DAEMON_CLIENT_PORT
+          value: "8301"
+        - name: DAEMON_METRICS_PORT
+          value: "10001"
+        - name: MINA_CLIENT_TRUSTLIST
+          value: "10.0.0.0/8"
+        - name: GCLOUD_KEYFILE
+          value: "/root/gcloud/keyfile.json"
+        - name: NETWORK_NAME
+          value: testnet
+        - name: GCLOUD_BLOCK_UPLOAD_BUCKET
+          value: "mina_network_block_data"
+        - name: DAEMON_EXTERNAL_PORT
+          value: "10909"
+        ports:
+        - name: client-port
+          protocol: TCP
+          containerPort: 8301
+        - name: graphql-port
+          protocol: TCP
+          containerPort: 3085
+        - name: metrics-port
+          protocol: TCP
+          containerPort: 10001
+        - name: external-port
+          protocol: TCP
+          containerPort: 10909
+          hostPort:   
+        
+        livenessProbe:
+          tcpSocket:
+            port: external-port  
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command: [
+              "/bin/bash",
+              "-c",
+              "source /healthcheck/utilities.sh && isDaemonSynced && peerCountGreaterThan 0 && updateSyncStatusLabel plain-node-x"
+            ]
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: config-dir
+          mountPath: "/root/.mina-config/"
+      volumes:
+      - name: config-dir
+        emptyDir: {}
+      - name: actual-libp2p
+        emptyDir: {}      
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: "cloud.google.com/gke-spot"
+                  operator: NotIn
+                  values: ["true"]
+---
+# Source: plain-node/templates/plain-node.yaml
+---

@@ -1,0 +1,105 @@
+---
+# Source: haven-complinacy-dashboard/templates/serviceaccount.yaml
+# A service account is needed to get the permissions.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-admin
+  namespace: default
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"release-name-dashboard"}}'
+---
+# Source: haven-complinacy-dashboard/templates/clusterrolebinding.yaml
+# The permissions for the service account.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: release-name-admin
+    namespace: default
+---
+# Source: haven-complinacy-dashboard/templates/service.yaml
+# The service will route to the deployment (pointing to the OAuth proxy).
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: release-name-dashboard
+  annotations:
+    service.alpha.openshift.io/serving-cert-secret-name: proxy-tls
+spec:
+  ports:
+    - name: release-name-dashboard
+      port: 443
+      targetPort: 8443
+  selector:
+    app: release-name-dashboard
+---
+# Source: haven-complinacy-dashboard/templates/deployment.yaml
+# The deployment will run the application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default
+  name: release-name-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-dashboard
+  template:
+    metadata:
+      labels:
+        app: release-name-dashboard
+    spec:
+      serviceAccountName: release-name-admin # Needed for the permissions
+      volumes:
+        - name: proxy-tls
+          secret:
+            secretName: proxy-tls
+      containers:
+
+        # The first container is the OAuth Proxy
+        - name: oauth-proxy
+          image: docker.io/openshift/oauth-proxy:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8443
+              name: public
+          args:
+            - '--https-address=:8443'
+            - '--provider=openshift'
+            - '--openshift-service-account=release-name-admin'
+            - '--upstream=http://localhost:8442'
+            - '--tls-cert=/etc/tls/private/tls.crt'
+            - '--tls-key=/etc/tls/private/tls.key'
+            - '--cookie-secret=RUNqZVlmTGxUazhUeW1LdQ==' #random: python -c 'import os,base64; print base64.urlsafe_b64encode(os.urandom(16))'
+          #          - --openshift-sar='{"namespace":"kube-system","services","verb":"list"}'
+          volumeMounts:
+            - mountPath: /etc/tls/private
+              name: proxy-tls
+
+          # The second container is the application
+        - name: app
+          image: docker.io/j0113/haven-compliancy-dashboard:1.3
+          imagePullPolicy: IfNotPresent
+---
+# Source: haven-complinacy-dashboard/templates/route.yaml
+# Make the application accessible
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  namespace: default
+  name: release-name-dashboard
+spec:
+  to:
+    kind: Service
+    name: release-name-dashboard
+  tls:
+    termination: Reencrypt

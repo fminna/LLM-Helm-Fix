@@ -1,0 +1,251 @@
+---
+# Source: knative-build/templates/build-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: build-controller
+---
+# Source: knative-build/templates/helm-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helm
+secrets:
+- name: knative-basic-user-pass
+---
+# Source: knative-build/templates/build-controller-cm.yaml
+apiVersion: v1
+data:
+  loglevel.controller: info
+  loglevel.creds-init: info
+  loglevel.git-init: info
+  loglevel.webhook: info
+  zap-logger-config: |
+    {
+      "level": "info",
+      "development": false,
+      "sampling": {
+        "initial": 100,
+        "thereafter": 100
+      },
+      "outputPaths": ["stdout"],
+      "errorOutputPaths": ["stderr"],
+      "encoding": "json",
+      "encoderConfig": {
+        "timeKey": "",
+        "levelKey": "level",
+        "nameKey": "logger",
+        "callerKey": "caller",
+        "messageKey": "msg",
+        "stacktraceKey": "stacktrace",
+        "lineEnding": "",
+        "levelEncoder": "",
+        "timeEncoder": "",
+        "durationEncoder": "",
+        "callerEncoder": ""
+      }
+    }
+kind: ConfigMap
+metadata:
+  name: config-logging
+---
+# Source: knative-build/templates/build-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: knative-build-admin
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  - secrets
+  - events
+  - serviceaccounts
+  - configmaps
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - build.knative.dev
+  resources:
+  - builds
+  - buildtemplates
+  - clusterbuildtemplates
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - caching.internal.knative.dev
+  resources:
+  - images
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - deletecollection
+  - patch
+  - watch
+---
+# Source: knative-build/templates/build-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: build-controller-admin-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: knative-build-admin
+subjects:
+- kind: ServiceAccount
+  name: build-controller
+  namespace: default
+---
+# Source: knative-build/templates/helm-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: helm-role-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: helm
+  namespace: default
+---
+# Source: knative-build/templates/build-controller-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: build-controller
+  name: build-controller
+spec:
+  ports:
+  - name: metrics
+    port: 9090
+    protocol: TCP
+    targetPort: 9090
+  selector:
+    app: build-controller
+---
+# Source: knative-build/templates/build-controller-deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: build-controller
+  labels:
+    app: build-controller
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: build-controller
+    spec:
+      serviceAccountName: build-controller
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: build-controller
+        image: rawlingsj/build-controller:upstream3
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SYSTEM_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        args:
+          - -logtostderr
+          - -stderrthreshold
+          - INFO
+          - -creds-image
+          - gcr.io/knative-releases/github.com/knative/build/cmd/creds-init@sha256:7492c3a729101066d959281182a1322a4f5e273f2335f3ea47ee7f049cde424c
+          - -git-image
+          - gcr.io/knative-releases/github.com/knative/build/cmd/git-init@sha256:6186bee422a984b5bc4e5f794c24fc33b430af8e6a8541751a6fde7c4776c079
+          - -nop-image
+          - gcr.io/knative-releases/github.com/knative/build/cmd/nop@sha256:1acff01d02c30e9a5b2911a06d65b451d62d6ea70091e87032d9e53f356975f7
+        resources:
+          cpu: 100m
+          limits: null
+          memory: 128Mi
+          requests: null
+        volumeMounts:
+        - mountPath: /etc/config-logging
+          name: config-logging
+      volumes:
+      - configMap:
+          name: config-logging
+        name: config-logging
+---
+# Source: knative-build/templates/image-git-init.yaml
+apiVersion: caching.internal.knative.dev/v1alpha1
+kind: Image
+metadata:
+  name: git-init
+spec:
+  image: gcr.io/knative-releases/github.com/knative/build/cmd/git-init@sha256:6186bee422a984b5bc4e5f794c24fc33b430af8e6a8541751a6fde7c4776c079
+---
+# Source: knative-build/templates/image-nop.yaml
+apiVersion: caching.internal.knative.dev/v1alpha1
+kind: Image
+metadata:
+  name: nop
+spec:
+  image: gcr.io/knative-releases/github.com/knative/build/cmd/nop@sha256:1acff01d02c30e9a5b2911a06d65b451d62d6ea70091e87032d9e53f356975f7

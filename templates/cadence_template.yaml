@@ -1,0 +1,1190 @@
+---
+# Source: cadence/templates/server-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-cadence-default-store
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/part-of: cadence
+type: Opaque
+data:
+  password: ""
+---
+# Source: cadence/templates/server-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-cadence-visibility-store
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/part-of: cadence
+type: Opaque
+data:
+  password: ""
+---
+# Source: cadence/templates/server-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cadence
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/part-of: cadence
+data:
+  config_template.yaml: |-
+    log:
+      stdout: true
+      level: "debug,info"
+      levelKey: "level"
+
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      numHistoryShards: 512
+      datastores:
+        default:
+          nosql:
+            pluginName: cassandra
+            hosts: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local,
+            port: 9042
+            password: {{ .Env.CADENCE_STORE_PASSWORD }}
+            keyspace: cadence
+            user: ""
+        visibility:
+          nosql:
+            pluginName: cassandra
+            hosts: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local,
+            port: 9042
+            password: {{ .Env.CADENCE_VISIBILITY_STORE_PASSWORD }}
+            keyspace: cadence_visibility
+            user: ""
+
+    ringpop:
+      name: cadence
+      bootstrapMode: dns
+      bootstrapHosts:
+        - release-name-cadence-frontend-headless:7833
+        - release-name-cadence-frontend-headless:7933
+        - release-name-cadence-history-headless:7834
+        - release-name-cadence-history-headless:7934
+        - release-name-cadence-matching-headless:7835
+        - release-name-cadence-matching-headless:7935
+        - release-name-cadence-worker-headless:7939
+      maxJoinDuration: 30s
+
+    services:
+      frontend:
+        rpc:
+          grpcPort: 7833
+          port: 7933
+          bindOnIP: {{ default .Env.POD_IP "0.0.0.0" }}
+        metrics:
+          tags:
+            type: frontend
+          prometheus:
+            timerType: histogram
+            listenAddress: "0.0.0.0:9090"
+
+      history:
+        rpc:
+          grpcPort: 7834
+          port: 7934
+          bindOnIP: {{ default .Env.POD_IP "0.0.0.0" }}
+        metrics:
+          tags:
+            type: history
+          prometheus:
+            timerType: histogram
+            listenAddress: "0.0.0.0:9090"
+
+      matching:
+        rpc:
+          grpcPort: 7835
+          port: 7935
+          bindOnIP: {{ default .Env.POD_IP "0.0.0.0" }}
+        metrics:
+          tags:
+            type: matching
+          prometheus:
+            timerType: histogram
+            listenAddress: "0.0.0.0:9090"
+
+      worker:
+        rpc:
+          port: 7939
+          bindOnIP: {{ default .Env.POD_IP "0.0.0.0" }}
+        metrics:
+          tags:
+            type: worker
+          prometheus:
+            timerType: histogram
+            listenAddress: "0.0.0.0:9090"
+
+    clusterGroupMetadata:
+      enableGlobalDomain: true
+      failoverVersionIncrement: 100
+      primaryClusterName: cluster-0
+      currentClusterName: cluster-0
+      clusterGroup:
+        cluster-0:
+          enabled: true
+          initialFailoverVersion: 0
+          rpcName: "release-name-cadence-frontend"
+          rpcAddress: "release-name-cadence-frontend:7833"
+          rpcTransport: "grpc"
+
+    dcRedirectionPolicy:
+      policy: {{ default .Env.DC_REDIRECT_POLICY "selected-apis-forwarding" }}
+      toDC: ""
+
+    archival:
+      history:
+        status: "disabled"
+      visibility:
+        status: "disabled"
+
+    dynamicconfig:
+      client: filebased
+      filebased:
+        filepath: "/etc/cadence/config/dynamicconfig/config.yaml"
+        pollInterval: "10s"
+
+  dynamic_config.yaml: |-
+            {}
+---
+# Source: cadence/charts/cassandra/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-0.13.4
+    release: release-name
+    heritage: Helm
+spec:
+  clusterIP: None
+  type: ClusterIP
+  ports:
+  - name: intra
+    port: 7000
+    targetPort: 7000
+  - name: tls
+    port: 7001
+    targetPort: 7001
+  - name: jmx
+    port: 7199
+    targetPort: 7199
+  - name: cql
+    port: 9042
+    targetPort: 9042
+  - name: thrift
+    port: 9160
+    targetPort: 9160
+  selector:
+    app: cassandra
+    release: release-name
+---
+# Source: cadence/templates/server-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-frontend
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: cadence
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7933
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+---
+# Source: cadence/templates/server-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-frontend-headless
+
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: cadence
+    app.kubernetes.io/headless: 'true'
+  annotations:
+    # Use this annotation in addition to the actual field below because the
+    # annotation will stop being respected soon but the field is broken in
+    # some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 7933
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+---
+# Source: cadence/templates/server-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-matching-headless
+
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: matching
+    app.kubernetes.io/part-of: cadence
+    app.kubernetes.io/headless: 'true'
+  annotations:
+    # Use this annotation in addition to the actual field below because the
+    # annotation will stop being respected soon but the field is broken in
+    # some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 7935
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: matching
+---
+# Source: cadence/templates/server-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-history-headless
+
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: history
+    app.kubernetes.io/part-of: cadence
+    app.kubernetes.io/headless: 'true'
+  annotations:
+    # Use this annotation in addition to the actual field below because the
+    # annotation will stop being respected soon but the field is broken in
+    # some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 7934
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: history
+---
+# Source: cadence/templates/server-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-worker-headless
+
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: cadence
+    app.kubernetes.io/headless: 'true'
+  annotations:
+    # Use this annotation in addition to the actual field below because the
+    # annotation will stop being respected soon but the field is broken in
+    # some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 7939
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: worker
+---
+# Source: cadence/templates/web-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cadence-web
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: cadence
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: cadence
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: web
+---
+# Source: cadence/templates/server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cadence-frontend
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: cadence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: cadence
+      annotations:
+        checksum/config: a7e50fe08cbb65687ce22ab7e6e784f005ce0ef087b1ea6fe175929c9742b162
+    spec:
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+        - name: check-cassandra-cadence-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence$; do echo waiting for default keyspace to become ready; sleep 1; done;']
+        - name: check-cassandra-visibility-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence_visibility$; do echo waiting for visibility keyspace to become ready; sleep 1; done;']
+      containers:
+        - name: cadence-frontend
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICES
+              value: frontend
+            - name: CADENCE_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-default-store
+                  key: password
+            - name: CADENCE_VISIBILITY_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-visibility-store
+                  key: password
+          ports:
+            - name: rpc
+              containerPort: 7933
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 150
+            tcpSocket:
+              port: rpc
+          readinessProbe:
+            initialDelaySeconds: 10
+            tcpSocket:
+              port: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cadence/config/config_template.yaml
+              subPath: config_template.yaml
+            - name: config
+              mountPath: /etc/cadence/config/dynamicconfig/config.yaml
+              subPath: dynamic_config.yaml
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-cadence
+---
+# Source: cadence/templates/server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cadence-history
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: history
+    app.kubernetes.io/part-of: cadence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: history
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: history
+        app.kubernetes.io/part-of: cadence
+      annotations:
+        checksum/config: a7e50fe08cbb65687ce22ab7e6e784f005ce0ef087b1ea6fe175929c9742b162
+    spec:
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+        - name: check-cassandra-cadence-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence$; do echo waiting for default keyspace to become ready; sleep 1; done;']
+        - name: check-cassandra-visibility-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence_visibility$; do echo waiting for visibility keyspace to become ready; sleep 1; done;']
+      containers:
+        - name: cadence-history
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICES
+              value: history
+            - name: CADENCE_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-default-store
+                  key: password
+            - name: CADENCE_VISIBILITY_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-visibility-store
+                  key: password
+          ports:
+            - name: rpc
+              containerPort: 7934
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 150
+            tcpSocket:
+              port: rpc
+          readinessProbe:
+            initialDelaySeconds: 10
+            tcpSocket:
+              port: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cadence/config/config_template.yaml
+              subPath: config_template.yaml
+            - name: config
+              mountPath: /etc/cadence/config/dynamicconfig/config.yaml
+              subPath: dynamic_config.yaml
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-cadence
+---
+# Source: cadence/templates/server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cadence-matching
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: matching
+    app.kubernetes.io/part-of: cadence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: matching
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: matching
+        app.kubernetes.io/part-of: cadence
+      annotations:
+        checksum/config: a7e50fe08cbb65687ce22ab7e6e784f005ce0ef087b1ea6fe175929c9742b162
+    spec:
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+        - name: check-cassandra-cadence-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence$; do echo waiting for default keyspace to become ready; sleep 1; done;']
+        - name: check-cassandra-visibility-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence_visibility$; do echo waiting for visibility keyspace to become ready; sleep 1; done;']
+      containers:
+        - name: cadence-matching
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICES
+              value: matching
+            - name: CADENCE_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-default-store
+                  key: password
+            - name: CADENCE_VISIBILITY_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-visibility-store
+                  key: password
+          ports:
+            - name: rpc
+              containerPort: 7935
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 150
+            tcpSocket:
+              port: rpc
+          readinessProbe:
+            initialDelaySeconds: 10
+            tcpSocket:
+              port: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cadence/config/config_template.yaml
+              subPath: config_template.yaml
+            - name: config
+              mountPath: /etc/cadence/config/dynamicconfig/config.yaml
+              subPath: dynamic_config.yaml
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-cadence
+---
+# Source: cadence/templates/server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cadence-worker
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: cadence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: cadence
+      annotations:
+        checksum/config: a7e50fe08cbb65687ce22ab7e6e784f005ce0ef087b1ea6fe175929c9742b162
+    spec:
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+        - name: check-cassandra-cadence-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence$; do echo waiting for default keyspace to become ready; sleep 1; done;']
+        - name: check-cassandra-visibility-schema
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SELECT keyspace_name FROM system_schema.keyspaces" | grep cadence_visibility$; do echo waiting for visibility keyspace to become ready; sleep 1; done;']
+      containers:
+        - name: cadence-worker
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICES
+              value: worker
+            - name: CADENCE_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-default-store
+                  key: password
+            - name: CADENCE_VISIBILITY_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-cadence-visibility-store
+                  key: password
+          ports:
+            - name: rpc
+              containerPort: 7939
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 150
+            tcpSocket:
+              port: rpc
+          readinessProbe:
+            initialDelaySeconds: 10
+            tcpSocket:
+              port: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cadence/config/config_template.yaml
+              subPath: config_template.yaml
+            - name: config
+              mountPath: /etc/cadence/config/dynamicconfig/config.yaml
+              subPath: dynamic_config.yaml
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-cadence
+---
+# Source: cadence/templates/web-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cadence-web
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: cadence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: cadence
+    spec:
+      securityContext:
+        {}
+      initContainers:
+        - name: check-frontend
+          securityContext:
+            {}
+          image: "ghcr.io/banzaicloud/tcheck:latest"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until tcheck --peer release-name-cadence-frontend:7933 --serviceName cadence-frontend; do echo waiting for frontend; sleep 2; done;']
+      containers:
+        - name: cadence-web
+          securityContext:
+            {}
+          image: "ubercadence/web:v3.32.0"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: CADENCE_TCHANNEL_PEERS
+            value: "release-name-cadence-frontend:7933"
+
+          ports:
+            - name: http
+              containerPort: 8088
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+---
+# Source: cadence/charts/cassandra/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-0.13.4
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: cassandra
+      release: release-name
+  serviceName: release-name-cassandra
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        app: cassandra
+        release: release-name
+    spec:
+      hostNetwork: false
+      containers:
+      - name: release-name-cassandra
+        image: "cassandra:3.11.3"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          {}
+        env:
+        - name: CASSANDRA_SEEDS
+          value: "release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local,release-name-cassandra-1.release-name-cassandra.default.svc.cluster.local"
+        - name: MAX_HEAP_SIZE
+          value: "2048M"
+        - name: HEAP_NEWSIZE
+          value: "512M"
+        - name: CASSANDRA_ENDPOINT_SNITCH
+          value: "SimpleSnitch"
+        - name: CASSANDRA_CLUSTER_NAME
+          value: "cassandra"
+        - name: CASSANDRA_DC
+          value: "DC1"
+        - name: CASSANDRA_RACK
+          value: "RAC1"
+        - name: CASSANDRA_START_RPC
+          value: "false"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        livenessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status" ]
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status | grep -E \"^UN\\s+${POD_IP}\"" ]
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        ports:
+        - name: intra
+          containerPort: 7000
+        - name: tls
+          containerPort: 7001
+        - name: jmx
+          containerPort: 7199
+        - name: cql
+          containerPort: 9042
+        - name: thrift
+          containerPort: 9160
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/cassandra
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: cassandra
+        release: release-name
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "10Gi"
+---
+# Source: cadence/templates/server-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-cadence-schema-setup
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: cadence
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  backoffLimit: 100
+  template:
+    metadata:
+      name: release-name-cadence-schema-setup
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: cadence
+    spec:
+      restartPolicy: "OnFailure"
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          image: "cassandra:3.11.3"
+          securityContext:
+            {}
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+        - name: create-default-store
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          # args: ["cadence-cassandra-tool", "create", "-k", "cadence"]
+          args: ['sh', '-c', 'cadence-cassandra-tool create -k cadence']
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence
+        - name: create-visibility-store
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          # args: ["cadence-cassandra-tool", "create", "-k", "cadence_visibility"]
+          args: ['sh', '-c', 'cadence-cassandra-tool create -k cadence_visibility']
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence_visibility
+      containers:
+        - name: default-schema
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          args: ["cadence-cassandra-tool", "setup-schema", "-v", "0.0"]
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence
+        - name: visibility-schema
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          args: ["cadence-cassandra-tool", "setup-schema", "-v", "0.0"]
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence_visibility
+---
+# Source: cadence/templates/server-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-cadence-schema-update
+  labels:
+    app.kubernetes.io/name: cadence
+    helm.sh/chart: cadence-0.24.2
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: 0.24.0
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: cadence
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  backoffLimit: 100
+  template:
+    metadata:
+      name: release-name-cadence-schema-update
+      labels:
+        app.kubernetes.io/name: cadence
+        helm.sh/chart: cadence-0.24.2
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: 0.24.0
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: cadence
+    spec:
+      restartPolicy: "OnFailure"
+      securityContext:
+        {}
+      initContainers:
+        - name: check-cassandra-service
+          securityContext:
+            {}
+          image: busybox
+          command: ['sh', '-c', 'until nslookup release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local; do echo waiting for cassandra service; sleep 1; done;']
+        - name: check-cassandra
+          securityContext:
+            {}
+          image: "cassandra:3.11.3"
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until cqlsh release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local 9042 -e "SHOW VERSION"; do echo waiting for cassandra to start; sleep 1; done;']
+      containers:
+        - name: default-schema
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          # args: ["cadence-cassandra-tool", "update-schema", "-d", "/etc/cadence/schema/cassandra/cadence/versioned"]
+          args: ['sh', '-c', 'cadence-cassandra-tool update-schema -d /etc/cadence/schema/cassandra/cadence/versioned']
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence
+        - name: visibility-schema
+          securityContext:
+            {}
+          image: "ubercadence/server:0.24.0"
+          imagePullPolicy: IfNotPresent
+          # args: ["cadence-cassandra-tool", "update-schema", "-d", "/etc/cadence/schema/cassandra/visibility/versioned"]
+          args: ['sh', '-c', 'cadence-cassandra-tool update-schema -d /etc/cadence/schema/cassandra/visibility/versioned']
+          env:
+            - name: CASSANDRA_HOST
+              value: release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local
+            - name: CASSANDRA_DB_PORT
+              value: "9042"
+            - name: CASSANDRA_KEYSPACE
+              value: cadence_visibility

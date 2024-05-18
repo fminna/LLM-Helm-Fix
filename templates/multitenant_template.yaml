@@ -1,0 +1,366 @@
+---
+# Source: multitenant/templates/namespaces.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-storage-services
+  labels:
+    name: data-storage-services
+    type: shared-service
+---
+# Source: multitenant/templates/namespaces.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: login-services
+  labels:
+    name: login-services
+    type: shared-service
+---
+# Source: multitenant/templates/namespaces.yaml
+#=================== Namespace ===================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-from-helm-multitenant-repo
+  labels:
+    name: test-from-helm-multitenant-repo
+    type: tenant
+---
+# Source: multitenant/templates/networkpolicies-infrastructure.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: infrastructure-block-ingress
+  namespace: infrastructure
+spec:
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: infrastructure
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Source: multitenant/templates/networkpolicies.yaml
+#Comments are from : https://www.openshift.com/blog/guide-to-kubernetes-ingress-network-policies
+
+#=================== Network policies ===================
+#You can use the following network policy to allow all pod-to-pod communication within a namespace:
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-from-helm-multitenant-repo-allow-namespaces
+  namespace: test-from-helm-multitenant-repo
+  labels:
+    type: tenant
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: test-from-helm-multitenant-repo
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: DataStorageServices
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: infrastructure
+    ports:
+      - protocol: TCP
+        port: 9090 # Prometheus
+      - protocol: TCP
+        port: 3100 # Loki
+  egress:
+  - to: # nodeLocal DNS
+      - ipBlock:
+          cidr: 169.254.20.10/32
+      - ipBlock:
+          cidr: 10.43.0.10/32
+    ports:
+      - port: 53
+        protocol: UDP
+  - to: # Kube-api
+      - ipBlock:
+          cidr: 10.10.16.1/32
+    ports:
+      - port: 443
+        protocol: TCP
+  - to: # Master
+      - ipBlock:
+          cidr: 192.168.0.6/32
+      - ipBlock:
+          cidr: 192.168.0.7/32
+      - ipBlock:
+          cidr: 192.168.0.8/32
+    ports:
+      - port: 6443
+        protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: test-from-helm-multitenant-repo
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+---
+# Source: multitenant/templates/resourceQuota.yaml
+#=================== Ressource quota ===================
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  namespace: test-from-helm-multitenant-repo
+  name: test-from-helm-multitenant-repo-quota
+  labels:
+    type: tenant
+spec:
+  hard:
+    cpu : 1000
+    longhorn.storageclass.storage.k8s.io/requests.storage : 100Gi
+    memory : 200Gi
+---
+# Source: multitenant/templates/limitRange.yaml
+#=================== LimitRange ===================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  namespace: test-from-helm-multitenant-repo
+  name: test-from-helm-multitenant-repo-limit-range
+  labels:
+    type: tenant
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 5m
+      memory: 64Mi
+    type: Container
+---
+# Source: multitenant/templates/networktests.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: test-from-helm-multitenant-repo-networktests
+  namespace: test-from-helm-multitenant-repo
+spec:
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  schedule: "0 6 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: test-from-helm-multitenant-repo-networktests
+              image: kvalitetsit/kithosting-networkpolicytests:0.0.1
+          restartPolicy: Never
+---
+# Source: multitenant/templates/sharedservice_projects.yaml
+#=================== Namespace ===================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: data-storage-services
+  namespace: infrastructure
+  labels:
+    type: shared-service
+spec:
+  # Project description
+  description: Project containing shared services
+
+  # Allow manifests to deploy from any Git repos
+  sourceRepos:
+  - 'https://github.com/KvalitetsIT/kithosting-LoginServices.git'
+
+  # Only permit applications to deploy to the guestbook namespace in the same cluster
+  destinations:
+  - namespace: data-storage-services
+    server: https://kubernetes.default.svc
+  - namespace: infrastructure
+    server: https://kubernetes.default.svc
+
+  # Deny all cluster-scoped resources from being created, except for Namespace
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+---
+# Source: multitenant/templates/sharedservice_projects.yaml
+#=================== Namespace ===================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: login-services
+  namespace: infrastructure
+  labels:
+    type: shared-service
+spec:
+  # Project description
+  description: Project containing shared services
+
+  # Allow manifests to deploy from any Git repos
+  sourceRepos:
+  - 'https://github.com/KvalitetsIT/kithosting-LoginServices.git'
+
+  # Only permit applications to deploy to the guestbook namespace in the same cluster
+  destinations:
+  - namespace: login-services
+    server: https://kubernetes.default.svc
+  - namespace: infrastructure
+    server: https://kubernetes.default.svc
+
+  # Deny all cluster-scoped resources from being created, except for Namespace
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+---
+# Source: multitenant/templates/tenant_projects.yaml
+#=================== Namespace ===================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: test-from-helm-multitenant-repo
+  namespace: infrastructure
+  labels:
+    type: tenant-project
+spec:
+  # Project description
+  description: Project containing applications for test-from-helm-multitenant-repo
+
+  # Allow manifests to deploy from any Git repos
+  sourceRepos:
+    - 'https://github.com/KvalitetsIT/kithosting-LoginServices.git'
+  
+
+  # Only permit applications to deploy to the guestbook namespace in the same cluster
+  destinations:
+  - namespace: test-from-helm-multitenant-repo
+    server: https://kubernetes.default.svc
+  - namespace: infrastructure
+    server: https://kubernetes.default.svc
+
+  # Deny all cluster-scoped resources from being created, except for Namespace
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+---
+# Source: multitenant/templates/tenant_projects.yaml
+#=================== Namespace ===================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: test2-from-helm-multitenant-repo
+  namespace: infrastructure
+  labels:
+    type: tenant-project
+spec:
+  # Project description
+  description: Project containing applications for test2-from-helm-multitenant-repo
+
+  # Allow manifests to deploy from any Git repos
+  sourceRepos:
+    - 'https://github.com/KvalitetsIT/kithosting-LoginServices.git'
+  
+
+  # Only permit applications to deploy to the guestbook namespace in the same cluster
+  destinations:
+  - namespace: test-from-helm-multitenant-repo
+    server: https://kubernetes.default.svc
+  - namespace: infrastructure
+    server: https://kubernetes.default.svc
+
+  # Deny all cluster-scoped resources from being created, except for Namespace
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+---
+# Source: multitenant/templates/sharedservice_app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    argocd.argoproj.io/instance: data-storage-services-applications
+  name: data-storage-services-applications
+  namespace: infrastructure
+spec:
+  destination:
+    namespace: data-storage-services
+    server: https://kubernetes.default.svc
+  project: data-storage-services
+  source:
+    helm:
+      valueFiles:
+      - values.yaml
+      - values-test.yaml
+    path: /apps
+    repoURL: https://github.com/KvalitetsIT/kithosting-LoginServices.git
+    targetRevision: test
+---
+# Source: multitenant/templates/tennant_app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  labels:
+    argocd.argoproj.io/instance: test-from-helm-multitenant-repo-applications
+  name: test-from-helm-multitenant-repo-applications
+  namespace: infrastructure
+spec:
+  destination:
+    namespace: test-from-helm-multitenant-repo
+    server: https://kubernetes.default.svc
+  project: test-from-helm-multitenant-repo
+  source:
+    helm:
+      valueFiles:
+      - values.yaml
+      - values-test.yaml
+    path: /apps
+    repoURL: https://github.com/KvalitetsIT/kithosting-LoginServices.git
+    targetRevision: test
+---
+# Source: multitenant/templates/dockerconfigjson.yaml
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: all-icr-io
+  namespace: test-from-helm-multitenant-repo
+  annotations:
+    hej: 123
+spec:
+  encryptedData:
+    .dockerconfigjson: AgC14spw
+  template:
+    metadata:
+      name: all-icr-io
+      namespace: test-from-helm-multitenant-repo
+    type: kubernetes.io/dockerconfigjson
+---
+# Source: multitenant/templates/dockerconfigjson.yaml
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: all-icr-io
+  namespace: test2-from-helm-multitenant-repo
+  annotations:
+    hej: 123
+spec:
+  encryptedData:
+    .dockerconfigjson: AgC14spw
+  template:
+    metadata:
+      name: all-icr-io
+      namespace: test2-from-helm-multitenant-repo
+    type: kubernetes.io/dockerconfigjson

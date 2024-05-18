@@ -1,0 +1,223 @@
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-netscaler-cpx-with-ingress-controller
+  namespace: default
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cpx-nsic-configmap
+  namespace: default
+data:
+  LOGLEVEL: "info"
+  JSONLOG: "false"
+  NS_PROTOCOL: "http"
+  NS_PORT: "80"
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cpx-bootup-configmap
+  namespace: default
+data:
+  cpx.conf: |
+      #NetScaler commands
+      #Shell commands
+      # end of file
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/rbac.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-netscaler-cpx-with-ingress-controller
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "pods", "secrets", "routes", "nodes", "namespaces", "configmaps", "services"]
+    verbs: ["get", "list", "watch"]
+  # services/status is needed to update the loadbalancer IP in service status for integrating
+  # service of type LoadBalancer with external-dns
+  - apiGroups: [""]
+    resources: ["services/status"]
+    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions","networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["citrix.com"]
+    resources: ["rewritepolicies", "continuousdeployments", "authpolicies", "ratelimits", "listeners", "httproutes", "wafs", "apigatewaypolicies", "bots", "corspolicies", "appqoepolicies", "wildcarddnsentries"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  - apiGroups: ["citrix.com"]
+    resources: ["rewritepolicies/status", "continuousdeployments/status", "authpolicies/status", "ratelimits/status", "listeners/status", "httproutes/status", "wafs/status", "apigatewaypolicies/status", "bots/status", "corspolicies/status", "appqoepolicies/status", "wildcarddnsentries/status"]
+    verbs: ["patch"]
+  - apiGroups: ["citrix.com"]
+    resources: ["vips"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["crd.projectcalico.org"]
+    resources: ["ipamblocks"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-netscaler-cpx-with-ingress-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-netscaler-cpx-with-ingress-controller
+subjects:
+- kind: ServiceAccount
+  name: release-name-netscaler-cpx-with-ingress-controller
+  namespace: default
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cpx-service
+  labels:
+    app: cpx-service
+    service-type: release-name-netscaler-adc-cpx-svcmon
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    name: http
+  - port: 443
+    protocol: TCP
+    name: https
+  selector:
+    app: release-name-netscaler-cpx-with-ingress-controller
+---
+# Source: netscaler-cpx-with-ingress-controller/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-netscaler-cpx-with-ingress-controller
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: release-name-netscaler-cpx-with-ingress-controller
+  replicas: 1
+  template:
+    metadata:
+      name: release-name-netscaler-cpx-with-ingress-controller
+      labels:
+        app: release-name-netscaler-cpx-with-ingress-controller
+        adc: "citrix"
+    spec:
+      serviceAccountName: release-name-netscaler-cpx-with-ingress-controller
+      containers:
+        - name: cpx-ingress
+          image: "quay.io/netscaler/netscaler-cpx:14.1-17.101"
+          imagePullPolicy: IfNotPresent
+          tty: true
+          securityContext:
+             privileged: true
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          - name: "EULA"
+            value: "false"
+          - name: "KUBERNETES_TASK_ID"
+            value: ""
+          - name: "MGMT_HTTP_PORT"
+            value: "9080"
+          - name: "MGMT_HTTPS_PORT"
+            value: "9443"
+##Need to set env var BANDWIDTH in order to provide Bandwidth license to NetScaler CPX from ADM or CPX License Aggregator
+          resources:
+            limits: {}
+            requests:
+              cpu: 128m
+              memory: 500Mi
+          volumeMounts:
+            - mountPath: /var/deviceinfo
+              name: shared-data
+            - mountPath: /cpx/
+              name: cpx-volume
+            - mountPath: /cpx/conf
+              name: cpx-volume-conf
+            - mountPath: /cpx/bootup_conf
+              name: bootupconfig-volume
+        # Add nsic as a sidecar
+        - name: nsic
+          image: "quay.io/netscaler/netscaler-k8s-ingress-controller:1.41.5"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: "EULA"
+            value: "false"
+          - name: "NS_IP"
+            value: "127.0.0.1"
+          - name: "NS_APPS_NAME_PREFIX"
+            value: "k8s"
+          - name: "NS_DEPLOYMENT_MODE"
+            value: "SIDECAR"
+          - name: "NS_ENABLE_MONITORING"
+            value: "YES"
+          - name: "NS_NITRO_READ_TIMEOUT"
+            value: "20"
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: spec.nodeName
+          args:
+            - --configmap
+              default/release-name-cpx-nsic-configmap
+          volumeMounts:
+            - mountPath: /var/deviceinfo
+              name: shared-data
+          resources:
+            limits: {}
+            requests:
+              cpu: 32m
+              memory: 128Mi
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+        - name: cpx-volume
+          emptyDir: {}
+        - name: cpx-volume-conf
+          emptyDir: {}
+        - name: bootupconfig-volume
+          configMap:
+            name: release-name-cpx-bootup-configmap

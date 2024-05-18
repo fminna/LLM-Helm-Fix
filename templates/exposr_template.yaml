@@ -1,0 +1,167 @@
+---
+# Source: exposr/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-exposr
+  labels:
+    helm.sh/chart: exposr-0.12.0
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  EXPOSR_LOG_LEVEL: "info"
+  EXPOSR_ADMIN_ENABLE: "true"
+  EXPOSR_ADMIN_PORT: "9000"
+  EXPOSR_ALLOW_REGISTRATION: "false"
+  EXPOSR_API_PORT: "8080"
+  EXPOSR_CLUSTER: "udp"
+  EXPOSR_CLUSTER_KEY: "cluster-signing-key-change-me"
+  EXPOSR_CLUSTER_UDP_DISCOVERY: "kubernetes"
+  EXPOSR_STORAGE_URL: "memory://"
+  EXPOSR_INGRESS: ""
+  EXPOSR_TRANSPORT: "ws"
+  EXPOSR_TRANSPORT_MAX_CONNECTIONS: "2"
+---
+# Source: exposr/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-exposr-headless
+  labels:
+    helm.sh/chart: exposr-0.12.0
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 1025
+      targetPort: cluster
+      protocol: UDP
+      name: cluster
+  selector:
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+---
+# Source: exposr/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-exposr
+  labels:
+    helm.sh/chart: exposr-0.12.0
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 8080
+      targetPort: admin-api
+      protocol: TCP
+      name: admin-api
+    - port: 9000
+      targetPort: admin
+      protocol: TCP
+      name: admin
+  selector:
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+---
+# Source: exposr/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-exposr
+  labels:
+    helm.sh/chart: exposr-0.12.0
+    app.kubernetes.io/name: exposr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exposr
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exposr
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: exposr
+          securityContext:
+            {}
+          image: "ghcr.io/exposr/exposrd:v0.12.0"
+          imagePullPolicy: Always
+          ports:
+            - name: cluster
+              containerPort: 1025
+              protocol: UDP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: admin
+              containerPort: 9000
+              protocol: TCP
+          volumeMounts:
+            - name: app
+              mountPath: /tmp/app
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SERVICE_NAME
+              value: release-name-exposr-headless
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: admin
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 10
+          envFrom:
+            - configMapRef:
+                name: release-name-exposr
+          resources:
+            {}
+      volumes:
+        - name: app
+          emptyDir: {}

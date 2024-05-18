@@ -1,0 +1,89 @@
+---
+# Source: mongodb-backup-aws/templates/configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-mongodb-backup-aws
+data:
+  AWS_ACCESS_KEY_ID: aws-access-key-id
+  AWS_DEFAULT_REGION: eu-central-1
+  AWS_SECRET_ACCESS_KEY: aws-secret-key-id
+  CRON_SCHEDULE: 3 0 * * *
+  INIT_BACKUP: "false"
+  INIT_RESTORE: "false"
+  MAX_BACKUPS: "30"
+  MONGODB_DATABASE: admin
+  MONGODB_EXCLUDE_COLLECTIONS: ""
+  MONGODB_HOST: your-mongodb-host-name
+  MONGODB_INITDB_ROOT_PASSWORD: mongo-backup-user-password
+  MONGODB_INITDB_ROOT_USERNAME: root
+  MONGODB_PORT: "27017"
+  RUN_AS_DAEMON: "false"
+  S3_BUCKET: s3-bucket-name-where-backups-will-be-stored
+---
+# Source: mongodb-backup-aws/templates/volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-mongodb-backup-aws
+  annotations:
+    # volume.beta.kubernetes.io/storage-class: standard
+    # volume.beta.kubernetes.io/storage-provisioner: kubernetes.io/aws-ebs
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2
+---
+# Source: mongodb-backup-aws/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-mongodb-backup-aws
+  labels:
+    helm.sh/chart: mongodb-backup-aws-0.1.0
+    app.kubernetes.io/name: mongodb-backup-aws
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "3 0 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: mongodb-backup-aws
+            image: "dasmeta/mongo-backup-aws:1.0.18"
+            # command: ["/bin/bash", "-c", "/etl/bash/copy_mongo_to_postgres.sh"]
+            envFrom:
+            - configMapRef:
+                name: release-name-mongodb-backup-aws
+            resources:
+              {}
+          restartPolicy: Never
+---
+# Source: mongodb-backup-aws/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-mongodb-backup-aws-test-connection"
+  labels:
+    helm.sh/chart: mongodb-backup-aws-0.1.0
+    app.kubernetes.io/name: mongodb-backup-aws
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-mongodb-backup-aws:80']
+  restartPolicy: Never

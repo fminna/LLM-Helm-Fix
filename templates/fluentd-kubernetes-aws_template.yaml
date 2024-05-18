@@ -1,0 +1,262 @@
+---
+# Source: fluentd-kubernetes-aws/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-fluentd-kubernetes-aws
+  labels:
+    app: fluentd-kubernetes-aws
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+---
+# Source: fluentd-kubernetes-aws/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-fluentd-kubernetes-aws
+  labels:
+    app: fluentd-kubernetes-aws
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: fluentd-kubernetes-aws/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-fluentd-kubernetes-aws
+  labels:
+    app: fluentd-kubernetes-aws
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+roleRef:
+  kind: ClusterRole
+  name: release-name-fluentd-kubernetes-aws
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: release-name-fluentd-kubernetes-aws
+    namespace: default
+---
+# Source: fluentd-kubernetes-aws/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fluentd-kubernetes-aws-prometheus
+  labels:
+    app: fluentd-kubernetes-aws-prometheus
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+
+spec:
+  type: ClusterIP
+  ports:
+    - name: prometheus
+      port: 9224
+      protocol: TCP
+      targetPort: 24231
+  selector:
+    app: fluentd-kubernetes-aws
+    release: release-name
+---
+# Source: fluentd-kubernetes-aws/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-fluentd-kubernetes-aws
+  labels:
+    k8s-app: fluentd-logging
+    version: v1
+    kubernetes.io/cluster-service: "true"
+    app: fluentd-kubernetes-aws
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      k8s-app: fluentd-logging
+      app: fluentd-kubernetes-aws
+      release: release-name
+  template:
+    metadata:
+      labels:
+        k8s-app: fluentd-logging
+        version: v1
+        kubernetes.io/cluster-service: "true"
+        app: fluentd-kubernetes-aws
+        release: release-name
+      annotations:
+        iam.amazonaws.com/role: elasticsearch-user
+    spec:
+      serviceAccountName: release-name-fluentd-kubernetes-aws
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.4.2-debian-elasticsearch-1.1
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: FLUENT_ELASTICSEARCH_HOST
+            value: "localhost"
+          - name: FLUENT_ELASTICSEARCH_PORT
+            value: "9200"
+          - name: FLUENT_ELASTICSEARCH_SCHEME
+            value: "http"
+          - name: "FLUENTD_PROMETHEUS_PORT"
+            value: "24231"
+          - name: "FLUENT_ELASTICSEARCH_BUFFER_CHUNK_LIMIT_SIZE"
+            value: "4M"
+          - name: "FLUENT_ELASTICSEARCH_BUFFER_QUEUE_LIMIT_LENGTH"
+            value: "64"
+        resources:
+          {}
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+      - name: signing-proxy
+        # This image, abutaha/aws-es-proxy:0.9, still has issues, but the Fluentd plugin seems not to be affected by them.
+        # Still, the image should be updated when possible, but once we find a good image it should not need to be
+        # updated further until AWS changes their signing algorithm.
+        # https://github.com/abutaha/aws-es-proxy/issues/27
+        # https://github.com/abutaha/aws-es-proxy/issues/29
+        # https://github.com/abutaha/aws-es-proxy/issues/35
+        # An alternative is mozilla/aws-signing-proxy but as of version 1.0.3 it did not work
+        # https://github.com/mozilla-services/aws-signing-proxy/issues/9
+        image: abutaha/aws-es-proxy:0.9
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-endpoint"
+        - "https://my-elasticsearch-jivhavxbcd5.us-east-1.es.amazonaws.com"
+        - "-listen"
+        - "127.0.0.1:9200"
+        resources:
+          requests:
+           cpu: 5m
+           memory: 10Mi
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+---
+# Source: fluentd-kubernetes-aws/templates/prometheusrule.yaml
+# Copied from https://github.com/kiwigrid/helm-charts/blob/416e9ef84ad865846d263e2fccdf0c32ed9fee81/charts/fluentd-elasticsearch/templates/prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name:  release-name-fluentd-kubernetes-aws
+  labels:
+    app.kubernetes.io/name: fluentd-kubernetes-aws
+    helm.sh/chart: fluentd-kubernetes-aws-0.2.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app: prometheus-operator
+    release: prometheus-operator
+spec:
+  groups:
+  - name: fluentd
+    rules:
+    - alert: FluentdNodeDown
+      expr: |
+        up{job="fluentd-kubernetes-aws-prometheus"} == 0
+        or absent(up{job="fluentd-kubernetes-aws-prometheus"})
+      for: 10m
+      labels:
+        service: fluentd
+        severity: warning
+      annotations:
+        summary: fluentd cannot be scraped
+        description: Prometheus could not scrape {{ $labels.job }} for more than 10 minutes
+
+    - alert: FluentdNodeDown
+      expr: |
+        up{job="fluentd-kubernetes-aws-prometheus"} == 0
+        or absent(up{job="fluentd-kubernetes-aws-prometheus"})
+      for: 30m
+      labels:
+        service: fluentd
+        severity: critical
+      annotations:
+        summary: fluentd cannot be scraped
+        description: Prometheus could not scrape {{ $labels.job }} for more than 30 minutes
+
+    - alert: FluentdQueueLength
+      expr: |
+        rate(fluentd_output_status_buffer_queue_length[5m]) > 0.3
+        or absent(fluentd_output_status_buffer_queue_length)
+      for: 1m
+      labels:
+        service: fluentd
+        severity: warning
+      annotations:
+        summary: fluentd node are failing
+        description: In the last 5 minutes, fluentd queues increased 30%. Current value is {{ $value }}
+
+    - alert: FluentdQueueLength
+      expr: |
+        rate(fluentd_output_status_buffer_queue_length[5m]) > 0.5
+        or absent(fluentd_output_status_buffer_queue_length)
+      for: 1m
+      labels:
+        service: fluentd
+        severity: critical
+      annotations:
+        summary: fluentd node are critical
+        description: In the last 5 minutes, fluentd queues increased 50%. Current value is {{ $value }}
+
+    - alert: FluentdRecordsCountsHigh
+      expr: |
+        sum(rate(fluentd_output_status_emit_records{job="fluentd-kubernetes-aws-prometheus"}[5m])) BY (instance) >  (3 * sum(rate(fluentd_output_status_emit_records{job="fluentd-kubernetes-aws-prometheus"}[15m])) BY (instance))
+        or absent(fluentd_output_status_emit_records)
+      for: 1m
+      labels:
+        service: fluentd
+        severity: critical
+      annotations:
+        summary: fluentd records count are critical
+        description: In the last 5m, records counts increased 3 times, comparing to the latest 15 min.
+---
+# Source: fluentd-kubernetes-aws/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-fluentd-kubernetes-aws
+  labels:
+    app: fluentd-kubernetes-aws
+    chart: fluentd-kubernetes-aws-0.2.1
+    release: release-name
+    heritage: Helm
+    app: prometheus-operator
+    release: prometheus-operator
+
+spec:
+  endpoints:
+  - path: /metrics
+    port: prometheus
+  selector:
+    namespaceSelector:
+      any: true
+    matchLabels:
+      app: fluentd-kubernetes-aws-prometheus
+      release: release-name

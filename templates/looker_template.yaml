@@ -1,0 +1,179 @@
+---
+# Source: looker/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-looker
+  labels:
+    helm.sh/chart: looker-0.1.3
+    app: looker
+    app.kubernetes.io/name: looker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.16.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: looker/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-looker
+  labels:
+    helm.sh/chart: looker-0.1.3
+    app: looker
+    app.kubernetes.io/name: looker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+    - port: 19443
+      targetPort: api
+      protocol: TCP
+      name: api
+  selector:
+    app.kubernetes.io/name: looker
+    app.kubernetes.io/instance: release-name
+---
+# Source: looker/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-looker
+  labels:
+    helm.sh/chart: looker-0.1.3
+    app: looker
+    app.kubernetes.io/name: looker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: looker
+      app.kubernetes.io/instance: release-name
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: looker
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-looker
+      securityContext:
+        fsGroup: 2000
+      initContainers:
+        - name: link-jar-to-home
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 2000
+            runAsNonRoot: true
+            runAsUser: 1000
+          image: "honestica/looker:2.16.0"
+          imagePullPolicy: IfNotPresent
+          workingDir: /home/looker
+          volumeMounts:
+          - mountPath: /data
+            name: release-name-looker-shared-data-dir
+          - mountPath: /home/looker
+            name: looker-home
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              ln -s /opt/looker/looker-dependencies.jar /home/looker/looker-dependencies.jar
+              ln -s /opt/looker/looker.jar /home/looker/looker.jar
+      containers:
+        - name: looker
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 2000
+            runAsNonRoot: true
+            runAsUser: 1000
+          image: "honestica/looker:2.16.0"
+          imagePullPolicy: IfNotPresent
+          workingDir: /home/looker
+          env:
+          - name: LOOKEREXTRAARGS
+            value: --shared-storage-dir=/data/
+          ports:
+            - name: https
+              containerPort: 9999
+              protocol: TCP
+            - name: api
+              containerPort: 19999
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 10
+            initialDelaySeconds: 300
+            httpGet:
+              path: /alive
+              port: https
+              scheme: HTTPS
+          readinessProbe:
+            httpGet:
+              path: /alive
+              port: https
+              scheme: HTTPS
+          startupProbe:
+            httpGet:
+              path: /alive
+              port: https
+              scheme: HTTPS
+            failureThreshold: 50
+            periodSeconds: 10
+          terminationMessagePolicy: FallbackToLogsOnError
+          volumeMounts:
+          - mountPath: /data
+            name: release-name-looker-shared-data-dir
+          - mountPath: /home/looker
+            name: looker-home
+          resources:
+            {}
+      volumes:
+      - name: release-name-looker-shared-data-dir
+        emptyDir:
+          medium: "Memory"
+      - name: tmp-volume
+        emptyDir:
+          medium: "Memory"
+      - name: looker-home
+        emptyDir:
+          medium: "Memory"
+---
+# Source: looker/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-looker-test-connection"
+  labels:
+    helm.sh/chart: looker-0.1.3
+    app: looker
+    app.kubernetes.io/name: looker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-looker:']
+  restartPolicy: Never

@@ -1,0 +1,387 @@
+---
+# Source: service-presets/templates/gateway/gw.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend
+  namespace: default
+---
+# Source: service-presets/templates/vault/issuer.yaml
+# https://cert-manager.io/docs/configuration/vault/#secretless-authentication-with-a-service-account
+
+# kubectl create serviceaccount -n cert-manager vault-issuer
+# --cluster-resource-namespace
+
+
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-issuer
+  namespace: cert-manager
+---
+# Source: service-presets/templates/egress-cert/ca.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-service-presets-ca
+  namespace: default
+  labels:
+    helm.sh/chart: service-presets-v2024.2.11
+    app.kubernetes.io/name: service-presets
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.2.11"
+    app.kubernetes.io/managed-by: Helm
+type: kubernetes.io/tls
+stringData: {"tls.crt":"","tls.key":""}
+---
+# Source: service-presets/templates/vault/issuer.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-issuer
+  namespace: cert-manager
+rules:
+  - apiGroups: ['']
+    resources: ['serviceaccounts/token']
+    resourceNames: ['vault-issuer']
+    verbs: ['create']
+---
+# Source: service-presets/templates/vault/issuer.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-issuer
+  namespace: cert-manager
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vault-issuer
+---
+# Source: service-presets/templates/gateway/gw.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: default
+  labels:
+    app: backend
+    service: backend
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  selector:
+    app: backend
+---
+# Source: service-presets/templates/gateway/gw.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: backend
+        version: v1
+    spec:
+      serviceAccountName: backend
+      securityContext:
+        null
+      containers:
+        - image: gcr.io/k8s-staging-ingressconformance/echoserver:v20221109-7ee2f3e
+          imagePullPolicy: IfNotPresent
+          name: backend
+          ports:
+            - containerPort: 3000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            null
+---
+# Source: service-presets/templates/egress-cert/caprovicerclass.yaml
+apiVersion: cacerts.csi.cert-manager.io/v1alpha1
+kind: CAProviderClass
+metadata:
+  name: release-name-service-presets
+  namespace: default
+  labels:
+    helm.sh/chart: service-presets-v2024.2.11
+    app.kubernetes.io/name: service-presets
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.2.11"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  refs:
+  - apiGroup: cert-manager.io
+    kind: Issuer
+    namespace: default
+    name: release-name-service-presets
+---
+# Source: service-presets/templates/egress-cert/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-service-presets
+  namespace: default
+  labels:
+    helm.sh/chart: service-presets-v2024.2.11
+    app.kubernetes.io/name: service-presets
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.2.11"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  secretName: release-name-service-presets-cert
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: release-name-service-presets
+  commonName: "gw-c1.c1"
+  dnsNames:
+    - "gw-c1.c1"
+    - "*.gw-c1.c1"
+  usages:
+    - key agreement
+    - digital signature
+    - server auth
+---
+# Source: service-presets/templates/vault/issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: vault-issuer
+spec:
+  vault:
+    path: pki/sign/gw-c1-chart-example-local
+    server: http://vault.default.svc:8200
+    auth:
+      kubernetes:
+        role: "vault-issuer"
+        mountPath: /v1/auth/kubernetes
+        serviceAccountRef:
+          name: vault-issuer
+---
+# Source: service-presets/templates/gateway/gwclass.yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: ace-gw-proxy-config
+  namespace: default
+spec:
+  mergeGateways: true
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          image: ghcr.io/voyagermesh/envoy:v1.28.1
+          # securityContext:
+          #   runAsUser: 1000
+      envoyService:
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: "gw-c1.c1"
+---
+# Source: service-presets/templates/gateway/gw.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: backend
+  namespace: default
+spec:
+  gatewayClassName: ace
+  listeners:
+    - name: http
+      protocol: HTTPS
+      port: 443
+      tls:
+        certificateRefs:
+        - group: ""
+          kind: Secret
+          name: release-name-service-presets-cert
+          namespace: default
+        mode: Terminate
+---
+# Source: service-presets/templates/vault/gw.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: vault
+  namespace: default
+spec:
+  gatewayClassName: ace
+  listeners:
+    - name: vault
+      protocol: HTTPS
+      port: 8200
+      tls:
+        certificateRefs:
+        - group: ""
+          kind: Secret
+          name: release-name-service-presets-cert
+          namespace: default
+        mode: Terminate
+---
+# Source: service-presets/templates/gateway/gwclass.yaml
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: GatewayClass
+metadata:
+  name: ace
+spec:
+  controllerName: gateway.voyagermesh.com/service-gateway
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: ace-gw-proxy-config
+    namespace: default
+---
+# Source: service-presets/templates/gateway/gw.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend
+  namespace: default
+spec:
+  parentRefs:
+    - name: backend
+  hostnames:
+    - "gw-c1.c1"
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: backend
+          port: 3000
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+---
+# Source: service-presets/templates/vault/gw.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vault
+  namespace: default
+spec:
+  parentRefs:
+    - name: vault
+  hostnames:
+    - "gw-c1.c1"
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: vault
+          port: 8200
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+---
+# Source: service-presets/templates/vault/issuer.yaml
+# https://developer.hashicorp.com/vault/tutorials/kubernetes/kubernetes-cert-manager#deploy-cert-manager
+
+apiVersion: policy.kubevault.com/v1alpha1
+kind: VaultPolicy
+metadata:
+  name: vault-issuer
+  namespace: default
+spec:
+  vaultRef:
+    name: vault
+  vaultPolicyName: vault-issuer
+  policyDocument: |
+    path "pki*"                        { capabilities = ["read", "list"] }
+    path "pki/sign/gw-c1-chart-example-local"    { capabilities = ["create", "update"] }
+    path "pki/issue/gw-c1-chart-example-local"   { capabilities = ["create"] }
+---
+# Source: service-presets/templates/vault/issuer.yaml
+# vault write auth/kubernetes/role/vault-issuer \
+#     bound_service_account_names=vault-issuer \
+#     bound_service_account_namespaces=cert-manager \
+#     audience="vault://vault-issuer" \
+#     policies=vault-issuer \
+#     ttl=1m
+
+apiVersion: policy.kubevault.com/v1alpha1
+kind: VaultPolicyBinding
+metadata:
+  name: vault-issuer
+  namespace: default
+spec:
+  vaultRef:
+    name: vault
+  vaultRoleName: vault-issuer
+  policies:
+  - name: vault-issuer
+  subjectRef:
+    kubernetes:
+      serviceAccountNames:
+        - "vault-issuer"
+      serviceAccountNamespaces:
+        - "cert-manager"
+      ttl: "1m"
+      # maxTTL: "2000"
+      # period: "1000"
+---
+# Source: service-presets/templates/vault/vault-server.yaml
+# backups
+# tls encrypt
+# monitoring
+
+apiVersion: kubevault.com/v1alpha2
+kind: VaultServer
+metadata:
+  name: vault
+  namespace: default
+spec:
+  # tls:
+  #   issuerRef:
+  #     apiGroup: "cert-manager.io"
+  #     kind: Issuer
+  #     name: vault-issuer
+  allowedSecretEngines:
+    namespaces:
+      from: All
+  version: "1.13.3"
+  replicas: 3
+  backend:
+    raft:
+      storage:
+        # storageClassName: ""
+        resources:
+          requests:
+            storage: 1Gi
+  unsealer:
+    secretShares: 5
+    secretThreshold: 3
+    mode:
+      kubernetesSecret:
+        secretName: vault-keys
+  monitor:
+    agent: prometheus.io
+    prometheus:
+      exporter:
+        resources: {}
+  terminationPolicy: Delete

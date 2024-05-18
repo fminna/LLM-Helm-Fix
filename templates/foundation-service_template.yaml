@@ -1,0 +1,156 @@
+---
+# Source: foundation-service/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+    choerodon.io/logs-parser: "spring-boot"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/actuator/prometheus"
+      labels:
+        choerodon.io/version: "0.18.1"
+        choerodon.io/service: "foundation-service"
+        choerodon.io/metrics-port: "8387"
+        choerodon.io/release: "release-name"
+    spec:
+      containers:
+        - name: release-name
+          image: "registry.cn-shanghai.aliyuncs.com/choerodon/foundation-service:0.18.1"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+            value: "http://register-server.c7n-system:8000/eureka/"
+          - name: "SPRING_CLOUD_CONFIG_ENABLED"
+            value: "true"
+          - name: "SPRING_CLOUD_CONFIG_URI"
+            value: "http://register-server.c7n-system:8000"
+          - name: "SPRING_DATASOURCE_PASSWORD"
+            value: "password"
+          - name: "SPRING_DATASOURCE_URL"
+            value: "jdbc:mysql://localhost:3306/foundation_service?useUnicode=true&characterEncoding=utf-8&useSSL=false"
+          - name: "SPRING_DATASOURCE_USERNAME"
+            value: "username"
+          ports:
+            - name: http
+              containerPort: 8386
+              protocol: TCP
+          # readinessProbe:
+          #   httpGet:
+          #     path: /health
+          #     port: 8387
+          #     scheme: HTTP
+          readinessProbe:
+            exec:
+              command: ["/bin/sh","-c","curl -s localhost:8387/actuator/health --fail && nc -z localhost 8386"]
+            failureThreshold: 3
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 10
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+---
+# Source: foundation-service/templates/pre-config-config.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-config
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: release-name-init-config
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rf /var/choerodon/* /tools
+        image: registry.cn-hangzhou.aliyuncs.com/choerodon-tools/dbtool:0.6.4
+        imagePullPolicy: IfNotPresent
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-config
+        image: "registry.cn-shanghai.aliyuncs.com/choerodon/foundation-service:0.18.1"
+        command:
+        - /bin/sh
+        - -c
+        - '
+          java -Dspring.datasource.url="jdbc:mysql://localhost:3306/manager_service?useUnicode=true&characterEncoding=utf-8&useSSL=false" -Dspring.datasource.username=username -Dspring.datasource.password=password -Dconfig.type=k8s -Dregister.host=http://register-server.c7n-system:8000 -Dservice.namespace=default -Dservice.name=foundation-service -Dservice.version=0.18.1 -Dconfig.file=application.yml -Dconfig.jar=/foundation-service.jar -jar /var/choerodon/choerodon-tool-config.jar;
+          '
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar
+---
+# Source: foundation-service/templates/pre-config-db.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-db
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: release-name-init-db
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rf /var/choerodon/* /tools
+        image: registry.cn-hangzhou.aliyuncs.com/choerodon-tools/dbtool:0.6.4
+        imagePullPolicy: IfNotPresent
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-db
+        image: "registry.cn-shanghai.aliyuncs.com/choerodon/foundation-service:0.18.1"
+        command:
+        - /bin/sh
+        - -c
+        - '
+          java -Dspring.datasource.url="jdbc:mysql://localhost:3306/foundation_service?useUnicode=true&characterEncoding=utf-8&useSSL=false" -Dspring.datasource.username=username -Dspring.datasource.password=password -Ddata.init=true -Ddata.update.exclusion= -Ddata.jar=/foundation-service.jar -jar /var/choerodon/choerodon-tool-liquibase.jar;
+          '
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar

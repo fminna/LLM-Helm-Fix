@@ -1,0 +1,454 @@
+---
+# Source: gocd/templates/gocd-ea-service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-gocd
+  labels:
+    chart: "gocd-1.9.2"
+    app: "gocd"
+    heritage: "Helm"
+    release: "release-name"
+---
+# Source: gocd/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-gocd
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  preconfigure_server.sh: |-
+    #!/bin/bash
+
+    SERVICE_ACCOUNT_PATH=/var/run/secrets/kubernetes.io/serviceaccount
+    KUBE_TOKEN=$(<${SERVICE_ACCOUNT_PATH}/token)
+
+    while true
+    do
+      status_code=$(curl 'http://localhost:8153/go/api/v1/health' -o /dev/null -w "%{http_code}")
+      if [ $status_code == 200 ]; then
+        break
+      fi
+      sleep 10
+    done
+
+    set -e
+
+    echo "checking if server has already been configured" >> /godata/logs/preconfigure.log
+
+    if [ -f /godata/logs/preconfigure_complete.log ]
+    then
+      echo "Existing server configuration found in cruise-config.xml. Skipping preconfigure_server scripts." >> /godata/logs/preconfigure.log
+      exit 0
+    fi
+
+    echo "No configuration found in cruise-config.xml. Using default preconfigure_server scripts to configure server" >> /godata/logs/preconfigure.log
+
+    echo "Trying to configure cluster profile." >> /godata/logs/preconfigure.log
+
+    (curl --fail -i 'http://localhost:8153/go/api/admin/elastic/cluster_profiles' \
+      -H'Accept: application/vnd.go.cd.v1+json'  \
+      -H 'Content-Type: application/json' \
+      -X POST -d '{
+        "id": "k8-cluster-profile",
+        "plugin_id": "cd.go.contrib.elasticagent.kubernetes",
+        "properties": [
+              {
+                "key": "go_server_url",
+                "value": "https://release-name-gocd-server:8154/go"
+            },
+            {
+                "key": "kubernetes_cluster_url",
+                "value": "https://'$KUBERNETES_SERVICE_HOST':'$KUBERNETES_SERVICE_PORT_HTTPS'"
+              },
+              {
+                "key": "namespace",
+                "value": "default"
+              },
+              {
+                "key": "security_token",
+                "value": "'$KUBE_TOKEN'"
+              }
+          ]
+      }' >> /godata/logs/preconfigure.log)
+
+    echo "Trying to create an elastic profile now." >> /godata/logs/preconfigure.log
+
+    (curl --fail -i 'http://localhost:8153/go/api/elastic/profiles' \
+      -H 'Accept: application/vnd.go.cd.v2+json' \
+      -H 'Content-Type: application/json' \
+      -X POST -d '{
+        "id": "demo-app",
+        "cluster_profile_id": "k8-cluster-profile",
+        "properties": [
+          {
+            "key": "Image",
+            "value": "gocd/gocd-agent-docker-dind:v19.3.0"
+          },
+          {
+            "key": "PodConfiguration",
+            "value": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: gocd-agent-{{ POD_POSTFIX }}\n  labels:\n    app: web\nspec:\n  serviceAccountName: default\n  containers:\n    - name: gocd-agent-container-{{ CONTAINER_POSTFIX }}\n      image: gocd/gocd-agent-docker-dind:v19.3.0\n      securityContext:\n        privileged: true"
+          },
+          {
+            "key": "PodSpecType",
+            "value": "yaml"
+          },
+          {
+            "key": "Privileged",
+            "value": "true"
+          }
+        ]
+      }' >> /godata/logs/preconfigure.log)
+
+    echo "Trying to creating a hello world pipeline." >> /godata/logs/preconfigure.log
+
+    (curl --fail -i 'http://localhost:8153/go/api/admin/pipelines' \
+      -H 'Accept: application/vnd.go.cd.v6+json' \
+      -H 'Content-Type: application/json' \
+      -X POST -d '{ "group": "sample",
+                    "pipeline": {
+                      "label_template": "${COUNT}",
+                      "name": "hello_world",
+                      "materials": [
+                        {
+                          "type": "git",
+                          "attributes": {
+                            "url": "https://github.com/gocd-contrib/getting-started-repo",
+                            "shallow_clone": true
+                          }
+                        }
+                      ],
+                      "stages": [
+                        {
+                          "name": "default_stage",
+                          "jobs": [
+                            {
+                              "name": "default_job",
+                              "elastic_profile_id": "demo-app",
+                              "tasks": [
+                                {
+                                  "type": "exec",
+                                  "attributes": {
+                                    "command": "echo",
+                                    "arguments": [
+                                      "Hello World"
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  }' >> /godata/logs/preconfigure.log )
+
+    echo "Done preconfiguring the GoCD server" > /godata/logs/preconfigure_complete.log
+---
+# Source: gocd/templates/test-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-gocd-tests
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  run.sh: |-
+    @test "Testing GoCD UI is accessible" {
+        curl --connect-timeout 10 --retry 12 --retry-delay 10 --retry-max-time 90 "http://release-name-gocd-server:8153/go/auth/login"
+    }
+
+    @test "Testing GoCD application is accessible through service" {
+      curl --retry 2 --retry-delay 10 --retry-max-time 90 http://release-name-gocd-server:8153/go
+    }
+---
+# Source: gocd/templates/gocd-server-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-gocd-server
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+    component: server
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "2Gi"
+---
+# Source: gocd/templates/gocd-ea-cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: release-name-gocd
+  labels:
+    chart: "gocd-1.9.2"
+    app: "gocd"
+    heritage: "Helm"
+    release: "release-name"
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - pods/log
+  verbs: ["*"]
+- apiGroups: [""]
+  resources:
+  - nodes
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources:
+  - events
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources:
+  - namespaces
+  verbs: ["get"]
+---
+# Source: gocd/templates/gocd-ea-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-gocd
+  labels:
+    chart: "gocd-1.9.2"
+    app: "gocd"
+    heritage: "Helm"
+    release: "release-name"
+subjects:
+- kind: ServiceAccount
+  name: release-name-gocd
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-gocd
+---
+# Source: gocd/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-gocd-server
+  annotations:
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+    component: server
+spec:
+  type: NodePort
+  
+  ports:
+    - port: 8153
+      targetPort: 8153
+      protocol: TCP
+      name: http
+
+    - port: 8154
+      targetPort: 8154
+      protocol: TCP
+      name: https
+  selector:
+    app: gocd
+    release: "release-name"
+    component: server
+---
+# Source: gocd/templates/gocd-agent-deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-gocd-agent
+  labels:
+    app: gocd
+    chart:  "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+    component: agent
+  annotations:
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: gocd
+      release: "release-name"
+      component: agent
+  template:
+    metadata:
+      labels:
+        app: gocd
+        release: "release-name"
+        component: agent
+      annotations:
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: gocd-agent
+          image: "gocd/gocd-agent-alpine-3.9:v19.3.0"
+          imagePullPolicy: IfNotPresent
+          resources:
+            {}
+          env:
+            - name: GO_SERVER_URL
+              value: "https://release-name-gocd-server:8154/go"
+          securityContext:
+            privileged: false
+      restartPolicy: Always
+---
+# Source: gocd/templates/gocd-server-deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-gocd-server
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+    component: server
+  annotations:
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gocd
+      release: "release-name"
+      component: server
+  template:
+    metadata:
+      labels:
+        app: gocd
+        release: "release-name"
+        component: server
+      annotations:
+    spec:
+      serviceAccountName: release-name-gocd
+      volumes:
+        - name: config-vol
+          configMap:
+            name: release-name-gocd
+        - name: goserver-vol
+          persistentVolumeClaim:
+            claimName: release-name-gocd-server
+      containers:
+        - name: gocd-server
+          image: "gocd/gocd-server:v19.3.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GOCD_PLUGIN_INSTALL_kubernetes-elastic-agents
+              value: https://github.com/gocd/kubernetes-elastic-agents/releases/download/v3.0.0-156/kubernetes-elastic-agent-3.0.0-156.jar
+            - name: GOCD_PLUGIN_INSTALL_docker-registry-artifact-plugin
+              value: https://github.com/gocd/docker-registry-artifact-plugin/releases/download/v1.0.1-92/docker-registry-artifact-plugin-1.0.1-92.jar
+          ports:
+            - containerPort: 8153
+            - containerPort: 8154
+          livenessProbe:
+            httpGet:
+              path: /go/api/v1/health
+              port: 8153
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /go/api/v1/health
+              port: 8153
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 10
+          volumeMounts:
+            - name: config-vol
+              mountPath: /preconfigure_server.sh
+              subPath: preconfigure_server.sh
+            - name: goserver-vol
+              mountPath: /godata
+              subPath: godata
+            - name: goserver-vol
+              mountPath: /home/go
+              subPath: homego
+            - name: goserver-vol
+              mountPath: /docker-entrypoint.d
+              subPath: scripts
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/bash
+                  - /preconfigure_server.sh
+          resources:
+            {}
+      restartPolicy: Always
+---
+# Source: gocd/templates/ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: release-name-gocd-server
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+    component: server
+  annotations:
+spec:
+  backend:
+    serviceName: release-name-gocd-server
+    servicePort: 8153
+---
+# Source: gocd/templates/tests/gocd-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-gocd-test-djd2k"
+  labels:
+    app: gocd
+    chart: "gocd-1.9.2"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  initContainers:
+    - name: "test-framework"
+      image: "dduportal/bats:0.4.0"
+      command:
+        - "bash"
+        - "-c"
+        - |
+          set -ex
+          # copy bats to tools dir
+          cp -R /usr/local/libexec/ /tools/bats/
+      volumeMounts:
+        - mountPath: /tools
+          name: tools
+  containers:
+    - name: gocd-ui-test
+      image: "gocddev/gocd-helm-build:v0.1.0"
+      command: ["/tools/bats/bats", "-t", "/tests/run.sh"]
+      volumeMounts:
+        - mountPath: /tests
+          name: tests
+          readOnly: true
+        - mountPath: /tools
+          name: tools
+  volumes:
+    - name: tests
+      configMap:
+        name: release-name-gocd-tests
+    - name: tools
+      emptyDir: {}
+  restartPolicy: Never

@@ -1,0 +1,77 @@
+---
+# Source: ilum-livy-proxy/templates/livy-proxy-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-livy-proxy
+data:
+  ilumCoreUri: "http://ilum-core:9888/api/v1"
+  ilumUIPublicUri: "http://localhost:9777"
+---
+# Source: ilum-livy-proxy/templates/livy-proxy-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-livy-proxy
+  labels:
+    app: ilum-livy-proxy
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8998
+      targetPort: 8998
+  selector:
+    app: ilum-livy-proxy
+---
+# Source: ilum-livy-proxy/templates/livy-proxy-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-livy-proxy
+spec:
+  selector:
+    matchLabels:
+      app: ilum-livy-proxy
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ilum-livy-proxy
+    spec:
+      initContainers:
+        - name: wait-for-ilum-core
+          image: curlimages/curl:8.5.0
+          imagePullPolicy: IfNotPresent
+          command: [ 'sh', '-c', 'until curl -sf http://ilum-core:9888/api/dev/reactive/health ; do echo waiting for ilum-core; sleep 2; done']
+      containers:
+        - name: ilum-livy-proxy
+          image: ilum/livy-proxy:6.1.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+          env:
+            - name: ILUM_CORE_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: ilum-livy-proxy
+                  key: ilumCoreUri
+            - name: ILUM_UI_PUBLIC_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: ilum-livy-proxy
+                  key: ilumUIPublicUri
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64

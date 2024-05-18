@@ -1,0 +1,411 @@
+---
+# Source: helm-taiga/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.16.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+type: Opaque
+data:
+  postgresql-postgres-password: "UkhkcWNqamNQOQ=="
+  postgresql-password: "Y2hhbmdlbWU="
+---
+# Source: helm-taiga/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name
+  labels:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+    
+data:
+  TAIGA_DB_PASSWORD: Y2hhbmdlbWU=
+  TAIGA_SECRET_KEY: dmxSak41VjEzag==
+---
+# Source: helm-taiga/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name
+  labels:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+    
+data:
+  DEBUG: "False"
+  TAIGA_HOSTNAME: localhost:8080
+  TAIGA_SSL: "false"
+  TAIGA_SSL_BY_REVERSE_PROXY: "False"
+  TAIGA_DB_HOST: release-name-postgresql-headless
+  TAIGA_DB_NAME: taiga
+  TAIGA_DB_USER: taiga
+  TAIGA_ENABLE_EMAIL: "False"
+---
+# Source: helm-taiga/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name
+  labels:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+    
+spec:
+  accessModes:
+  - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+---
+# Source: helm-taiga/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.16.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  namespace: default
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: helm-taiga/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.16.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: helm-taiga/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  labels:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+    
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+---
+# Source: helm-taiga/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    app: helm-taiga
+    heritage: Helm
+    release: release-name
+    chart: helm-taiga-0.2.5
+    
+spec:
+  replicas: 1
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: helm-taiga
+      heritage: Helm
+      release: release-name
+      chart: helm-taiga-0.2.5
+      
+  template:
+    metadata:
+      labels:
+        app: helm-taiga
+        heritage: Helm
+        release: release-name
+        chart: helm-taiga-0.2.5
+        
+    spec:
+      initContainers:
+      - name: init-db
+        image: "mvitale1989/docker-taiga:20191031-4.2.14"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TAIGA_SLEEP
+          value: "60"
+        - name: TAIGA_DB_CHECK_ONLY
+          value: "True"
+        envFrom:
+        - secretRef:
+            name: release-name
+            optional: false
+        - configMapRef:
+            name: release-name
+            optional: false
+      containers:
+      - name: helm-taiga-front
+        image: "mvitale1989/docker-taiga:20191031-4.2.14"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+        env:
+        - name: TAIGA_COMPONENT
+          value: "front"
+        - name: TAIGA_SKIP_DB_CHECK
+          value: "True"
+        envFrom:
+        - secretRef:
+            name: release-name
+            optional: false
+        - configMapRef:
+            name: release-name
+            optional: false
+        volumeMounts:
+        - name: taiga-data
+          mountPath: /usr/src/taiga-back/media
+        resources:
+          {}
+      - name: helm-taiga-back
+        image: "mvitale1989/docker-taiga:20191031-4.2.14"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /api/v1/projects
+            port: 80
+        readinessProbe:
+          httpGet:
+            path: /api/v1/projects
+            port: 80
+        env:
+        - name: TAIGA_COMPONENT
+          value: "back"
+        - name: TAIGA_SKIP_DB_CHECK
+          value: "True"
+        envFrom:
+        - secretRef:
+            name: release-name
+            optional: false
+        - configMapRef:
+            name: release-name
+            optional: false
+        volumeMounts:
+        - name: taiga-data
+          mountPath: /usr/src/taiga-back/media
+        resources:
+          {}
+      volumes:
+      - name: taiga-data
+        persistentVolumeClaim:
+          claimName: release-name
+---
+# Source: helm-taiga/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.16.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+  namespace: default
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.16.2
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+        app.kubernetes.io/component: primary
+    spec:      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      automountServiceAccountToken: false
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.14.0-debian-10-r28
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-postgres-password
+            - name: POSTGRES_USER
+              value: "taiga"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "taiga"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "taiga" -d "dbname=taiga" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "taiga" -d "dbname=taiga" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "2Gi"

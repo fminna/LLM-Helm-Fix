@@ -1,0 +1,312 @@
+---
+# Source: appmesh-prometheus/templates/account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: appmesh-prometheus/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  prometheus.yml: |-
+    global:
+      scrape_interval: 5s
+
+    scrape_configs:
+
+    # Scrape config for AppMesh Envoy sidecar
+    - job_name: 'appmesh-envoy'
+      metrics_path: /stats/prometheus
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        action: keep
+        regex: '^envoy$'
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: ${1}:9901
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+      # Exclude high cardinality metrics
+      metric_relabel_configs:
+      - source_labels: [ cluster_name ]
+        regex: '(outbound|inbound|prometheus_stats).*'
+        action: drop
+      - source_labels: [ tcp_prefix ]
+        regex: '(outbound|inbound|prometheus_stats).*'
+        action: drop
+      - source_labels: [ listener_address ]
+        regex: '(.+)'
+        action: drop
+      - source_labels: [ http_conn_manager_listener_prefix ]
+        regex: '(.+)'
+        action: drop
+      - source_labels: [ http_conn_manager_prefix ]
+        regex: '(.+)'
+        action: drop
+      - source_labels: [ __name__ ]
+        regex: 'envoy_tls.*'
+        action: drop
+      - source_labels: [ __name__ ]
+        regex: 'envoy_tcp_downstream.*'
+        action: drop
+      - source_labels: [ __name__ ]
+        regex: 'envoy_http_(stats|admin).*'
+        action: drop
+      - source_labels: [ __name__ ]
+        regex: 'envoy_cluster_(lb|retry|bind|internal|max|original).*'
+        action: drop
+
+    # Scrape config for API servers
+    - job_name: 'kubernetes-apiservers'
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - default
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: kubernetes;https
+
+    # Scrape config for cAdvisor
+    - job_name: 'kubernetes-cadvisor'
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      # Exclude high cardinality metrics
+      metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: (container|machine)_(cpu|memory|network|fs)_(.+)
+        action: keep
+      - source_labels: [__name__]
+        regex: container_memory_failures_total
+        action: drop
+
+    # Scrape config for pods
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - source_labels: [ __address__ ]
+        regex: '.*9901.*'
+        action: drop
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: kubernetes_pod_name
+---
+# Source: appmesh-prometheus/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - services
+      - endpoints
+      - pods
+      - nodes/proxy
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    verbs: ["get"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+# Source: appmesh-prometheus/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-appmesh-prometheus
+subjects:
+- name: release-name-appmesh-prometheus
+  namespace: default
+  kind: ServiceAccount
+---
+# Source: appmesh-prometheus/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: appmesh-prometheus
+    app.kubernetes.io/instance: release-name
+---
+# Source: appmesh-prometheus/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-appmesh-prometheus
+  labels:
+    app.kubernetes.io/name: appmesh-prometheus
+    helm.sh/chart: appmesh-prometheus-1.0.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.13.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: appmesh-prometheus
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: appmesh-prometheus
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/part-of: appmesh
+      annotations:
+        checksum/config: "242c20d6ae5902f32cb0e77c7a55592410b8c59925df23c701cc3443460b9985"
+    spec:
+      serviceAccountName: release-name-appmesh-prometheus
+      volumes:
+      - name: config-volume
+        configMap:
+          name: release-name-appmesh-prometheus
+      - name: data-volume
+        emptyDir: {}
+      initContainers:
+        - name: chown
+          image: alpine:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - chown 65534:65534 /mount;
+          volumeMounts:
+            - name: data-volume
+              mountPath: /mount
+      containers:
+        - name: appmesh-prometheus
+          image: "prom/prometheus:v2.13.1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--storage.tsdb.retention=6h"
+            - "--config.file=/etc/prometheus/prometheus.yml"
+          ports:
+            - name: http
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/prometheus
+            - name: data-volume
+              mountPath: /prometheus/data
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi

@@ -1,0 +1,790 @@
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+---
+# Source: pyramidanalytics/templates/role.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: default
+  name: pa-service
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 5s
+    scrape_configs:
+    - job_name: 'prometheus'
+      static_configs:
+        - targets: ['localhost:9090']
+    - job_name: 'pyramid_web'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)(?::\d+);(\d+)
+        replacement: $1:$2
+      - source_labels: [__address__]
+        action: replace
+        regex: ([^:]+)(?::\d+)?
+        replacement: $1:9090
+        target_label: __address__
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)(?::\d+);(\d+)
+        replacement: $1:$2
+    - job_name: 'pyramid_svc'
+      scrape_interval: 5m
+      kubernetes_sd_configs:
+      - role: service      
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)(?::\d+);(\d+)
+        replacement: $1:$2
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - configmaps
+    verbs: ["get"]
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: default
+---
+# Source: pyramidanalytics/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pyramid-secrets-role
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "list", "update", "create"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list","get"]
+---
+# Source: pyramidanalytics/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pyramid-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: default
+roleRef:
+  kind: Role
+  name: pyramid-secrets-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: prometheus-service
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: promui
+      port: 9090
+      targetPort: 9090
+---
+# Source: pyramidanalytics/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pyramid
+  namespace: default
+  labels:
+    app: pyramid
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    app: paws
+  type: LoadBalancer
+  ports:
+    - name: "http"
+      port: 8181
+      targetPort: 8181
+---
+# Source: pyramidanalytics/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pyramid-ws-metrics
+  namespace: default
+  labels:
+    app: pyramid-ws-metrics
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    prometheus.io/port: "9090"
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metricsfull"
+spec:
+  selector:
+    app: paws
+  type: ClusterIP
+  ports:
+    - name: "metrics"
+      port: 9090
+      targetPort: 9090
+---
+# Source: pyramidanalytics/templates/ai_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: paai
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: paai
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: paai
+          image: "pyramidanalytics/ai:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "16000m"
+              memory: "16000Mi"
+              ephemeral-storage: "5Gi"
+            requests:
+              cpu: "4000m"
+              memory: "4000Mi"
+              ephemeral-storage: "3Gi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/gis.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gis-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: pagis
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pagis
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: pagis
+          image: "pyramidanalytics/gis:2023.12.178"
+          imagePullPolicy: "IfNotPresent"
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "1500m"
+              memory: "1500Mi"
+            requests:
+              cpu: "500m"
+              memory: "500Mi"
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/nlp_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nlp-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: panlp
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: panlp
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: panlp
+          image: "pyramidanalytics/nlp:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "4000m"
+              memory: "8000Mi"
+            requests:
+              cpu: "2000m"
+              memory: "4000Mi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/prometheus.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus-cont
+          image: prom/prometheus
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+          ports:
+            - containerPort: 9090
+          securityContext:
+              allowPrivilegeEscalation: false
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        # user id for user `nobody`
+        runAsUser: 65534
+        runAsGroup: 65534
+---
+# Source: pyramidanalytics/templates/rte_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: parte
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: parte
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: parte
+          image: "pyramidanalytics/rte:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "8000m"
+              memory: "8000Mi"
+            requests:
+              cpu: "2000m"
+              memory: "4000Mi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: satellite_count
+              value: "3"
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/rtr_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: partr
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: partr
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: partr
+          image: "pyramidanalytics/rtr:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "4000m"
+              memory: "1000Mi"
+            requests:
+              cpu: "1000m"
+              memory: "1000Mi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/solve_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solve-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: pasolve
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pasolve
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: pasolve
+          image: "pyramidanalytics/solve:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "4000m"
+              memory: "8000Mi"
+            requests:
+              cpu: "2000m"
+              memory: "4000Mi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/te_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: pate
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pate
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 300
+      containers:
+        - name: pate
+          image: "pyramidanalytics/te:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "16000m"
+              memory: "16000Mi"
+              ephemeral-storage: "10Gi"
+            requests:
+              cpu: "4000m"
+              memory: "4000Mi"
+              ephemeral-storage: "3Gi"
+          
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                    "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: satellite_count
+              value: "3"
+            - name: printer_count
+              value: "3"
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+---
+# Source: pyramidanalytics/templates/ws_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service
+  namespace: default
+  labels:
+    helm.sh/chart: pyramidanalytics-2023.12.178
+    app.kubernetes.io/name: pyramidanalytics
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2023.12.178"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: paws
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: paws
+        app.kubernetes.io/name: pyramidanalytics
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: paws
+          image: "pyramidanalytics/ws:2023.12.178"
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+                - ./readiness.sh
+          resources:
+            limits:
+              cpu: "16000m"
+              memory: "2000Mi"
+              ephemeral-storage: "4Gi"
+            requests:
+              cpu: "2000m"
+              memory: "2000Mi"
+              ephemeral-storage: "2Gi"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  [
+                     "./stop_main_processes.sh"
+                  ]
+          env:
+            - name: host_name
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: machine_desc
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: namespace
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 8181
+          securityContext:
+              allowPrivilegeEscalation: false
+      
+      
+      securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000

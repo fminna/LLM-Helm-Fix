@@ -1,0 +1,286 @@
+---
+# Source: radar-upload-source-connector/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-radar-upload-source-connector
+  labels:
+    helm.sh/chart: radar-upload-source-connector-0.3.1
+    app.kubernetes.io/name: radar-upload-source-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      helm.sh/chart: radar-upload-source-connector-0.3.1
+      app.kubernetes.io/name: radar-upload-source-connector
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "0.5.10"
+      app.kubernetes.io/managed-by: Helm
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-zookeeper
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-kafka
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-schema-registry
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: management-portal
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: minio
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  policyTypes:
+  - Egress
+---
+# Source: radar-upload-source-connector/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-radar-upload-source-connector
+  labels:
+    helm.sh/chart: radar-upload-source-connector-0.3.1
+    app.kubernetes.io/name: radar-upload-source-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.10"
+    app.kubernetes.io/managed-by: Helm
+data:
+  source-upload.properties: |
+    name=radar-upload-source
+    connector.class=org.radarbase.connect.upload.UploadSourceConnector
+    tasks.max=4
+    upload.source.client.id=radar_upload_connect
+    upload.source.client.secret=upload_secret
+    upload.source.client.tokenUrl=http://management-portal:8080/managementportal/oauth/token
+    upload.source.backend.baseUrl=http://radar-upload-connect-backend:8085/upload/api/
+    upload.source.poll.interval.ms=60000
+    upload.source.queue.size=10000
+    upload.source.record.converter.classes=org.radarbase.connect.upload.converter.altoida.AltoidaConverterFactory,org.radarbase.connect.upload.converter.axivity.AxivityConverterFactory,org.radarbase.connect.upload.converter.oxford.WearableCameraConverterFactory,org.radarbase.connect.upload.converter.gaitup.Physilog5ConverterFactory
+    upload.source.file.uploader.type=s3
+    upload.source.file.uploader.target.endpoint=http://minio:9000/
+    upload.source.file.uploader.target.root.directory=radar-output-storage
+    upload.source.file.uploader.username=access_key
+    upload.source.file.uploader.password=secret
+  healthcheck.sh: |
+    #!/bin/sh
+    STATUS=$(curl -sf localhost:8083/connectors/radar-upload-source/status | grep -o '\"state\":\"[^\"]*\"')
+    if echo "$STATUS" | tr '\\n' ',' | grep -q FAILED; then
+      exit 1
+    elif [ $(echo "$STATUS" | grep RUNNING | wc -l) -le 1 ]; then
+      exit 1
+    fi
+---
+# Source: radar-upload-source-connector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-radar-upload-source-connector
+  labels:
+    helm.sh/chart: radar-upload-source-connector-0.3.1
+    app.kubernetes.io/name: radar-upload-source-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: radar-upload-source-connector
+    app.kubernetes.io/instance: release-name
+---
+# Source: radar-upload-source-connector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-radar-upload-source-connector
+  labels:
+    helm.sh/chart: radar-upload-source-connector-0.3.1
+    app.kubernetes.io/name: radar-upload-source-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radar-upload-source-connector
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: radar-upload-source-connector
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: "app.kubernetes.io/name"
+                    operator: In
+                    values:
+                    - radar-upload-source-connector
+                  - key: "app.kubernetes.io/instance"
+                    operator: In
+                    values:
+                    - release-name
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: radar-upload-source-connector
+          securityContext:
+            {}
+          image: "radarbase/radar-connect-upload-source:0.5.10"
+          imagePullPolicy: 
+          env:
+          - name: CONNECT_BOOTSTRAP_SERVERS
+            value: "PLAINTEXT://cp-kafka-headless:9092"
+          - name: CONNECT_GROUP_ID
+            value: "default"
+          - name: CONNECT_CONFIG_STORAGE_TOPIC
+            value: "default.config"
+          - name: CONNECT_OFFSET_STORAGE_TOPIC
+            value: "default.offsets"
+          - name: CONNECT_STATUS_STORAGE_TOPIC
+            value: "default.status"
+          - name: CONNECT_KEY_CONVERTER
+            value: "io.confluent.connect.avro.AvroConverter"
+          - name: CONNECT_VALUE_CONVERTER
+            value: "io.confluent.connect.avro.AvroConverter"
+          - name: CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL
+            value: "http://cp-schema-registry:8081"
+          - name: CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL
+            value: "http://cp-schema-registry:8081"
+          - name: CONNECT_INTERNAL_KEY_CONVERTER
+            value: "org.apache.kafka.connect.json.JsonConverter"
+          - name: CONNECT_INTERNAL_VALUE_CONVERTER
+            value: "org.apache.kafka.connect.json.JsonConverter"
+          - name: CONNECT_OFFSET_STORAGE_FILE_FILENAME
+            value: "/var/lib/kafka-connect-upload-source/logs/connect.offsets"
+          - name: CONNECT_REST_ADVERTISED_HOST_NAME
+            value: release-name-radar-upload-source-connector
+          - name: CONNECT_ZOOKEEPER_CONNECT
+            value: "cp-zookeeper-headless:2181"
+          - name: CONNECT_VALUE_CONVERTER_CONNECT_META_DATA
+            value: "false"
+          - name: CONNECT_OFFSET_FLUSH_INTERVAL_MS
+            value: "5000"
+          - name: CONNECT_PRODUCER_COMPRESSION_TYPE
+            value: lz4
+          - name: CONNECT_PRODUCER_BATCH_SIZE
+            value: "200000"
+          - name: CONNECT_PRODUCER_BUFFER_MEMORY
+            value: "2000000"
+          - name: CONNECTOR_PROPERTY_FILE_PREFIX
+            value: "upload/source-upload"
+          - name: KAFKA_HEAP_OPTS
+            value: "-Xms800m -Xmx2g"
+          - name: KAFKA_BROKERS
+            value: "3"
+          - name: CONNECT_LOG4J_LOGGERS
+            value: "org.reflections=ERROR"
+          - name: CONNECT_REST_PORT
+            value: "8083"
+          - name: CONNECT_SECURITY_PROTOCOL
+            value: PLAINTEXT
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 800Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kafka-connect/upload/
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - /etc/kafka-connect/upload/healthcheck.sh
+            initialDelaySeconds: 5
+            periodSeconds: 60
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - /etc/kafka-connect/upload/healthcheck.sh
+            initialDelaySeconds: 5
+            periodSeconds: 60
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-radar-upload-source-connector
+---
+# Source: radar-upload-source-connector/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-radar-upload-source-connector-test-connection"
+  labels:
+    app.kubernetes.io/name: radar-upload-source-connector
+    helm.sh/chart: radar-upload-source-connector-0.3.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-radar-upload-source-connector:80']
+  restartPolicy: Never

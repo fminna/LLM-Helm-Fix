@@ -1,0 +1,216 @@
+---
+# Source: aws-otel-collector/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  labels:
+    helm.sh/chart: release-name-0.2.0
+    app.kubernetes.io/name: release-name
+    app.kubernetes.io/version: "v0.33.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: aws-otel-collector/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name
+  labels:
+    helm.sh/chart: release-name-0.2.0
+    app.kubernetes.io/name: release-name
+    app.kubernetes.io/version: "v0.33.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  otel-agent-config: |
+    extensions:
+      health_check:
+
+    receivers:
+      awscontainerinsightreceiver:
+        add_full_pod_name_metric_label: true
+
+    processors:
+      batch/metrics:
+        timeout: 60s
+
+    exporters:
+      awsemf:
+        namespace: ContainerInsights
+        log_group_name: '/aws/containerinsights/{ClusterName}/performance'
+        log_stream_name: '{NodeName}'
+        resource_to_telemetry_conversion:
+          enabled: true
+        dimension_rollup_option: NoDimensionRollup
+        parse_json_encoded_attr_values: [Sources, kubernetes]
+        metric_declarations:
+          - dimensions: [[PodName, Namespace, ClusterName]]
+            metric_name_selectors:
+              - pod_cpu_utilization
+              - pod_memory_utilization
+              - pod_number_of_running_containers
+              - pod_number_of_container_restarts
+          - dimensions: [[FullPodName, Namespace, ClusterName]]
+            metric_name_selectors:
+              - pod_cpu_utilization
+              - pod_memory_utilization
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [awscontainerinsightreceiver]
+          processors: [batch/metrics]
+          exporters: [awsemf]
+
+      extensions: [health_check]
+---
+# Source: aws-otel-collector/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "endpoints"]
+  verbs: ["list", "watch", "get"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["list", "watch", "get"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/proxy"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes/stats", "configmaps", "events"]
+  verbs: ["create", "get"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["update"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["otel-container-insight-clusterleader"]
+  verbs: ["get","update", "create"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create","get", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  resourceNames: ["otel-container-insight-clusterleader"]
+  verbs: ["get","update", "create"]
+---
+# Source: aws-otel-collector/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: aws-otel-collector/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name
+  labels:
+    helm.sh/chart: release-name-0.2.0
+    app.kubernetes.io/name: release-name
+    app.kubernetes.io/version: "v0.33.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: release-name
+    spec:
+      serviceAccountName: release-name
+      containers:
+      - name: release-name
+        image: "public.ecr.aws/aws-observability/aws-otel-collector:v0.33.1"
+        imagePullPolicy: IfNotPresent
+
+        env:
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: HOST_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: K8S_NAMESPACE
+          valueFrom:
+             fieldRef:
+               fieldPath: metadata.namespace
+
+        command:
+          - "/awscollector"
+          - "--config=/conf/otel-agent-config.yaml"
+
+        volumeMounts:
+        - name: rootfs
+          mountPath: /rootfs
+          readOnly: true
+        - name: dockersock
+          mountPath: /var/run/docker.sock
+          readOnly: true
+        - name: containerdsock
+          mountPath: /run/containerd/containerd.sock
+        - name: varlibdocker
+          mountPath: /var/lib/docker
+          readOnly: true
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: devdisk
+          mountPath: /dev/disk
+          readOnly: true
+        - name: otel-agent-config-vol
+          mountPath: /conf
+
+        resources:
+          limits:
+            cpu: 200m
+            memory: 200Mi
+          requests:
+            cpu: 200m
+            memory: 200Mi
+        
+      volumes:
+      - configMap:
+          name: release-name
+          items:
+            - key: otel-agent-config
+              path: otel-agent-config.yaml
+        name: otel-agent-config-vol
+      - name: rootfs
+        hostPath:
+          path: /
+      - name: dockersock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: varlibdocker
+        hostPath:
+          path: /var/lib/docker
+      - name: containerdsock
+        hostPath:
+          path: /run/containerd/containerd.sock
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: devdisk
+        hostPath:
+          path: /dev/disk/

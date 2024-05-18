@@ -1,0 +1,235 @@
+---
+# Source: koordinator-yarn-copilot/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: koord-yarn-operator
+  namespace: koordinator-system
+---
+# Source: koordinator-yarn-copilot/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yarn-config
+  namespace: koordinator-system
+data:
+  yarn-site.xml: |
+    <configuration>
+        <property>
+            <name>yarn.resourcemanager.admin.address</name>
+            <value>resource-manager.hadoop-yarn:8033</value>
+        </property>
+        <property>
+            <name>yarn.resourcemanager.address</name>
+            <value>resource-manager.hadoop-yarn:8032</value>
+        </property>
+    </configuration>
+  core-site.xml: |
+    <configuration>
+    </configuration>
+---
+# Source: koordinator-yarn-copilot/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: koord-yarn-operator-cluserrole
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - configmaps/status
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - nodes/status
+      - pods
+      - pods/status
+      - namespaces
+      - events
+    verbs:
+      - patch
+      - update
+      - get
+      - list
+      - watch
+---
+# Source: koordinator-yarn-copilot/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  creationTimestamp: null
+  name: koord-yarn-operator-custom-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: koord-yarn-operator-cluserrole
+subjects:
+  - kind: ServiceAccount
+    name: koord-yarn-operator
+    namespace: koordinator-system
+---
+# Source: koordinator-yarn-copilot/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: koord-yarn-operator-role:leaderelection
+  namespace: koordinator-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - configmaps/status
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  - apiGroups:
+      - ""
+      - events.k8s.io
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+      - update
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - get
+      - update
+---
+# Source: koordinator-yarn-copilot/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: koord-yarn-operator-rolebinding:leaderelection
+  namespace: koordinator-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: koord-yarn-operator-role:leaderelection
+subjects:
+  - kind: ServiceAccount
+    name: koord-yarn-operator
+    namespace: koordinator-system
+---
+# Source: koordinator-yarn-copilot/templates/yarn-operator.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: koord-yarn-operator-service
+  namespace: koordinator-system
+spec:
+  selector:
+    koord-app: koord-yarn-operator
+  type: ClusterIP
+  clusterIP: None
+---
+# Source: koordinator-yarn-copilot/templates/yarn-operator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: koord-yarn-operator
+  namespace: koordinator-system
+  labels:
+    koord-app: koord-yarn-operator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      koord-app: koord-yarn-operator
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        koord-app: koord-yarn-operator
+    spec:
+      containers:
+        - args:
+            - --enable-leader-election
+            - --metrics-addr=:8080
+            - --logtostderr=true
+            - --leader-election-namespace=koordinator-system
+            - --v=4
+            - --sync-period=0
+          command:
+            - /koord-yarn-operator
+          image: registry.cn-beijing.aliyuncs.com/koordinator-sh/yarn-operator:v0.1.0
+          imagePullPolicy: Always
+          name: yarn-operator
+          env:
+          - name: HADOOP_CONF_DIR
+            value: /etc/hadoop-conf
+          ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: yarn-config-volume
+              mountPath: /etc/hadoop-conf
+      volumes:
+        - name: yarn-config-volume
+          configMap:
+            name: yarn-config
+      hostNetwork: false
+      terminationGracePeriodSeconds: 10
+      restartPolicy: Always
+      serviceAccountName: koord-yarn-operator
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: koord-app
+                      operator: In
+                      values:
+                        - koord-yarn-operator
+                topologyKey: kubernetes.io/hostname
+              weight: 100

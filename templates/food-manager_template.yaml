@@ -1,0 +1,442 @@
+---
+# Source: food-manager/charts/mongodb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+secrets:
+  - name: release-name-mongodb
+automountServiceAccountToken: true
+---
+# Source: food-manager/charts/mongodb/templates/common-scripts-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongodb-common-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+data:
+  startup-probe.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.hello().isWritablePrimary || db.hello().secondary' | grep 'true'
+  readiness-probe.sh: |
+    #!/bin/bash
+    # Run the proper check depending on the version
+    [[ $(mongod -version | grep "db version") =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] && VERSION=${BASH_REMATCH[1]}
+    . /opt/bitnami/scripts/libversion.sh
+    VERSION_MAJOR="$(get_sematic_version "$VERSION" 1)"
+    VERSION_MINOR="$(get_sematic_version "$VERSION" 2)"
+    VERSION_PATCH="$(get_sematic_version "$VERSION" 3)"
+    readiness_test='db.isMaster().ismaster || db.isMaster().secondary'
+    if [[ ( "$VERSION_MAJOR" -ge 5 ) || ( "$VERSION_MAJOR" -ge 4 && "$VERSION_MINOR" -ge 4 && "$VERSION_PATCH" -ge 2 ) ]]; then
+        readiness_test='db.hello().isWritablePrimary || db.hello().secondary'
+    fi
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "${readiness_test}" | grep 'true'
+  ping-mongodb.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "db.adminCommand('ping')"
+---
+# Source: food-manager/charts/mongodb/templates/standalone/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+  annotations:
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "100Gi"
+---
+# Source: food-manager/templates/backend/back-end.yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-food-manager
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      # TODO: customizable
+      storage: 50Gi
+---
+# Source: food-manager/charts/auth/templates/api/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-auth-api
+spec:
+  selector:
+    app: release-name-auth-api
+  type: ClusterIP
+  ports:
+  - port: 80
+---
+# Source: food-manager/charts/auth/templates/gui/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-auth-gui
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-auth-gui
+  ports:
+  - port: 80
+---
+# Source: food-manager/charts/auth/templates/proxy/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-auth-proxy
+spec:
+  selector:
+    app: release-name-auth-proxy
+  type: NodePort
+  ports:
+  - port: 80
+    nodePort: 30401
+---
+# Source: food-manager/charts/mongodb/templates/standalone/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: "mongodb"
+      port: 27017
+      targetPort: mongodb
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/component: mongodb
+---
+# Source: food-manager/templates/backend/back-end.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-food-manager
+spec:
+  type: NodePort
+  selector:
+    app: release-name-food-manager
+  ports:
+    - port: 80
+      nodePort: 30022
+---
+# Source: food-manager/templates/gui/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-food-manager-gui
+spec:
+  selector:
+    app: release-name-food-manager-gui
+  type: NodePort
+  ports:
+  - port: 80
+    
+    nodePort: 30400
+---
+# Source: food-manager/charts/auth/templates/api/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-auth-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-auth-api
+  template:
+    metadata:
+      labels:
+        app: release-name-auth-api
+    spec:
+      containers:
+      - name: release-name-auth-api
+        image: moreillon/user-manager-mongoose
+        ports:
+        - containerPort: 80
+        env:
+        - name: MONGODB_URL
+          value: mongodb://release-name-mongodb
+        - name: JWT_SECRET
+          value: keyboardcat
+---
+# Source: food-manager/charts/auth/templates/gui/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-auth-gui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-auth-gui
+  template:
+    metadata:
+      labels:
+        app: release-name-auth-gui
+    spec:
+      containers:
+      - name: release-name-auth-gui
+        # TODO: tag
+        image: moreillon/user-manager-front
+        ports:
+        - containerPort: 80
+        env:
+        - name: VUE_APP_USER_MANAGER_API_URL
+          value: /proxy/api
+---
+# Source: food-manager/charts/auth/templates/proxy/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-auth-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-auth-proxy
+  template:
+    metadata:
+      labels:
+        app: release-name-auth-proxy
+    spec:
+      containers:
+      - name: release-name-auth-proxy
+        image: moreillon/api-proxy
+        ports:
+        - containerPort: 80
+        env:
+        # FIXME: Might not match if truncated
+        - name: PROXY_API
+          value: http://release-name-auth-api
+        - name: PROXY_ROOT
+          value: http://release-name-auth-gui
+---
+# Source: food-manager/charts/mongodb/templates/standalone/dep-sts.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/version: 6.0.10
+        helm.sh/chart: mongodb-13.18.5
+        app.kubernetes.io/component: mongodb
+    spec:
+      
+      serviceAccountName: release-name-mongodb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: mongodb
+                    app.kubernetes.io/component: mongodb
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      containers:
+        - name: mongodb
+          image: docker.io/bitnami/mongodb:6.0.10-debian-11-r8
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: MONGODB_SYSTEM_LOG_VERBOSITY
+              value: "0"
+            - name: MONGODB_DISABLE_SYSTEM_LOG
+              value: "no"
+            - name: MONGODB_DISABLE_JAVASCRIPT
+              value: "no"
+            - name: MONGODB_ENABLE_JOURNAL
+              value: "yes"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: MONGODB_ENABLE_DIRECTORY_PER_DB
+              value: "no"
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            exec:
+              command:
+                - /bitnami/scripts/ping-mongodb.sh
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bitnami/scripts/readiness-probe.sh
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /bitnami/mongodb
+              subPath: 
+            - name: common-scripts
+              mountPath: /bitnami/scripts
+      volumes:
+        - name: common-scripts
+          configMap:
+            name: release-name-mongodb-common-scripts
+            defaultMode: 0550
+        - name: datadir
+          persistentVolumeClaim:
+            claimName: release-name-mongodb
+---
+# Source: food-manager/templates/backend/back-end.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-food-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-food-manager
+  template:
+    metadata:
+      labels:
+        app: release-name-food-manager
+    spec:
+      containers:
+        - name: release-name-food-manager
+          image: moreillon/food-manager:f062718f
+          env:
+            - name: MONGODB_URL
+              value: mongodb://release-name-mongodb
+            - name: IDENTIFICATION_URL
+              value: http://release-name-auth-api/users/self
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - mountPath: /usr/src/app/uploads
+              name: release-name-food-manager
+      volumes:
+        - name: release-name-food-manager
+          persistentVolumeClaim:
+            claimName: release-name-food-manager
+---
+# Source: food-manager/templates/gui/front-end.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-food-manager-gui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-food-manager-gui
+  template:
+    metadata:
+      labels:
+        app: release-name-food-manager-gui
+    spec:
+      containers:
+      - name: release-name-food-manager-gui
+        image: moreillon/food-manager-front:852d6533
+        ports:
+        - containerPort: 80
+        env:
+        - name: VUE_APP_FOOD_MANAGER_API_URL
+          value: /proxy/api
+        - name: PROXY_API
+          value: http://release-name-food-manager-api
+        - name: VUE_APP_LOGIN_URL
+          value: /proxy/auth/auth/login
+        - name: VUE_APP_IDENTIFICATION_URL
+          value: /proxy/auth/users/self
+        - name: PROXY_AUTH
+          value:  http://release-name-auth-api

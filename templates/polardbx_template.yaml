@@ -1,0 +1,1072 @@
+---
+# Source: polardbx/templates/scriptstemplate.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polardbx-scripts
+  labels:
+    helm.sh/chart: polardbx-0.9.0
+    app.kubernetes.io/name: polardbx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  xstore-post-start.sh: |-
+    #!/bin/sh
+    # usage: xstore-post-start.sh type_name
+    # type_name: component.type, in uppercase.
+    
+    TYPE_NAME=$1
+    
+    # setup shared-channel.json
+    SHARED_CHANNEL_JSON='{"nodes": ['
+    
+    i=0
+    while [ $i -lt $(eval echo \$KB_"$TYPE_NAME"_N) ]; do
+      hostname=$(eval echo \$KB_"$TYPE_NAME"_"$i"_HOSTNAME)
+      pod=$(echo "$hostname" | cut -d'.' -f1)
+    
+      NODE_OBJECT=$(printf '{"pod": "%s", "host": "%s", "port": 11306, "role": "candidate", "node_name": "%s" }' "$pod" "$hostname" "$pod")
+      SHARED_CHANNEL_JSON+="$NODE_OBJECT,"
+      i=$(( i + 1))
+    done
+    
+    SHARED_CHANNEL_JSON=${SHARED_CHANNEL_JSON%,}
+    SHARED_CHANNEL_JSON+=']}'
+    
+    mkdir -p /data/shared/
+    echo $SHARED_CHANNEL_JSON > /data/shared/shared-channel.json
+    
+  xstore-setup.sh: |-
+    #!/bin/sh
+    # usage: xstore-setup.sh
+    # setup root account for xstore and run entrypoint
+    
+    function setup_account() {
+        until myc -e 'select 1'; do
+            sleep 1;
+            echo "wait mysql ready"
+        done
+        echo "mysql is ok"
+        myc -e "SET sql_log_bin=OFF;SET force_revise=ON;CREATE USER IF NOT EXISTS $KB_SERVICE_USER IDENTIFIED BY '$KB_SERVICE_PASSWORD';GRANT ALL PRIVILEGES ON *.* TO $KB_SERVICE_USER;ALTER USER $KB_SERVICE_USER IDENTIFIED BY '$KB_SERVICE_PASSWORD';"
+    
+    }
+    
+    
+    setup_account &
+    /tools/xstore/current/venv/bin/python3 /tools/xstore/current/entrypoint.py
+    
+  gms-init.sql: |-
+    CREATE DATABASE IF NOT EXISTS polardbx_meta_db;
+    USE polardbx_meta_db;
+    
+    CREATE TABLE IF NOT EXISTS server_info (
+      id BIGINT(11) NOT NULL auto_increment,
+      gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP on UPDATE CURRENT_TIMESTAMP,
+      inst_id VARCHAR(128) NOT NULL,
+      inst_type INT(11) NOT NULL,
+      ip VARCHAR(128) NOT NULL,
+      port INT(11) NOT NULL,
+      htap_port INT(11) NOT NULL,
+      mgr_port INT(11) NOT NULL,
+      mpp_port INT(11) NOT NULL,
+      status INT(11) NOT NULL,
+      region_id VARCHAR(128) DEFAULT NULL,
+      azone_id VARCHAR(128) DEFAULT NULL,
+      idc_id VARCHAR(128) DEFAULT NULL,
+      cpu_core INT(11) DEFAULT NULL,
+      mem_size INT(11) DEFAULT NULL,
+      extras text DEFAULT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_inst_id_addr (inst_id, ip, port),
+      INDEX idx_inst_id_status (inst_id, status)
+    ) engine = innodb DEFAULT charset = utf8;
+    
+    CREATE TABLE IF NOT EXISTS storage_info (
+      id BIGINT(11) NOT NULL auto_increment,
+      gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP on UPDATE CURRENT_TIMESTAMP,
+      inst_id VARCHAR(128) NOT NULL,
+      storage_inst_id VARCHAR(128) NOT NULL,
+      storage_master_inst_id VARCHAR(128) NOT NULL,
+      ip VARCHAR(128) NOT NULL,
+      port INT(11) NOT NULL comment 'port for mysql',
+      xport INT(11) DEFAULT NULL comment 'port for x-protocol',
+      user VARCHAR(128) NOT NULL,
+      passwd_enc text NOT NULL,
+      storage_type INT(11) NOT NULL comment '0:x-cluster, 1:mysql, 2:polardb',
+      inst_kind INT(11) NOT NULL comment '0:master, 1:slave, 2:metadb',
+      status INT(11) NOT NULL comment '0:storage ready, 1:storage not_ready',
+      region_id VARCHAR(128) DEFAULT NULL,
+      azone_id VARCHAR(128) DEFAULT NULL,
+      idc_id VARCHAR(128) DEFAULT NULL,
+      max_conn INT(11) NOT NULL,
+      cpu_core INT(11) DEFAULT NULL,
+      mem_size INT(11) DEFAULT NULL comment 'mem unit: MB',
+      is_vip INT(11) DEFAULT NULL COMMENT '0:ip is NOT vip, 1:ip is vip',
+      extras text DEFAULT NULL COMMENT 'reserve for extra info',
+      PRIMARY KEY (id),
+      INDEX idx_inst_id_status (inst_id, status),
+      UNIQUE KEY uk_inst_id_addr (storage_inst_id, ip, port, inst_kind)
+    ) engine = innodb DEFAULT charset = utf8;
+    
+    CREATE TABLE if not exists user_priv (
+      id bigint(11) NOT NULL AUTO_INCREMENT,
+      gmt_created timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      user_name char(32) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
+      host char(60) COLLATE utf8_unicode_ci NOT NULL DEFAULT '',
+      password char(100) COLLATE utf8_unicode_ci NOT NULL,
+      select_priv tinyint(1) NOT NULL DEFAULT '0',
+      insert_priv tinyint(1) NOT NULL DEFAULT '0',
+      update_priv tinyint(1) NOT NULL DEFAULT '0',
+      delete_priv tinyint(1) NOT NULL DEFAULT '0',
+      create_priv tinyint(1) NOT NULL DEFAULT '0',
+      drop_priv tinyint(1) NOT NULL DEFAULT '0',
+      grant_priv tinyint(1) NOT NULL DEFAULT '0',
+      index_priv tinyint(1) NOT NULL DEFAULT '0',
+      alter_priv tinyint(1) NOT NULL DEFAULT '0',
+      show_view_priv int(11) NOT NULL DEFAULT '0',
+      create_view_priv int(11) NOT NULL DEFAULT '0',
+      create_user_priv int(11) NOT NULL DEFAULT '0',
+      meta_db_priv int(11) NOT NULL DEFAULT '0',
+      PRIMARY KEY (id),
+      UNIQUE KEY uk (user_name, host)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8 COLLATE = utf8_unicode_ci COMMENT = 'Users and global privileges';
+    
+    CREATE TABLE IF NOT EXISTS quarantine_config (
+      id BIGINT(11) NOT NULL auto_increment,
+      gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP on UPDATE CURRENT_TIMESTAMP,
+      inst_id VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_unicode_ci NOT NULL,
+      group_name VARCHAR(200) CHARACTER SET utf8 COLLATE utf8_unicode_ci NOT NULL,
+      net_work_type VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_unicode_ci DEFAULT NULL,
+      security_ip_type VARCHAR(100) CHARACTER SET utf8 COLLATE utf8_unicode_ci DEFAULT NULL,
+      security_ips text CHARACTER SET utf8 COLLATE utf8_unicode_ci,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk (inst_id, group_name)
+    ) engine = innodb DEFAULT charset = utf8 comment = 'Quarantine config';
+    
+    
+    CREATE TABLE IF NOT EXISTS config_listener (
+      id bigint(11) NOT NULL AUTO_INCREMENT,
+      gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      data_id varchar(200) NOT NULL,
+      status int NOT NULL COMMENT '0:normal, 1:removed',
+      op_version bigint NOT NULL,
+      extras varchar(1024) DEFAULT NULL,
+      PRIMARY KEY (id),
+      INDEX idx_modify_ts (gmt_modified),
+      INDEX idx_status (status),
+      UNIQUE KEY uk_data_id (data_id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8;
+    
+    create table if not exists inst_config (
+      id bigint(11) NOT NULL AUTO_INCREMENT,
+      gmt_created timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      inst_id varchar(128) NOT NULL,
+      param_key varchar(128) NOT NULL,
+      param_val varchar(1024) NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_inst_id_key (inst_id, param_key)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8;
+    
+    CREATE TABLE IF NOT EXISTS polardbx_extra (
+      id BIGINT(11) NOT NULL auto_increment,
+      inst_id VARCHAR(128) NOT NULL,
+      name VARCHAR(128) NOT NULL,
+      type VARCHAR(10) NOT NULL,
+      comment VARCHAR(256) NOT NULL,
+      status INT(4) NOT NULL,
+      gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP on
+                 UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE uk_inst_id_name_type (inst_id, name, type)
+    ) engine = innodb DEFAULT charset = utf8 COLLATE = utf8_unicode_ci comment = 'extra table for polardbx manager';
+    
+    CREATE TABLE IF NOT EXISTS schema_change (
+        id           BIGINT(11)      NOT NULL AUTO_INCREMENT,
+        table_name   varchar(64)     NOT NULL,
+        version      int unsigned    NOT NULL,
+        gmt_created  timestamp       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        gmt_modified timestamp       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY table_name (table_name)
+        )   ENGINE = innodb DEFAULT CHARSET=utf8;
+    
+    CREATE TABLE IF NOT EXISTS k8s_topology (
+        id BIGINT(11) NOT NULL AUTO_INCREMENT,
+        uid VARCHAR(128) NOT NULL,
+        name VARCHAR(128) NOT NULL,
+        type VARCHAR(10) NOT NULL,
+        gmt_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        gmt_modified TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY(uid),
+        UNIQUE KEY(name, type)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8 COLLATE = utf8_unicode_ci COMMENT = 'PolarDBX K8s Topology';
+    
+    
+  gms-metadata.tpl: |-
+    USE polardbx_meta_db;
+    
+    INSERT IGNORE INTO schema_change(table_name, version) VALUES('user_priv', 1);
+    INSERT IGNORE INTO quarantine_config VALUES (NULL, NOW(), NOW(), '$KB_CLUSTER_NAME', 'default', NULL, NULL, '0.0.0.0/0');
+    
+    INSERT IGNORE INTO config_listener (id, gmt_created, gmt_modified, data_id, status, op_version, extras) VALUES (NULL, NOW(), NOW(), 'polardbx.server.info.$KB_CLUSTER_NAME', 0, 0, NULL);
+    INSERT IGNORE INTO config_listener (id, gmt_created, gmt_modified, data_id, status, op_version, extras) VALUES (NULL, NOW(), NOW(), 'polardbx.storage.info.$KB_CLUSTER_NAME', 0, 0, NULL);
+    INSERT IGNORE INTO config_listener (id, gmt_created, gmt_modified, data_id, status, op_version, extras) VALUES (NULL, NOW(), NOW(), 'polardbx.inst.config.$KB_CLUSTER_NAME', 0, 0, NULL);
+    INSERT IGNORE INTO config_listener (id, gmt_created, gmt_modified, data_id, status, op_version, extras) VALUES (NULL, NOW(), NOW(), 'polardbx.quarantine.config.$KB_CLUSTER_NAME', 0, 0, NULL);
+    INSERT IGNORE INTO config_listener (id, gmt_created, gmt_modified, data_id, status, op_version, extras) VALUES (NULL, NOW(), NOW(), 'polardbx.privilege.info', 0, 0, NULL);
+    
+    INSERT IGNORE INTO inst_config (inst_id, param_key,param_val) values ('$KB_CLUSTER_NAME','CONN_POOL_XPROTO_META_DB_PORT','0');
+    INSERT IGNORE INTO inst_config (inst_id, param_key,param_val) values ('$KB_CLUSTER_NAME','CDC_STARTUP_MODE','1');
+    INSERT IGNORE INTO inst_config (inst_id, param_key,param_val) values ('$KB_CLUSTER_NAME','CONN_POOL_MAX_POOL_SIZE','500');
+    INSERT IGNORE INTO inst_config (inst_id, param_key,param_val) values ('$KB_CLUSTER_NAME','MAX_PREPARED_STMT_COUNT','500000');
+    
+    INSERT IGNORE INTO storage_info (id, gmt_created, gmt_modified, inst_id, storage_inst_id, storage_master_inst_id,ip, port, xport, user, passwd_enc, storage_type, inst_kind, status, region_id, azone_id, idc_id, max_conn, cpu_core, mem_size, is_vip, extras)
+        VALUES (NULL, NOW(), NOW(), '$KB_CLUSTER_NAME', '$GMS_SVC_NAME', '$GMS_SVC_NAME', '$GMS_HOST', '3306', '31600', '$metaDbUser', '$ENC_PASSWORD', '3', '2', '0', NULL, NULL, NULL, 10000, 4,  34359738368 , '0', '');
+    
+    INSERT IGNORE INTO user_priv (id, gmt_created, gmt_modified, user_name, host, password, select_priv, insert_priv, update_priv, delete_priv, create_priv, drop_priv, grant_priv, index_priv, alter_priv, show_view_priv, create_view_priv, create_user_priv, meta_db_priv)
+        VALUES (NULL, now(), now(), '$metaDbUser', '%', '$SHA1_ENC_PASSWORD', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1');
+    
+    UPDATE config_listener SET op_version = op_version + 1 WHERE data_id = 'polardbx.privilege.info';
+  metadb-setup.sh: |-
+    #!/bin/sh
+    
+    until mysql -h$GMS_SVC_NAME -P$GMS_SVC_PORT -u$metaDbUser -p$metaDbNonEncPasswd -e 'select 1'; do
+        sleep 1;
+        echo "wait gms ready"
+    done
+    
+    function generate_dn_init_sql() {
+        echo "$DN_HEADLESS_SVC_NAME" | tr ',' '\n' | while IFS= read -r item
+        do
+          DN_HOSTNAME=$item
+          DN_NAME=$(echo "$DN_HOSTNAME" | cut -d'.' -f2 | sed s/-headless//)
+          dn_init_sql="INSERT IGNORE INTO storage_info (id, gmt_created, gmt_modified, inst_id, storage_inst_id, storage_master_inst_id,ip, port, xport, user, passwd_enc, storage_type, inst_kind, status, region_id, azone_id, idc_id, max_conn, cpu_core, mem_size, is_vip, extras)
+          VALUES (NULL, NOW(), NOW(), '$KB_CLUSTER_NAME', '$DN_NAME', '$DN_NAME', '$DN_HOSTNAME', '3306', '31600', '$metaDbUser', '$ENC_PASSWORD', '3', '0', '0', NULL, NULL, NULL, 10000, 4,  34359738368 , '0', '');"
+          echo $dn_init_sql >> /scripts/gms-init-metadata.sql
+        done
+        echo "UPDATE config_listener SET op_version = op_version + 1 WHERE data_id = 'polardbx.storage.info.$KB_CLUSTER_NAME'" >> /scripts/gms-init-metadata.sql
+    }
+    
+    ENC_PASSWORD=$(echo -n "$metaDbNonEncPasswd" | openssl enc -aes-128-ecb -K "$(printf "%s" "$dnPasswordKey" | od -An -tx1 | tr -d " \n")" -base64)
+    SHA1_ENC_PASSWORD=$(echo -n "$metaDbNonEncPasswd" | sha1sum | cut -d ' ' -f1)
+    echo "export metaDbPasswd=$ENC_PASSWORD" >> /shared/env.sh
+    
+    SOURCE_CMD="mysql -h$GMS_SVC_NAME -P$GMS_SVC_PORT -u$metaDbUser -p$metaDbNonEncPasswd -e 'source /scripts/gms-init.sql'"
+    eval $SOURCE_CMD
+    
+    GMS_HOST=$GMS_SVC_NAME"."$KB_NAMESPACE".svc.cluster.local"
+    
+    eval "gms_metadata_sql=\"$(cat /scripts/gms-metadata.tpl)\""
+    
+    echo $gms_metadata_sql > /scripts/gms-init-metadata.sql
+    generate_dn_init_sql
+    
+    cat /scripts/gms-init-metadata.sql
+    
+    eval "mysql -h$GMS_SVC_NAME -P$GMS_SVC_PORT -u$metaDbUser -p$metaDbNonEncPasswd -e 'source /scripts/gms-init-metadata.sql'"
+---
+# Source: polardbx/templates/clusterDefintion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: polardbx
+  labels:
+    helm.sh/chart: polardbx-0.9.0
+    app.kubernetes.io/name: polardbx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  connectionCredential:
+    username: "polardbx_root"
+    password: "$(RANDOM_PASSWD)"
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_mysql)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_mysql)"
+    metaDbPasswd: "$(RANDOM_PASSWD)"
+  componentDefs:
+    - name: gms
+      scriptSpecs:
+        - name: polardbx-scripts
+          templateRef: polardbx-scripts
+          volumeName: scripts
+          namespace: default
+          defaultMode: 0555
+      workloadType: Consensus
+      characterType: polardbx
+      rsmSpec:
+        roles:
+          - name: "leader"
+            accessMode: ReadWrite
+            isLeader: true
+            canVote: true
+          - name: "follower"
+            accessMode: Readonly
+            canVote: true
+        roleProbe:
+          roleUpdateMechanism: DirectAPIServerEventUpdate
+          customHandler:
+            - image: "arey/mysql-client:latest"
+              command:
+                - sh
+                - -c
+                - | 
+                  mysql -h127.0.0.1 -P3306 -uroot -N -B -e "select role from information_schema.alisql_cluster_local" | xargs echo -n
+        memberUpdateStrategy: Serial
+      service:
+        ports:
+          - name: mysql
+            port: 3306
+            targetPort: 3306
+          - name: metrics
+            port: 9104
+            targetPort: 9104
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 9104
+          scrapePath: "/metrics"
+      podSpec:
+        volumes: &xstoreVolumes
+          - emptyDir: {}
+            name: xstore-tools
+          - downwardAPI:
+              defaultMode: 420
+              items:
+                - fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.labels
+                  path: labels
+                - fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.annotations
+                  path: annotations
+                - fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.annotations['runmode']
+                  path: runmode
+                - fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.name
+                  path: name
+                - fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.namespace
+                  path: namespace
+            name: podinfo
+        initContainers: &xsotreInitContainers
+          - name: tools-updater
+            command: ["/bin/ash"]
+            args: ["-c", "./hack/update.sh /target"]
+            env:
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: spec.nodeName
+            volumeMounts:
+              - name: xstore-tools
+                mountPath: /target
+        containers:
+          - name: engine
+            command: ["/scripts/xstore-setup.sh"]
+            lifecycle:
+              postStart:
+                exec:
+                  command:
+                    - /scripts/xstore-post-start.sh
+                    - GMS
+            env: &xstoreEngineEnv
+              - name: LANG
+                value: en_US.utf8
+              - name: LC_ALL
+                value: en_US.utf8
+              - name: ENGINE
+                value: galaxy
+              - name: ENGINE_HOME
+                value: /opt/galaxy_engine
+              - name: NODE_ROLE
+                value: candidate
+              - name: NODE_IP
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: status.hostIP
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: spec.nodeName
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: status.podIP
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.name
+              - name: LIMITS_CPU
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.cpu
+                    divisor: "1m"
+              - name: LIMITS_MEM
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.memory
+              - name: PORT_MYSQL
+                value: "3306"
+              - name: PORT_PAXOS
+                value: "11306"
+              - name: PORT_POLARX
+                value: "31600"
+              - name: KB_SERVICE_USER
+                value: "polardbx_root"
+              - name: KB_SERVICE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+              - name: RSM_COMPATIBILITY_MODE
+                value: "true"
+            ports: &xstoreEnginePorts
+              - name: mysql
+                containerPort: 3306
+              - name: paxos
+                containerPort: 11306
+              - name: polarx
+                containerPort: 31600
+            startupProbe:
+              failureThreshold: 60
+              tcpSocket:
+                port: mysql
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 30
+            volumeMounts: &xstoreEngineVolumeMounts
+              - name: data
+                mountPath: /data/mysql
+              - name: data-log
+                mountPath: /data-log/mysql
+              - name: xstore-tools
+                mountPath: /tools/xstore
+              - name: scripts
+                mountPath: /scripts/xstore-post-start.sh
+                subPath: xstore-post-start.sh
+              - name: scripts
+                mountPath: /scripts/xstore-setup.sh
+                subPath: xstore-setup.sh
+              - name: podinfo
+                mountPath: /etc/podinfo
+          - name: exporter
+            imagePullPolicy: IfNotPresent
+            ports:
+              - name: metrics
+                containerPort: 9104
+                protocol: TCP
+            env:
+              - name: "MYSQL_MONITOR_USER"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+              - name: "MYSQL_MONITOR_PASSWORD"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+              - name: "DATA_SOURCE_NAME"
+                value: "$(MYSQL_MONITOR_USER):$(MYSQL_MONITOR_PASSWORD)@(localhost:3306)/"
+    - name: dn
+      scriptSpecs:
+        - name: polardbx-scripts
+          templateRef: polardbx-scripts
+          volumeName: scripts
+          namespace: default
+          defaultMode: 0555
+      workloadType: Consensus
+      characterType: polardbx
+      componentDefRef:
+        - &gmsRef
+          componentDefName: gms
+          componentRefEnv:
+            - name: GMS_SVC_PORT
+              valueFrom:
+                type: FieldRef
+                fieldPath: $.componentDef.service.ports[?(@.name == "mysql")].port
+            - name: GMS_SVC_NAME
+              valueFrom:
+                type: ServiceRef
+      rsmSpec:
+        roles:
+          - name: "leader"
+            accessMode: ReadWrite
+            isLeader: true
+            canVote: true
+          - name: "follower"
+            accessMode: Readonly
+            canVote: true
+        roleProbe:
+          roleUpdateMechanism: DirectAPIServerEventUpdate
+          customHandler:
+            - image: "arey/mysql-client:latest"
+              command:
+                - sh
+                - -c
+                - |
+                  mysql -h127.0.0.1 -P3306 -uroot -N -B -e "select role from information_schema.alisql_cluster_local" | xargs echo -n
+        memberUpdateStrategy: Serial
+      service:
+        ports:
+          - name: mysql
+            port: 3306
+            targetPort: 3306
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 9104
+          scrapePath: "/metrics"
+      podSpec:
+        volumes: *xstoreVolumes
+        initContainers: *xsotreInitContainers
+        containers:
+          - name: engine
+            command: [ "/scripts/xstore-setup.sh" ]
+            lifecycle:
+              postStart:
+                exec:
+                  command:
+                    - /scripts/xstore-post-start.sh
+                    - DN
+            env: *xstoreEngineEnv
+            ports: *xstoreEnginePorts
+            startupProbe:
+              failureThreshold: 60
+              tcpSocket:
+                port: mysql
+              initialDelaySeconds: 20
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 30
+            volumeMounts: *xstoreEngineVolumeMounts
+          - name: exporter
+            imagePullPolicy: IfNotPresent
+            ports:
+              - name: metrics
+                containerPort: 9104
+                protocol: TCP
+            env:
+              - name: "MYSQL_MONITOR_USER"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+              - name: "MYSQL_MONITOR_PASSWORD"
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+              - name: "DATA_SOURCE_NAME"
+                value: "$(MYSQL_MONITOR_USER):$(MYSQL_MONITOR_PASSWORD)@(localhost:3306)/"
+    - name: cn
+      scriptSpecs:
+        - name: polardbx-scripts
+          templateRef: polardbx-scripts
+          volumeName: scripts
+          namespace: default
+          defaultMode: 0555
+      workloadType: Stateless
+      characterType: mysql
+      componentDefRef:
+        - *gmsRef
+        - componentDefName: dn
+          componentRefEnv:
+            - name: DN_SVC_PORT
+              valueFrom:
+                type: FieldRef
+                fieldPath: $.componentDef.service.ports[?(@.name == "mysql")].port
+            - name: DN_HEADLESS_SVC_NAME
+              valueFrom:
+                type: HeadlessServiceRef
+                format: $(POD_FQDN)
+                joinWith: ","
+      service:
+        ports:
+          - name: mysql
+            port: 3306
+            targetPort: 3306
+          - name: metrics
+            port: 9104
+            targetPort: 9104
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 9104
+          scrapePath: "/metrics"
+      podSpec:
+        shareProcessNamespace: true  # For jmx collector
+        volumes:
+          - name: shared
+            emptyDir: {}
+        initContainers:
+          - name: metadb-init
+            command: ["/scripts/metadb-setup.sh"]
+            env:
+            - name: metaDbAddr
+              value: "$(GMS_SVC_NAME):$(GMS_SVC_PORT)"
+            - name: metaDbName
+              value: "polardbx_meta_db"
+            - name: metaDbUser
+              valueFrom:
+                secretKeyRef:
+                  name: $(CONN_CREDENTIAL_SECRET_NAME)
+                  key: username
+                  optional: false
+            - name: metaDbNonEncPasswd
+              valueFrom:
+                secretKeyRef:
+                  name: $(CONN_CREDENTIAL_SECRET_NAME)
+                  key: password
+                  optional: false
+            - name: dnPasswordKey
+              value: "$(metaDbNonEncPasswd)$(metaDbNonEncPasswd)"
+            - name: switchCloud
+              value: aliyun
+            - name: metaDbConn
+              value: "mysql -h$(GMS_SVC_NAME) -P3306 -u$(metaDbUser) -p$(metaDbNonEncPasswd) -D$(metaDbName)"
+            volumeMounts:
+              - name: scripts
+                mountPath: /scripts/metadb-setup.sh
+                subPath: metadb-setup.sh
+              - name: scripts
+                mountPath: /scripts/gms-init.sql
+                subPath: gms-init.sql
+              - name: scripts
+                mountPath: /scripts/gms-metadata.tpl
+                subPath: gms-metadata.tpl
+              - name: shared
+                mountPath: /shared
+          - name: init
+            command: [ "sh" ]
+            args: [ "-c", 'source /shared/env.sh && /polardbx-init' ]
+            env: &cnEngineEnv
+              - name: POD_ID
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.name
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: status.podIP
+              - name: HOST_IP
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: status.hostIP
+              - name: NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: spec.nodeName
+              - name: metaDbAddr
+                value: "$(GMS_SVC_NAME):$(GMS_SVC_PORT)"
+              - name: metaDbName
+                value: "polardbx_meta_db"
+              - name: metaDbUser
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+                    optional: false
+              - name: metaDbNonEncPasswd
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+              - name: switchCloud
+                value: aliyun
+              - name: metaDbConn
+                value: "mysql -h$(GMS_SVC_NAME) -P3306 -u$(metaDbUser) -p$(metaDbPasswd) -D$(metaDbName)"
+              - name: dnPasswordKey
+                value: "$(metaDbNonEncPasswd)$(metaDbNonEncPasswd)"
+              - name: metaDbXprotoPort
+                value: "0"
+              - name: storageDbXprotoPort
+                value: "0"
+              - name: instanceId
+                value: "$(KB_CLUSTER_NAME)"
+              - name: instanceType
+                value: "0"
+              - name: serverPort
+                value: "3306"
+              - name: mgrPort
+                value: "3406"
+              - name: mppPort
+                value: "3506"
+              - name: htapPort
+                value: "3606"
+              - name: logPort
+                value: "8507"
+              - name: ins_id
+                value: dummy
+              - name: polarx_dummy_log_port
+                value: "$(logPort)"
+              - name: polarx_dummy_ssh_port
+                value: "-1"
+              - name: cpuCore
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.cpu
+              - name: memSize
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.memory
+              - name: cpu_cores
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.cpu
+              - name: memory
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.memory
+              - name: galaxyXProtocol
+                value: "1"
+              - name: processorHandler
+                value: "1"
+              - name: processors
+                value: "1"
+              - name: serverExecutor
+                value: "1024"
+              - name: TDDL_OPTS
+                value: -Dpod.id=$(POD_ID) -XX:+UnlockExperimentalVMOptions -XX:+UseWisp2 -Dio.grpc.netty.shaded.io.netty.transport.noNative=true
+                  -Dio.netty.transport.noNative=true -DinstanceVersion=8.0.3
+            volumeMounts:
+              - name: shared
+                mountPath: /shared
+        containers:
+          - name: engine
+            command:
+              - /bin/bash
+              - -c
+            args:
+              - "source /shared/env.sh && /home/admin/entrypoint.sh 20"
+            env: *cnEngineEnv
+            ports:
+              - containerPort: 3306
+                name: mysql
+                protocol: TCP
+              - containerPort: 3406
+                name: mgr
+                protocol: TCP
+              - containerPort: 3506
+                name: mpp
+                protocol: TCP
+              - containerPort: 3606
+                name: htap
+                protocol: TCP
+              - containerPort: 8507
+                name: log
+                protocol: TCP
+            startupProbe:
+              failureThreshold: 60
+              tcpSocket:
+                port: mysql
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 30
+            livenessProbe:
+              failureThreshold: 60
+              tcpSocket:
+                port: mysql
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 30
+            readinessProbe:
+              failureThreshold: 60
+              tcpSocket:
+                port: mysql
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 30
+            volumeMounts:
+              - name: tmp
+                mountPath: /tmp
+              - name: polardbx-log
+                mountPath: /home/admin/drds-server/logs
+              - name: polardbx-spill
+                mountPath: /home/admin/drds-server/spill
+              - name: shared
+                mountPath: /shared
+          - name: exporter
+            args:
+             - -collectors.process
+             - -collectors.jvm
+             - -target.type=CN
+             - -target.port=3406
+             - -web.listen-addr=:9104
+             - -web.metrics-path=/metrics
+            env:
+              - name: GOMAXPROCS
+                value: "1"
+            ports:
+              - containerPort: 9104
+                name: metrics
+                protocol: TCP
+            volumeMounts:
+              - name: tmp
+                mountPath: /tmp
+    - name: cdc
+      scriptSpecs:
+        - name: polardbx-scripts
+          templateRef: polardbx-scripts
+          volumeName: scripts
+          namespace: default
+          defaultMode: 0555
+      workloadType: Stateless
+      characterType: mysql
+      componentDefRef:
+        - *gmsRef
+        - componentDefName: cn
+          componentRefEnv:
+            - name: CN_SVC_PORT
+              valueFrom:
+                type: FieldRef
+                fieldPath: $.componentDef.service.ports[?(@.name == "mysql")].port
+            - name: CN_SVC_NAME
+              valueFrom:
+                type: ServiceRef
+      service:
+        ports:
+          - name: mysql
+            port: 3306
+            targetPort: 3306
+          - name: metrics
+            port: 9104
+            targetPort: 9104
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 9104
+          scrapePath: "/metrics"
+      podSpec:
+        initContainers:
+          - name: wait-cn-ready
+            command:
+              - bin/sh
+              - -c
+              - |
+                until mysql -h$CN_SVC_NAME -P$CN_SVC_PORT -u$polarx_username -p$polarx_password -e 'select 1'; do
+                  sleep 1;
+                  echo "cn is not ready"
+                done
+            env:
+              - name: polarx_username
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+                    optional: false
+              - name: polarx_password
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+        containers:
+          - name: engine
+            env:
+              - name: switchCloud
+                value: aliyun
+              - name: cluster_id
+                value: "$(KB_CLUSTER_NAME)"
+              - name: ins_id
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.name
+              - name: daemonPort
+                value: "3300"
+              - name: common_ports
+                value: '{"cdc1_port":"3009","cdc3_port":"3011","cdc2_port":"3010","cdc6_port":"3014","cdc5_port":"3013","cdc4_port":"3012"}'
+              - name: metaDb_url
+                value: "jdbc:mysql://$(GMS_SVC_NAME):$(GMS_SVC_PORT)/polardbx_meta_db?useSSL=false"
+              - name: polarx_url
+                value: "jdbc:mysql://$(CN_SVC_NAME):$(CN_SVC_PORT)/__cdc__?useSSL=false"
+              - name: metaDb_username
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+                    optional: false
+              - name: metaDb_password
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+              - name: polarx_username
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: username
+                    optional: false
+              - name: polarx_password
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+              - name: metaDbNonEncPasswd
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+              - name: dnPasswordKey
+                value: "$(metaDbNonEncPasswd)$(metaDbNonEncPasswd)"
+              - name: cpu_cores
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.cpu
+              - name: mem_size
+                valueFrom:
+                  resourceFieldRef:
+                    containerName: engine
+                    resource: limits.memory
+                    divisor: "1M"
+              - name: disk_size
+                value: "10240"
+              - name: disk_quota
+                value: "10240"
+            volumeMounts:
+              - name: binlog
+                mountPath: /home/admin/binlog
+              - name: log
+                mountPath: /home/admin/logs
+          - name: exporter
+            args:
+              - -web.listen-addr=:9104
+              - -web.metrics-path=/metrics
+              - -target.port=3007
+              - -target.type=CDC
+            env:
+              - name: GOMAXPROCS
+                value: "1"
+            ports:
+              - containerPort: 9104
+                name: metrics
+                protocol: TCP
+---
+# Source: polardbx/templates/clusterVersion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: polardbx-v2.3
+  labels:
+    helm.sh/chart: polardbx-0.9.0
+    app.kubernetes.io/name: polardbx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: polardbx
+  componentVersions:
+    - componentDefRef: gms
+      versionsContext:
+        containers:
+          - name: engine
+            image: polardbx/polardbx-engine-2.0:80-8.0.18-20231101115000
+            imagePullPolicy: IfNotPresent
+          - name: exporter
+            image: prom/mysqld-exporter:v0.14.0
+            imagePullPolicy: IfNotPresent
+        initContainers:
+          - name: tools-updater
+            image: polardbx/xstore-tools:v1.5.0
+            imagePullPolicy: IfNotPresent
+    - componentDefRef: dn
+      versionsContext:
+        containers:
+          - name: engine
+            image: polardbx/polardbx-engine-2.0:80-8.0.18-20231101115000
+            imagePullPolicy: IfNotPresent
+          - name: exporter
+            image: prom/mysqld-exporter:v0.14.0
+            imagePullPolicy: IfNotPresent
+        initContainers:
+          - name: tools-updater
+            image: polardbx/xstore-tools:v1.5.0
+            imagePullPolicy: IfNotPresent
+    - componentDefRef: cn
+      versionsContext:
+        containers:
+          - name: engine
+            image: polardbx/polardbx-sql:5.4.18-20231101115000
+            imagePullPolicy: IfNotPresent
+          - name: exporter
+            image: polardbx/polardbx-exporter:v1.5.0
+            imagePullPolicy: IfNotPresent
+        initContainers:
+          - name: init
+            image: polardbx/polardbx-init:v1.5.0
+            imagePullPolicy: IfNotPresent
+          - name: metadb-init
+            image:  mysql:8.0.30
+            imagePullPolicy: IfNotPresent
+    - componentDefRef: cdc
+      versionsContext:
+        containers:
+          - name: engine
+            image: polardbx/polardbx-cdc:5.4.18-20231101115000
+            imagePullPolicy: IfNotPresent
+          - name: exporter
+            image: polardbx/polardbx-exporter:v1.5.0
+            imagePullPolicy: IfNotPresent
+        initContainers:
+          - name: wait-cn-ready
+            image: mysql:8.0.30
+            imagePullPolicy: IfNotPresent
+---
+# Source: polardbx/templates/configmap-dashboards.yaml
+apiVersion: v1
+kind: ConfigMapList
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: grafana-polardbx-overview
+    labels:
+      grafana_dashboard: "1"
+      app: polardbx-grafana
+      helm.sh/chart: polardbx-0.9.0
+      app.kubernetes.io/name: polardbx
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "v2.3"
+      app.kubernetes.io/managed-by: Helm
+  data:
+    polardbx-overview.json: "{\n  \"annotations\": {\n    \"list\": [\n      {\n        \"builtIn\": 1,\n        \"datasource\": {\n          \"type\": \"datasource\",\n          \"uid\": \"grafana\"\n        },\n        \"enable\": true,\n        \"hide\": true,\n        \"iconColor\": \"rgba(0, 211, 255, 1)\",\n        \"name\": \"Annotations \u0026 Alerts\",\n        \"target\": {\n          \"limit\": 100,\n          \"matchAny\": false,\n          \"tags\": [],\n          \"type\": \"dashboard\"\n        },\n        \"type\": \"dashboard\"\n      }\n    ]\n  },\n  \"description\": \"\",\n  \"editable\": true,\n  \"fiscalYearStartMonth\": 0,\n  \"graphTooltip\": 0,\n  \"links\": [],\n  \"liveNow\": false,\n  \"panels\": [\n    {\n      \"collapsed\": false,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"h\": 1,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 0\n      },\n      \"id\": 2,\n      \"panels\": [],\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          },\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Overview\",\n      \"type\": \"row\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"percentage\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"none\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 7,\n        \"x\": 0,\n        \"y\": 1\n      },\n      \"id\": 15,\n      \"options\": {\n        \"colorMode\": \"value\",\n        \"graphMode\": \"none\",\n        \"justifyMode\": \"auto\",\n        \"orientation\": \"auto\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"mean\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"text\": {},\n        \"textMode\": \"auto\"\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(irate(polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"Logical\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(irate(polardbx_stats_physical_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": true,\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"Physical\",\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"QPS (Logical)\",\n      \"type\": \"stat\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"mappings\": [],\n          \"min\": 0,\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"none\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 7,\n        \"x\": 7,\n        \"y\": 1\n      },\n      \"id\": 10,\n      \"options\": {\n        \"displayMode\": \"gradient\",\n        \"minVizHeight\": 10,\n        \"minVizWidth\": 0,\n        \"orientation\": \"horizontal\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"mean\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"showUnfilled\": true,\n        \"text\": {}\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(irate(polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"QPS (Logical)\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(irate(polardbx_stats_physical_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"QPS (Physical)\",\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"QPS\",\n      \"type\": \"bargauge\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          }\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 5,\n        \"x\": 14,\n        \"y\": 1\n      },\n      \"id\": 40,\n      \"options\": {\n        \"colorMode\": \"value\",\n        \"graphMode\": \"none\",\n        \"justifyMode\": \"auto\",\n        \"orientation\": \"auto\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"text\": {},\n        \"textMode\": \"auto\"\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_best_effort_transaction_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) +\\n\\nsum(rate(polardbx_stats_xa_transaction_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) +\\n\\nsum(rate(polardbx_stats_tso_transaction_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) \",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"intervalFactor\": 1,\n          \"legendFormat\": \"Errors\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"TPS\",\n      \"type\": \"stat\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"mappings\": [],\n          \"min\": 0,\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 80\n              }\n            ]\n          }\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 5,\n        \"x\": 19,\n        \"y\": 1\n      },\n      \"id\": 14,\n      \"options\": {\n        \"displayMode\": \"gradient\",\n        \"minVizHeight\": 10,\n        \"minVizWidth\": 0,\n        \"orientation\": \"horizontal\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"showUnfilled\": true,\n        \"text\": {}\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(polardbx_stats_active_connections{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"Connections\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(polardbx_stats_running_count{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\",\n          \"hide\": false,\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"Threads (Running)\",\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Connections/Threads\",\n      \"type\": \"bargauge\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"thresholds\"\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              },\n              {\n                \"color\": \"dark-yellow\",\n                \"value\": 20\n              },\n              {\n                \"color\": \"dark-orange\",\n                \"value\": 50\n              },\n              {\n                \"color\": \"dark-red\",\n                \"value\": 100\n              }\n            ]\n          },\n          \"unit\": \"ms\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 7,\n        \"x\": 0,\n        \"y\": 5\n      },\n      \"id\": 16,\n      \"options\": {\n        \"colorMode\": \"value\",\n        \"graphMode\": \"none\",\n        \"justifyMode\": \"auto\",\n        \"orientation\": \"auto\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"mean\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"text\": {},\n        \"textMode\": \"auto\"\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(delta(polardbx_stats_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) / (sum(delta (polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) + 1) / 1000\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"Logical\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Response Time (Logical)\",\n      \"type\": \"stat\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"thresholds\"\n          },\n          \"decimals\": 2,\n          \"mappings\": [],\n          \"min\": 0,\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              },\n              {\n                \"color\": \"light-yellow\",\n                \"value\": 20\n              },\n              {\n                \"color\": \"dark-orange\",\n                \"value\": 50\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 100\n              }\n            ]\n          },\n          \"unit\": \"ms\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 7,\n        \"x\": 7,\n        \"y\": 5\n      },\n      \"id\": 12,\n      \"options\": {\n        \"displayMode\": \"gradient\",\n        \"minVizHeight\": 10,\n        \"minVizWidth\": 0,\n        \"orientation\": \"horizontal\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"showUnfilled\": true,\n        \"text\": {}\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(delta(polardbx_stats_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) / (sum(delta (polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) + 1) / 1000\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"RT (Logical)\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(delta(polardbx_stats_physical_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) / (sum(delta (polardbx_stats_physical_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) + 1) / 1000\",\n          \"hide\": false,\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"RT (Physical)\",\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Response Time\",\n      \"type\": \"bargauge\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"thresholds\"\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              },\n              {\n                \"color\": \"#EAB839\",\n                \"value\": 15\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 30\n              }\n            ]\n          },\n          \"unit\": \"none\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 4,\n        \"w\": 5,\n        \"x\": 14,\n        \"y\": 5\n      },\n      \"id\": 18,\n      \"options\": {\n        \"colorMode\": \"value\",\n        \"graphMode\": \"none\",\n        \"justifyMode\": \"auto\",\n        \"orientation\": \"auto\",\n        \"reduceOptions\": {\n          \"calcs\": [\n            \"lastNotNull\"\n          ],\n          \"fields\": \"\",\n          \"values\": false\n        },\n        \"text\": {},\n        \"textMode\": \"auto\"\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_error_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"instant\": true,\n          \"interval\": \"\",\n          \"intervalFactor\": 1,\n          \"legendFormat\": \"Errors\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Errors\",\n      \"type\": \"stat\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"align\": \"center\",\n            \"displayMode\": \"auto\",\n            \"filterable\": false,\n            \"inspect\": false\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          }\n        },\n        \"overrides\": [\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"CPU %\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"percentunit\"\n              },\n              {\n                \"id\": \"custom.displayMode\",\n                \"value\": \"gradient-gauge\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"MEM %\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"percentunit\"\n              },\n              {\n                \"id\": \"custom.displayMode\",\n                \"value\": \"gradient-gauge\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"MEM\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"bytes\"\n              },\n              {\n                \"id\": \"custom.width\",\n                \"value\": 162\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"MEM (Limit)\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"bytes\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"Pod\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.filterable\",\n                \"value\": true\n              },\n              {\n                \"id\": \"custom.width\",\n                \"value\": 215\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"Network (Recv)\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"bytes\"\n              },\n              {\n                \"id\": \"custom.displayMode\",\n                \"value\": \"auto\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"Network (Sent)\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"unit\",\n                \"value\": \"bytes\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"node\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.width\",\n                \"value\": 205\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"Host\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"links\",\n                \"value\": [\n                  {\n                    \"targetBlank\": true,\n                    \"title\": \"Node Dashboard\",\n                    \"url\": \"./d/fa49a4706d07a042595b664c87fb33ea/nodes?orgId=1\u0026var-datasource=$datasource\u0026var-instance=${__value.text}\"\n                  }\n                ]\n              },\n              {\n                \"id\": \"custom.width\",\n                \"value\": 221\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"Pod\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"links\",\n                \"value\": [\n                  {\n                    \"targetBlank\": true,\n                    \"title\": \"Pod Dashboard\",\n                    \"url\": \"./d/6581e46e4e5c7ba40a07646395ef7b23/k8s-resources-pod?var-datasource=$datasource\u0026var-cluster=$cluster\u0026var-namespace=$namespace\u0026var-pod=${__value.text}\"\n                  }\n                ]\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"CPU\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.width\",\n                \"value\": 92\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byName\",\n              \"options\": \"CPU (Limit)\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.width\",\n                \"value\": 107\n              }\n            ]\n          }\n        ]\n      },\n      \"gridPos\": {\n        \"h\": 10,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 9\n      },\n      \"id\": 96,\n      \"options\": {\n        \"footer\": {\n          \"fields\": \"\",\n          \"reducer\": [\n            \"sum\"\n          ],\n          \"show\": false\n        },\n        \"frameIndex\": 0,\n        \"showHeader\": true,\n        \"sortBy\": [\n          {\n            \"desc\": false,\n            \"displayName\": \"CPU\"\n          }\n        ]\n      },\n      \"pluginVersion\": \"9.2.4\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum by (app_kubernetes_io_instance, pod, app_kubernetes_io_component, apps_kubeblocks_io_component_name) (mysql_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", app_kubernetes_io_component=\\\"gms\\\"})\\nor\\nsum by (app_kubernetes_io_instance, pod, app_kubernetes_io_component, apps_kubeblocks_io_component_name) (polardbx_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\\nor \\nsum by (app_kubernetes_io_instance, pod, app_kubernetes_io_component, apps_kubeblocks_io_component_name) (mysql_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", app_kubernetes_io_component=\\\"dn\\\"})\\nor \\nsum by (app_kubernetes_io_instance, pod, app_kubernetes_io_component, apps_kubeblocks_io_component_name) (polardbx_cdc_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\\n\",\n          \"format\": \"table\",\n          \"hide\": false,\n          \"instant\": true,\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ pod }}\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Topology\",\n      \"transformations\": [\n        {\n          \"id\": \"seriesToColumns\",\n          \"options\": {\n            \"byField\": \"pod\"\n          }\n        },\n        {\n          \"id\": \"organize\",\n          \"options\": {\n            \"excludeByName\": {\n              \"Time\": true,\n              \"Time 1\": true,\n              \"Time 2\": true,\n              \"Time 3\": true,\n              \"Time 4\": true,\n              \"Time 5\": true,\n              \"Time 6\": true,\n              \"Time 7\": true,\n              \"Time 8\": true,\n              \"Time 9\": true,\n              \"Value\": true,\n              \"Value #A\": true\n            },\n            \"indexByName\": {\n              \"Time\": 2,\n              \"Value\": 5,\n              \"app_kubernetes_io_component\": 1,\n              \"app_kubernetes_io_instance\": 0,\n              \"apps_kubeblocks_io_component_name\": 3,\n              \"pod\": 4\n            },\n            \"renameByName\": {\n              \"Value #B\": \"CPU\",\n              \"Value #C\": \"CPU (Limit)\",\n              \"Value #D\": \"CPU %\",\n              \"Value #E\": \"MEM\",\n              \"Value #F\": \"MEM (Limit)\",\n              \"Value #G\": \"MEM %\",\n              \"Value #H\": \"Network (Recv)\",\n              \"Value #I\": \"Network (Sent)\",\n              \"app_kubernetes_io_component\": \"role\",\n              \"app_kubernetes_io_instance\": \"instance\",\n              \"apps_kubeblocks_io_component_name\": \"component_name\",\n              \"node\": \"Host\",\n              \"pod\": \"pod\"\n            }\n          }\n        },\n        {\n          \"id\": \"sortBy\",\n          \"options\": {\n            \"fields\": {},\n            \"sort\": [\n              {\n                \"field\": \"Pod\"\n              }\n            ]\n          }\n        }\n      ],\n      \"type\": \"table\"\n    },\n    {\n      \"collapsed\": false,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"h\": 1,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 19\n      },\n      \"id\": 42,\n      \"panels\": [],\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          },\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Global Meta Service\",\n      \"type\": \"row\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 20\n      },\n      \"id\": 86,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_queries{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"qps (physical)\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"QPS\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 20\n      },\n      \"id\": 87,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_threads_connected{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"connections\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_threads_running{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"})\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"threads\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Connections/Threads\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 20\n      },\n      \"id\": 88,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_buffer_pool_bytes_data{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"buffer pool size\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Buffer Pool Size (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 20\n      },\n      \"id\": 89,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_buffer_pool_bytes_data{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}) by (xstore_name)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ xstore_name }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Buffer Pool Size (GMS)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"log\": 10,\n              \"type\": \"log\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 28\n      },\n      \"id\": 90,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_buffer_pool_dirty_pages{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"dirty\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_buffer_pool_page_changes_total{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[10m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"flush\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Buffer Pool Dirty/Flush (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 28\n      },\n      \"id\": 91,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_row_lock_current_waits{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"current wait\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Row Lock Current Wait (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 28\n      },\n      \"id\": 92,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_buffer_pool_read_requests{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"reads\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_buffer_pool_write_requests{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"writes\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Logical Reads/Writes (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\",\n                \"value\": null\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 28\n      },\n      \"id\": 93,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_log_writes{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\",  namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"log writes\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_reads{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data reads\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_fsyncs{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data fsyncs\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"C\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_os_log_fsyncs{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"log fsyncs\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"D\"\n        }\n      ],\n      \"title\": \"IOPS (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 36\n      },\n      \"id\": 94,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_written{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"data written/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_read{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data read/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_os_log_written{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"log writtern/s\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"C\"\n        }\n      ],\n      \"title\": \"IO Throughput (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 36\n      },\n      \"id\": 95,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_bytes_received{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"received/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_bytes_sent{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"gms\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"sent/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Network (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"collapsed\": false,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"h\": 1,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 44\n      },\n      \"id\": 4,\n      \"panels\": [],\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          },\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Compute Node\",\n      \"type\": \"row\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 45\n      },\n      \"id\": 28,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"qps (logical)\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_physical_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"qps (physical)\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"QPS\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"decimals\": 2,\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"ms\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 45\n      },\n      \"id\": 29,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(delta(polardbx_stats_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) / (sum(delta (polardbx_stats_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) + 1) / 1000\",\n          \"interval\": \"\",\n          \"legendFormat\": \"rt (logical)\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(delta(polardbx_stats_physical_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[30s])) / (sum(delta (polardbx_stats_physical_request_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[30s])) + 1) / 1000\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"rt (physical)\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Response Time\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 45\n      },\n      \"id\": 30,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(polardbx_stats_active_connections{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"connections\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(polardbx_stats_running_count{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"})\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"threads (running)\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Connections / Threads\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"none\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 80\n              }\n            ]\n          },\n          \"unit\": \"ns\"\n        },\n        \"overrides\": [\n          {\n            \"matcher\": {\n              \"id\": \"byFrameRefID\",\n              \"options\": \"A\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.axisPlacement\",\n                \"value\": \"right\"\n              },\n              {\n                \"id\": \"custom.axisLabel\",\n                \"value\": \"count\"\n              },\n              {\n                \"id\": \"unit\",\n                \"value\": \"short\"\n              },\n              {\n                \"id\": \"custom.fillOpacity\",\n                \"value\": 0\n              },\n              {\n                \"id\": \"custom.gradientMode\",\n                \"value\": \"none\"\n              }\n            ]\n          },\n          {\n            \"matcher\": {\n              \"id\": \"byFrameRefID\",\n              \"options\": \"B\"\n            },\n            \"properties\": [\n              {\n                \"id\": \"custom.axisPlacement\",\n                \"value\": \"left\"\n              },\n              {\n                \"id\": \"unit\",\n                \"value\": \"ns\"\n              },\n              {\n                \"id\": \"custom.axisLabel\",\n                \"value\": \"time\"\n              },\n              {\n                \"id\": \"custom.fillOpacity\",\n                \"value\": 0\n              },\n              {\n                \"id\": \"custom.gradientMode\",\n                \"value\": \"none\"\n              }\n            ]\n          }\n        ]\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 45\n      },\n      \"id\": 31,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(idelta(polardbx_jvmstats_gc_collector_invocation_count{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m])) by (type)\",\n          \"instant\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"count - {{ type }}\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(idelta(polardbx_jvmstats_gc_collector_time_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]) / (idelta(polardbx_jvmstats_gc_collector_invocation_count{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]) + 1)) by (type)\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"time - {{ type }}\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"GC\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"hue\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 53\n      },\n      \"id\": 32,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stc_connection_error_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"connection error\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Connection Error\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"hue\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 53\n      },\n      \"id\": 39,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_best_effort_transaction_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"best effort\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_xa_transaction_count_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"xa\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(polardbx_stats_tso_transaction_count_total{polardbx_name=\\\"$polardbx\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"tso\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"C\"\n        }\n      ],\n      \"title\": \"Transactions\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"µs\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 53\n      },\n      \"id\": 33,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"topk(5, sum by (schema) (\\n    label_replace(\\n      rate(polardbx_stc_request_time_cost_total{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", appname!~\\\"__.*__@.*|information_schema@.*|polardbx@.*\\\"}[1m]),\\n      \\\"schema\\\",\\n      \\\"$1\\\",\\n      \\\"appname\\\",\\n      \\\"(.*)@.*\\\"\\n    )\\n  )\\n) by (schema)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ schema }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Processing Time (Top 5)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 53\n      },\n      \"id\": 34,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"topk(5, sum by (schema) (\\n    label_replace(\\n      rate(polardbx_stc_active_physical_connection_count{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", appname!~\\\"__.*__@.*|information_schema@.*|polardbx@.*\\\"}[1m]),\\n      \\\"schema\\\",\\n      \\\"$1\\\",\\n      \\\"appname\\\",\\n      \\\"(.*)@.*\\\"\\n    )\\n  )\\n) by (schema)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"active - {{ schema }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"topk(5, sum by (schema) (\\n    label_replace(\\n      rate(polardbx_stc_pooling_physical_connection_count{polardbx_name=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", appname!~\\\"__.*__@.*|information_schema@.*|polardbx@.*\\\"}[1m]),\\n      \\\"schema\\\",\\n      \\\"$1\\\",\\n      \\\"appname\\\",\\n      \\\"(.*)@.*\\\"\\n    )\\n  )\\n) by (schema)\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"pooling - {{ schema }}\",\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Physical Connection (Top 5)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"collapsed\": false,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"h\": 1,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 61\n      },\n      \"id\": 6,\n      \"panels\": [],\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          },\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Data Node\",\n      \"type\": \"row\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 62\n      },\n      \"id\": 55,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_queries{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"qps (physical)\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"QPS\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 62\n      },\n      \"id\": 56,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_threads_connected{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"connections\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_threads_running{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"})\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"threads\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Connections/Threads\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 62\n      },\n      \"id\": 57,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_buffer_pool_bytes_data{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"buffer pool size\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Buffer Pool Size (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 62\n      },\n      \"id\": 58,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_buffer_pool_bytes_data{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}) by (xstore_name)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ xstore_name }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Buffer Pool Size (DN)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"log\": 10,\n              \"type\": \"log\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 70\n      },\n      \"id\": 59,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_buffer_pool_dirty_pages{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"dirty\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_buffer_pool_page_changes_total{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[10m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"flush\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Buffer Pool Dirty/Flush (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 70\n      },\n      \"id\": 60,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(mysql_global_status_innodb_row_lock_current_waits{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"})\",\n          \"interval\": \"\",\n          \"legendFormat\": \"current wait\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Row Lock Current Wait (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 70\n      },\n      \"id\": 61,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_buffer_pool_read_requests{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"reads\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_buffer_pool_write_requests{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"writes\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Logical Reads/Writes (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 70\n      },\n      \"id\": 62,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_log_writes{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\",  namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"log writes\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_reads{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data reads\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_fsyncs{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data fsyncs\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"C\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_os_log_fsyncs{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"log fsyncs\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"D\"\n        }\n      ],\n      \"title\": \"IOPS (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 78\n      },\n      \"id\": 63,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_written{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"data written/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_data_read{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"data read/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_innodb_os_log_written{polardbx_name=\\\"$polardbx\\\", polardbx_role=\\\"dn\\\", xstore_role=\\\"leader\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"log writtern/s\",\n          \"queryType\": \"randomWalk\",\n          \"refId\": \"C\"\n        }\n      ],\n      \"title\": \"IO Throughput (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"bytes\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 78\n      },\n      \"id\": 64,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_bytes_received{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"interval\": \"\",\n          \"legendFormat\": \"received/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        },\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_bytes_sent{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\"}[1m]))\",\n          \"hide\": false,\n          \"interval\": \"\",\n          \"legendFormat\": \"sent/s\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"B\"\n        }\n      ],\n      \"title\": \"Network (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 12,\n        \"y\": 78\n      },\n      \"id\": 65,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_commands_total{polapp_kubernetes_io_instanceardbx_name=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\", command=~\\\"xa_.*\\\"}[1m])) by (command)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ command }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"XA Transactions (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"none\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 80\n              }\n            ]\n          },\n          \"unit\": \"short\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 18,\n        \"y\": 78\n      },\n      \"id\": 66,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"multi\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"sum(rate(mysql_global_status_commands_total{app_kubernetes_io_instance=\\\"$polardbx\\\", app_kubernetes_io_component=\\\"dn\\\", namespace=\\\"$namespace\\\", command=~\\\"begin|commit|rollback\\\"}[1m])) by (command)\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ command }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Transactions (Total)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"collapsed\": false,\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"prometheus\"\n      },\n      \"gridPos\": {\n        \"h\": 1,\n        \"w\": 24,\n        \"x\": 0,\n        \"y\": 86\n      },\n      \"id\": 68,\n      \"panels\": [],\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"type\": \"prometheus\",\n            \"uid\": \"prometheus\"\n          },\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"CDC Node\",\n      \"type\": \"row\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 80\n              }\n            ]\n          },\n          \"unit\": \"ms\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 0,\n        \"y\": 87\n      },\n      \"id\": 76,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"polardbx_cdc_dumper_delay_in_millisecond{namespace=\\\"$namespace\\\"}\\n* on(namespace,pod)\\ngroup_left() polardbx_cdc_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", app_kubernetes_io_component=\\\"cdc\\\"}\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ pod }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Delay(ms)\",\n      \"type\": \"timeseries\"\n    },\n    {\n      \"datasource\": {\n        \"type\": \"prometheus\",\n        \"uid\": \"${datasource}\"\n      },\n      \"fieldConfig\": {\n        \"defaults\": {\n          \"color\": {\n            \"mode\": \"palette-classic\"\n          },\n          \"custom\": {\n            \"axisCenteredZero\": false,\n            \"axisColorMode\": \"text\",\n            \"axisLabel\": \"\",\n            \"axisPlacement\": \"auto\",\n            \"barAlignment\": 0,\n            \"drawStyle\": \"line\",\n            \"fillOpacity\": 10,\n            \"gradientMode\": \"opacity\",\n            \"hideFrom\": {\n              \"graph\": false,\n              \"legend\": false,\n              \"tooltip\": false,\n              \"viz\": false\n            },\n            \"lineInterpolation\": \"linear\",\n            \"lineStyle\": {\n              \"fill\": \"solid\"\n            },\n            \"lineWidth\": 1,\n            \"pointSize\": 5,\n            \"scaleDistribution\": {\n              \"type\": \"linear\"\n            },\n            \"showPoints\": \"never\",\n            \"spanNulls\": true,\n            \"stacking\": {\n              \"group\": \"A\",\n              \"mode\": \"none\"\n            },\n            \"thresholdsStyle\": {\n              \"mode\": \"off\"\n            }\n          },\n          \"mappings\": [],\n          \"thresholds\": {\n            \"mode\": \"absolute\",\n            \"steps\": [\n              {\n                \"color\": \"green\"\n              },\n              {\n                \"color\": \"red\",\n                \"value\": 80\n              }\n            ]\n          },\n          \"unit\": \"percent\"\n        },\n        \"overrides\": []\n      },\n      \"gridPos\": {\n        \"h\": 8,\n        \"w\": 6,\n        \"x\": 6,\n        \"y\": 87\n      },\n      \"id\": 77,\n      \"options\": {\n        \"graph\": {},\n        \"legend\": {\n          \"calcs\": [],\n          \"displayMode\": \"list\",\n          \"placement\": \"bottom\",\n          \"showLegend\": true\n        },\n        \"tooltip\": {\n          \"mode\": \"single\",\n          \"sort\": \"none\"\n        }\n      },\n      \"pluginVersion\": \"7.5.3\",\n      \"targets\": [\n        {\n          \"datasource\": {\n            \"uid\": \"${datasource}\"\n          },\n          \"editorMode\": \"code\",\n          \"exemplar\": true,\n          \"expr\": \"polardbx_cdc_dumper_jvm_heap_usage{namespace=\\\"$namespace\\\"}\\n* on(namespace,pod)\\ngroup_left() polardbx_cdc_up{app_kubernetes_io_instance=\\\"$polardbx\\\", namespace=\\\"$namespace\\\", app_kubernetes_io_component=\\\"cdc\\\"}\",\n          \"interval\": \"\",\n          \"legendFormat\": \"{{ pod }}\",\n          \"queryType\": \"randomWalk\",\n          \"range\": true,\n          \"refId\": \"A\"\n        }\n      ],\n      \"title\": \"Dumper Heap Usage\",\n      \"type\": \"timeseries\"\n    }\n  ],\n  \"refresh\": \"10s\",\n  \"schemaVersion\": 37,\n  \"style\": \"dark\",\n  \"tags\": [],\n  \"templating\": {\n    \"list\": [\n      {\n        \"current\": {\n          \"isNone\": true,\n          \"selected\": false,\n          \"text\": \"None\",\n          \"value\": \"\"\n        },\n        \"datasource\": {\n          \"type\": \"prometheus\",\n          \"uid\": \"${datasource}\"\n        },\n        \"definition\": \"label_values(kube_pod_info, cluster)\",\n        \"hide\": 2,\n        \"includeAll\": false,\n        \"multi\": false,\n        \"name\": \"cluster\",\n        \"options\": [],\n        \"query\": {\n          \"query\": \"label_values(kube_pod_info, cluster)\",\n          \"refId\": \"StandardVariableQuery\"\n        },\n        \"refresh\": 1,\n        \"regex\": \"\",\n        \"skipUrlSync\": false,\n        \"sort\": 0,\n        \"tagValuesQuery\": \"\",\n        \"tagsQuery\": \"\",\n        \"type\": \"query\",\n        \"useTags\": false\n      },\n      {\n        \"current\": {\n          \"selected\": false,\n          \"text\": \"default\",\n          \"value\": \"default\"\n        },\n        \"hide\": 0,\n        \"includeAll\": false,\n        \"multi\": false,\n        \"name\": \"datasource\",\n        \"options\": [],\n        \"query\": \"prometheus\",\n        \"queryValue\": \"\",\n        \"refresh\": 1,\n        \"regex\": \"\",\n        \"skipUrlSync\": false,\n        \"type\": \"datasource\"\n      },\n      {\n        \"current\": {\n          \"selected\": false,\n          \"text\": \"default\",\n          \"value\": \"default\"\n        },\n        \"datasource\": {\n          \"type\": \"prometheus\",\n          \"uid\": \"${datasource}\"\n        },\n        \"definition\": \"label_values(polardbx_up, namespace)\",\n        \"hide\": 0,\n        \"includeAll\": false,\n        \"multi\": false,\n        \"name\": \"namespace\",\n        \"options\": [],\n        \"query\": {\n          \"query\": \"label_values(polardbx_up, namespace)\",\n          \"refId\": \"StandardVariableQuery\"\n        },\n        \"refresh\": 1,\n        \"regex\": \"/^(?!kube\\\\-system|.*\\\\-operator\\\\-system|monitoring|loki)/\",\n        \"skipUrlSync\": false,\n        \"sort\": 0,\n        \"tagValuesQuery\": \"\",\n        \"tagsQuery\": \"\",\n        \"type\": \"query\",\n        \"useTags\": false\n      },\n      {\n        \"current\": {\n          \"selected\": false,\n          \"text\": \"pxc-v4\",\n          \"value\": \"pxc-v4\"\n        },\n        \"datasource\": {\n          \"type\": \"prometheus\",\n          \"uid\": \"${datasource}\"\n        },\n        \"definition\": \"label_values(polardbx_up{namespace=\\\"$namespace\\\"}, app_kubernetes_io_instance)\",\n        \"hide\": 0,\n        \"includeAll\": false,\n        \"multi\": false,\n        \"name\": \"polardbx\",\n        \"options\": [],\n        \"query\": {\n          \"query\": \"label_values(polardbx_up{namespace=\\\"$namespace\\\"}, app_kubernetes_io_instance)\",\n          \"refId\": \"StandardVariableQuery\"\n        },\n        \"refresh\": 1,\n        \"regex\": \"\",\n        \"skipUrlSync\": false,\n        \"sort\": 1,\n        \"tagValuesQuery\": \"\",\n        \"tagsQuery\": \"\",\n        \"type\": \"query\",\n        \"useTags\": false\n      }\n    ]\n  },\n  \"time\": {\n    \"from\": \"now-5m\",\n    \"to\": \"now\"\n  },\n  \"timepicker\": {},\n  \"timezone\": \"\",\n  \"title\": \"PolarDB-X Overview\",\n  \"uid\": \"EByXvnuGk\",\n  \"version\": 2,\n  \"weekStart\": \"\"\n}"

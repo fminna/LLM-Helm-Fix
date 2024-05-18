@@ -1,0 +1,286 @@
+---
+# Source: armory-enterprise-agent/templates/agent_rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: armory-aec-agent
+automountServiceAccountToken: true
+---
+# Source: armory-enterprise-agent/templates/agent_configuration.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: armory-enterprise-agent
+data:
+  application.yml: |
+    spring:
+      security:
+        oauth2:
+          client:
+            registration:
+              armory-enterprise-agent:
+                client-id: 
+                scope: openid
+                authorization-grant-type: client_credentials
+                provider: keycloak
+            provider:
+              keycloak:
+                token-uri: https://myconsole.armory.io/auth/realms/armory-enterprise/protocol/openid-connect/token
+    armory:
+      enterprise:
+        console:
+          auth.enabled: true
+          url: https://myconsole.armory.io/config/spinnaker-local/
+        agent:
+          aws:
+            enabled: true
+            verifyAccounts: true
+          canaries:
+            enabled: false
+            rootFolder: kayenta
+            storageAccount: AccountFromApiToUseForTalkingToBucket
+            storageBucket: REPLACEME_IF_ENABLING
+            validateAccounts: true
+          ci:
+            enabled: true
+          docker:
+            enabled: true
+          kubernetes:
+            enabled: true
+          privateKeyPath: /opt/private-keys/
+          refreshIntervalSecs: 300
+          secrets:
+            enabled: true
+            kubeContext: null
+            kubeconfigFile: null
+            kubernetesSecret: aec-secrets
+          spinnakerConfigManagement:
+            enabled: false
+            kubernetes:
+              namespace: spinnaker
+              serviceAccount: svc_acc
+            refreshTimeout: PT60s
+          terraformer:
+            configMapName: aec-terraformer-config
+            enabled: true
+---
+# Source: armory-enterprise-agent/templates/monitoring_configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nr-apm-armory-enterprise-agent
+  annotations:
+    strategy.spinnaker.io/versioned: "false"
+data:
+  newrelic.yml: |-
+    common: &default_settings
+      app_name: "armory-enterprise-agent-"
+      log_file_name: STDOUT
+
+      
+      distributed_tracing:
+        # Default is true.
+        enabled: false
+      # Class transformer can be used to disable all agent instrumentation or specific instrumentation modules.
+      # All instrumentation modules can be found here: https://github.com/newrelic/newrelic-java-agent/tree/main/instrumentation
+      class_transformer:
+
+        # This instrumentation reports the name of the user principal returned from
+        # HttpServletRequest.getUserPrincipal() when servlets and filters are invoked.
+        com.newrelic.instrumentation.servlet-user:
+          enabled: false
+    
+        com.newrelic.instrumentation.spring-aop-2:
+          enabled: false
+    
+        # This instrumentation reports metrics for resultset operations.
+        com.newrelic.instrumentation.jdbc-resultset:
+          enabled: false
+    
+        # Classes loaded by classloaders in this list will not be instrumented.
+        # This is a useful optimization for runtimes which use classloaders to
+        # load dynamic classes which the agent would not instrument.
+        classloader_excludes:
+          groovy.lang.GroovyClassLoader$InnerLoader,
+          org.codehaus.groovy.runtime.callsite.CallSiteClassLoader,
+          com.collaxa.cube.engine.deployment.BPELClassLoader,
+          org.springframework.data.convert.ClassGeneratingEntityInstantiator$ObjectInstantiatorClassGenerator,
+          org.mvel2.optimizers.impl.asm.ASMAccessorOptimizer$ContextClassLoader,
+          gw.internal.gosu.compiler.SingleServingGosuClassLoader,
+      labels:
+        client_name: customer
+        #client_uuid:
+        environment_name: prod
+        #environment_uuid:
+---
+# Source: armory-enterprise-agent/templates/agent_rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: armory-aec-agent-role
+rules:
+  - apiGroups: ['']
+    resources: ['namespaces','configmaps','events','replicationcontrollers','serviceaccounts','pods/log']
+    verbs:      ['create','delete','deletecollection','get','list','patch','update','watch']
+  - apiGroups: ['']
+    resources: ['pods', 'services', 'secrets', 'nodes','nodes/proxy', 'endpoints']
+    verbs: ['create','delete','deletecollection','get','list','patch','update','watch']
+  - apiGroups: ['autoscaling']
+    resources: ['horizontalpodautoscalers']
+    verbs: ['list', 'get']
+  - apiGroups: ['apps']
+    resources: ['controllerrevisions']
+    verbs: ['list']
+  - apiGroups: ['extensions', 'apps']
+    resources: ['daemonsets', 'deployments', 'deployments/scale', 'ingresses', 'replicasets', 'statefulsets']
+    verbs:      ['create','delete','deletecollection','get','list','patch','update','watch']
+  # These permissions are necessary for halyard to operate. We use this role also to deploy Spinnaker itself.
+  - apiGroups: ['']
+    resources: ['services/proxy', 'pods/portforward']
+    verbs:
+      [
+        'create',
+        'delete',
+        'deletecollection',
+        'get',
+        'list',
+        'patch',
+        'update',
+        'watch',
+      ]
+---
+# Source: armory-enterprise-agent/templates/agent_rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: armory-aec-agent-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: armory-aec-agent-role
+subjects:
+  - namespace: default
+    kind: ServiceAccount
+    name: armory-aec-agent
+---
+# Source: armory-enterprise-agent/templates/agent_deployment.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: armory-enterprise-agent
+spec:
+  type: ClusterIP
+  ports:
+    - name: armory-enterprise-agent
+      port: 80
+      targetPort: 8080
+  selector:
+    app: armory-enterprise-agent
+---
+# Source: armory-enterprise-agent/templates/agent_deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: armory-enterprise-agent
+  annotations:
+    strategy.spinnaker.io/max-version-history: '5'
+  name: armory-enterprise-agent-app
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: armory-enterprise-agent
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: armory-enterprise-agent
+    spec:
+      serviceAccountName: armory-aec-agent
+      containers:
+        ##The actual version SHOULD be overridden by spinnaker once deploying below...
+        ## Fixed to use public image...
+        ## Use the index.docker.io so the matching works correctly on the registry stuff.
+        - image: index.docker.io/armory/armory-enterprise-agent
+          imagePullPolicy: Always
+          name: armory-enterprise-agent
+          command: ["/opt/armory-enterprise-agent/bin/armory-enterprise-agent"]
+          ## SUPPOSEDLY spring sets this to the client-secret
+          args: ["--spring.security.oauth2.client.registration.armory-enterprise-agent.client-secret=${CLIENT_SECRET}"]
+          env:
+            - name: JAVA_OPTS
+              value: "-Dnewrelic.config.file=/opt/apmagent/config/newrelic.yml  -javaagent:/opt/apmagent/newrelic/newrelic.jar"
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  key: clientSecret
+                  name: armory-enterprise-agent
+            - name: NEW_RELIC_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: newrelicMonitoringKey
+                  name: armory-enterprise-agent
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - mountPath: /home/app/config
+              name: application-config
+            - mountPath: /opt/private-keys
+              name: private-keys
+            - mountPath: /opt/apmagent
+              name: shared-volume
+            - mountPath: /opt/apmagent/config
+              name: nr-apm-config
+          livenessProbe:
+            periodSeconds: 15
+            httpGet:
+              port: 8080
+              path: /actuator/health
+          readinessProbe:
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            httpGet:
+              port: 8080
+              path: /actuator/health
+          startupProbe:
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            httpGet:
+              port: 8080
+              path: /actuator/health
+      initContainers:
+        - command:
+            - /bin/sh
+            - -c
+            - mkdir -p /opt/apmagent && cd /opt/apmagent && cp ../newrelic-java.zip .
+              && unzip /opt/apmagent/newrelic-java.zip && chmod 775 /opt/apmagent/*
+          image: armory/internal-apm-agent:7.10.0
+          imagePullPolicy: IfNotPresent
+          name: apm-initializer
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /opt/apmagent
+              name: shared-volume
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: application-config
+          configMap:
+            name: armory-enterprise-agent
+        - name: private-keys
+          secret:
+            secretName: armory-enterprise-agent
+        - name: nr-apm-config
+          configMap:
+            defaultMode: 420
+            name: nr-apm-armory-enterprise-agent
+        - emptyDir: {}
+          name: shared-volume

@@ -1,0 +1,126 @@
+---
+# Source: scrapoxy/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-scrapoxy
+  labels:
+    app: scrapoxy
+    chart: scrapoxy-0.3.4
+    release: release-name
+    heritage: Helm
+type: Opaque
+stringData:
+  config.json: |-
+    {
+      "commander": {
+        "port": "7778",
+        "password": "setme"
+      },
+
+      "proxy": {
+        "auth": {
+          "username": "setme",
+          "password": "setme"
+        },
+        "port": 7777
+      },
+
+      "instance": {
+        "port": 3128,
+        "scaling": {
+          "min": 1,
+          "max": 1
+        }
+      },
+
+      "providers": [{"accessKeyId":"$SET_ME","instance":{"ImageId":"set-me","InstanceType":"t2.nano","SecurityGroups":["forward-proxy"]},"region":"eu-west-3","secretAccessKey":"$SET_ME","type":"awsec2"}
+      ]
+    }
+---
+# Source: scrapoxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-scrapoxy
+  labels:
+    app.kubernetes.io/name: scrapoxy
+    helm.sh/chart: scrapoxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7778
+      targetPort: 7778
+      protocol: TCP
+      name: commander
+    - port: 7777
+      targetPort: 7777
+      protocol: TCP
+      appProtocol: tcp
+      name: proxy
+  selector:
+    app.kubernetes.io/name: scrapoxy
+    app.kubernetes.io/instance: release-name
+---
+# Source: scrapoxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-scrapoxy
+  labels:
+    app.kubernetes.io/name: scrapoxy
+    helm.sh/chart: scrapoxy-0.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scrapoxy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scrapoxy
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: scrapoxy
+          image: "wiremind/scrapoxy:latest"
+          imagePullPolicy: Always
+          command: ["node"]
+          args: ["/app/server/index.js", "start", "/etc/scrapoxy_config/config.json", "-d"]
+          ports:
+            - name: commander
+              containerPort: 7778
+              protocol: TCP
+            - name: proxy
+              containerPort: 7777
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: commander
+          readinessProbe:
+            httpGet:
+              path: /
+              port: commander
+          resources:
+            limits:
+              cpu: 1
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+          - name: configfile
+            mountPath: "/etc/scrapoxy_config"
+            readOnly: true
+      volumes:
+      - name: configfile
+        secret:
+          secretName: release-name-scrapoxy

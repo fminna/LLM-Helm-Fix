@@ -1,0 +1,224 @@
+---
+# Source: configmanager/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: configmanager
+  labels:
+    helm.sh/chart: configmanager-0.1.0
+    app: configmanager
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+---
+# Source: configmanager/templates/config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name
+  namespace: 
+data:
+    # cboEnabled can be 0 - use planner 1 - use CBO default 1
+    # queryPolicyMode can be 0, 1, 2. 0- parallelizeAll, 1- parallelizeHalf, 2- singleRTC.
+    # default for 'queryPolicyMode' is parallelizeAll.
+    # default for 'maxFailuresBeforeCompileWithSingleRTC' is 20 
+    # rtc_plus can be 0, 1. 0- v2, 1- v2+ 
+    # default for 'rtc_plus' is v2+. 
+    # v2+ is a Single RTC decides (Master-Slave)
+    # v2 is each RTC working by itself
+  application.yml: |
+    SQreamVersion: 2.0.0
+    isFDBCluster: false
+    logging:
+      level:
+        com.sqream: INFO
+    items:
+      - cboEnabled: 1
+        maxFailuresBeforeCompileWithSingleRTC: 10
+        maxIdleLifetimeHours: 24
+        queryPolicyMode: 0
+        rtc_plus: 1
+        scaleUpTimeout: 30
+        tenantId: tenant
+---
+# Source: configmanager/templates/cluster-role-cfgman.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-admin-configmanager
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    # Reference to upper's `metadata.name`
+    name: release-name-configmanager
+    # Reference to upper's `metadata.namespace`
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: configmanager/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-configmanager
+  labels:
+    helm.sh/chart: configmanager-0.1.0
+    app: configmanager
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: configmanager
+    instance: release-name
+---
+# Source: configmanager/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-configmanager
+  labels:
+    helm.sh/chart: configmanager-0.1.0
+    app: configmanager
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: configmanager
+      instance: release-name
+  template:
+    metadata:
+      labels:
+        app: configmanager
+        instance: release-name
+    spec:
+      serviceAccountName: configmanager
+      securityContext:
+        {}
+      containers:
+        - name: configmanager
+          securityContext:
+            {}
+          image: "nexus.sq.l:16000/repository/container-replace-repo/configmanager:replace_tag"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: 'release-name-secret'
+          env:
+          - name: JAVA_TOOL_OPTIONS
+            value: "-Xmx1524m -Xms512m"
+          command:
+            - /bin/bash
+            - -c
+            - java $JAVA_OPTS -jar app.jar --spring.config.additional-location=file:/app/application.yml
+          args:
+          livenessProbe:
+            failureThreshold: 10
+            httpGet:
+              path: actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            failureThreshold: 10
+            httpGet:
+              path: actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: 2048Mi
+            requests:
+              cpu: "0.5"
+              memory: 512Mi
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name
+---
+# Source: configmanager/templates/secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-name-secret
+  labels:
+    helm.sh/chart: configmanager-0.1.0
+    app: configmanager
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: local-secrets
+    kind: ClusterSecretStore
+  target:
+    name: release-name-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        annotations:
+          {}
+        labels:
+          helm.sh/chart: configmanager-0.1.0
+          app: configmanager
+          instance: release-name
+          app.kubernetes.io/version: "1.16.0"
+          app.kubernetes.io/managed-by: Helm
+          monitor: "true"
+      data:
+        REDIS_HOST: '{{ .REDIS_IP_ADDRESS }}'
+        REDIS_PORT: '{{ .REDIS_PORT }}'
+  dataFrom:
+    - extract:
+        key: redis-managed-instance
+---
+# Source: configmanager/templates/servicePodMonitor.yaml
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: release-name-configmanager
+  labels:
+    helm.sh/chart: configmanager-0.1.0
+    app: configmanager
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  selector:
+    matchLabels:
+      app: configmanager
+      instance: release-name
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s

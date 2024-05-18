@@ -1,0 +1,2518 @@
+---
+# Source: tekton-demo/templates/github/trigger-sa-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: do101-tekton-triggers-sa
+secrets:
+  - name: do101-github-webhook-secret
+  - name: do101-github-deploy-secret
+  - name: 11009103-tekton-pipeline-pull-secret
+---
+# Source: tekton-demo/templates/github/trigger-webhook-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tekton-triggers-createwebhook
+secrets:
+  - name: do101-github-webhook-secret
+  - name: do101-github-deploy-secret
+---
+# Source: tekton-demo/templates/resources/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: do101-pvc
+spec:
+  resources:
+    requests:
+      storage: 3Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+---
+# Source: tekton-demo/templates/github/trigger-sa-rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tekton-triggers-role
+rules:
+- apiGroups:
+  - tekton.dev
+  resources:
+  - eventlisteners
+  - triggerbindings
+  - triggertemplates
+  - pipelineresources
+  verbs:
+  - get
+  - create
+  - list
+- apiGroups:
+  - tekton.dev
+  resources:
+  - pipelineruns
+  - pipelineresources
+  verbs:
+  - create
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Source: tekton-demo/templates/github/trigger-webhook-rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tekton-triggers-createwebhook
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - tekton.dev
+  resources:
+  - eventlisteners
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs:
+  - create
+  - get
+  - list
+  - delete
+  - update
+---
+# Source: tekton-demo/templates/github/trigger-sa-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tekton-triggers-rolebinding
+subjects:
+- kind: ServiceAccount
+  name: do101-tekton-triggers-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tekton-triggers-role
+---
+# Source: tekton-demo/templates/github/trigger-webhook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tekton-triggers-createwebhook
+subjects:
+- kind: ServiceAccount
+  name: tekton-triggers-createwebhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tekton-triggers-createwebhook
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: do101-image-puller
+  namespace: labs-ci-cd
+subjects:
+- kind: ServiceAccount
+  name: pipeline
+  namespace: labs-ci-cd
+roleRef:
+  kind: ClusterRole
+  name: system:image-puller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: tekton-demo/templates/roles.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: pipeline-builder-image-puller-do101-development
+  namespace: labs-ci-cd
+subjects:
+- kind: ServiceAccount
+  name: do101-tekton-triggers-sa
+  namespace: do101-development
+roleRef:
+  kind: ClusterRole
+  name: system:image-puller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: tekton-demo/templates/roles.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: pipeline-builder-image-puller-do101-production
+  namespace: labs-ci-cd
+subjects:
+- kind: ServiceAccount
+  name: do101-tekton-triggers-sa
+  namespace: do101-production
+roleRef:
+  kind: ClusterRole
+  name: system:image-puller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: tekton-demo/templates/tasks/conditions.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: Condition
+metadata:
+  name: is-allowed-development
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: revision-type
+  check:
+    image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+    script: | 
+      #!/bin/sh
+      if [ "$(params.revision-type)" == "feature" ] || [ "$(params.revision-type)" == "develop" ]; then
+        exit 0
+      else 
+        exit 1
+      fi
+---
+# Source: tekton-demo/templates/tasks/conditions.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: Condition
+metadata:
+  name: is-allowed-production
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: revision-type
+  check:
+    image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+    script: | 
+      #!/bin/sh 
+      if [ "$(params.revision-type)" == "release" ] || [ "$(params.revision-type)" == "hotfix" ] || [ "$(params.revision-type)" == "patch" ]; then
+        exit 0
+      else 
+        exit 1
+      fi
+---
+# Source: tekton-demo/templates/github/trigger-eventlistener.yaml
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: EventListener
+metadata:
+  name: do101
+  namespace: labs-ci-cd
+spec:
+  serviceAccountName: do101-tekton-triggers-sa
+  triggers:
+    - name: cel-trig-with-canonical
+      interceptors:
+        - cel:
+            filter: "header.canonical('X-GitHub-Event') == 'push'"
+      bindings:
+        - ref: do101-trigger-binding
+      template:
+        name: do101-trigger-template
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: do101-development
+  namespace: labs-ci-cd
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: do101-production
+  namespace: labs-ci-cd
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: do101-documentation
+  namespace: labs-ci-cd
+---
+# Source: tekton-demo/templates/pipelines/nodejs.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: do101
+  namespace: labs-ci-cd
+  labels:
+    app: do101
+spec:
+  workspaces:
+    - name: do101-source
+      description: The git repo will be cloned onto the volume backing this workspace
+    - name: do101-shared
+      description: shared folder
+  resources:
+    - name: do101-git
+      type: git
+    - name: do101-development
+      type: image
+    - name: do101-production
+      type: image
+    - name: do101-documentation
+      type: image
+  params:
+    - name: ref
+      description: Ref of the application
+    - name: revision
+      description: git unique head commit id
+    - name: repourl
+      description: repository full name
+    - name: repofullname
+      description: repository full name
+    - name: author
+      description: commit author username
+    - name: email
+      description: commit author email
+    - name: message
+      description: commit message
+
+  tasks:
+
+    - name: git
+      taskRef:
+        name: git-clone
+      workspaces:
+      - name: output
+        workspace: do101-source
+      params:
+      - name: verbose
+        value: "false"
+      - name: url
+        value: $(params.repourl)
+      - name: revision
+        value: $(params.revision)
+      - name: ref
+        value: $(params.ref)
+      - name: repourl
+        value: $(params.repourl)
+      - name: repofullname
+        value: $(params.repofullname)
+      - name: author
+        value: $(params.author)
+      - name: message
+        value: $(params.message)
+      - name: pipelinerun
+        value: $(context.pipelineRun.name)
+
+    - name: prepare
+      taskRef:
+        name: prepare
+      retries: 2
+      workspaces:
+      - name: shared
+        workspace: do101-shared
+
+    - name: github
+      taskRef:
+        name: github
+      params:
+      - name: status
+        value: pending
+      - name: revision
+        value: $(params.revision)
+      - name: repourl
+        value: $(params.repourl)
+      - name: repofullname
+        value: $(params.repofullname)
+
+    - name: standards
+      taskRef:
+        name: standards
+      retries: 2
+      runAfter:
+        - git
+      workspaces:
+      - name: source
+        workspace: do101-source
+      - name: shared
+        workspace: do101-shared
+      params:
+        - name: ref
+          value: $(tasks.git.results.ref)
+        - name: repourl
+          value: $(params.repourl)
+        - name: repofullname
+          value: $(params.repofullname)
+        - name: revision
+          value: $(tasks.git.results.revision)
+        - name: revision-type
+          value: $(tasks.git.results.revision-type)
+        - name: revision-name
+          value: $(tasks.git.results.revision-name)
+
+    - name: docs
+      taskRef:
+        name: docs
+      runAfter:
+        - standards
+      workspaces:
+      - name: source
+        workspace: do101-source
+      params:
+        - name: ref
+          value: $(tasks.git.results.ref)
+        - name: repourl
+          value: $(params.repourl)
+        - name: repofullname
+          value: $(params.repofullname)
+        - name: revision
+          value: $(tasks.git.results.revision)
+        - name: revision-type
+          value: $(tasks.git.results.revision-type)
+        - name: revision-name
+          value: $(tasks.git.results.revision-name)
+        - name: author
+          value: $(tasks.git.results.author)
+
+    - name: build
+      taskRef:
+        name: build
+      runAfter:
+        - standards
+      workspaces:
+      - name: source
+        workspace: do101-source
+      params:
+        - name: ref
+          value: $(tasks.git.results.ref)
+        - name: repourl
+          value: $(params.repourl)
+        - name: repofullname
+          value: $(params.repofullname)
+        - name: revision
+          value: $(tasks.git.results.revision)
+        - name: revision-type
+          value: $(tasks.git.results.revision-type)
+        - name: revision-name
+          value: $(tasks.git.results.revision-name)
+
+    - name: deploy
+      taskRef:
+        name: deploy
+      runAfter:
+        - docs
+        - build
+      params:
+        - name: cluster
+          value: apps.s45.core.rht-labs.com
+        - name: ref
+          value: $(tasks.git.results.ref)
+        - name: revision
+          value: $(tasks.git.results.revision)
+        - name: revision-short
+          value: $(tasks.git.results.revision-short)
+        - name: revision-type
+          value: $(tasks.git.results.revision-type)
+        - name: revision-name
+          value: $(tasks.git.results.revision-name)
+          
+    - name: test-stress
+      taskRef:
+        name: test-performance
+      runAfter:
+        - deploy
+        - apply
+      params:
+      - name: ref
+        value: $(params.ref)
+      - name: repourl
+        value: $(params.repourl)
+      - name: repofullname
+        value: $(params.repofullname)
+      - name: revision
+        value: $(params.revision)
+      - name: revision-type
+        value: $(tasks.git.results.revision-type)
+      - name: revision-name
+        value: $(tasks.git.results.revision-name)
+
+    - name: test-e2e
+      taskRef:
+        name: test-integration
+      runAfter:
+        - deploy
+        - apply
+      workspaces:
+      - name: source
+        workspace: do101-source
+      params:
+      - name: ref
+        value: $(params.ref)
+      - name: repourl
+        value: $(params.repourl)
+      - name: repofullname
+        value: $(params.repofullname)
+      - name: revision
+        value: $(params.revision)
+      - name: revision-type
+        value: $(tasks.git.results.revision-type)
+      - name: revision-name
+        value: $(tasks.git.results.revision-name)
+
+    - name: apply
+      taskRef:
+        name: apply
+      runAfter:
+        - docs
+        - build
+      workspaces:
+      - name: source
+        workspace: do101-source
+      - name: shared
+        workspace: do101-shared
+
+    - name: promote
+      conditions:
+        - conditionRef: is-allowed-production
+          params:
+            - name: revision-type
+              value: $(tasks.git.results.revision-type)
+      taskRef:
+        name: promote
+      workspaces:
+      - name: source
+        workspace: do101-source
+      - name: shared
+        workspace: do101-shared
+      runAfter:
+        - test-e2e
+        - test-stress
+      params:
+      - name: cluster
+        value: apps.s45.core.rht-labs.com
+      - name: repofullname
+        value: $(params.repofullname)
+      - name: ref
+        value: $(tasks.git.results.ref)
+      - name: revision
+        value: $(tasks.git.results.revision)
+      - name: revision-short
+        value: $(tasks.git.results.revision-short)
+      - name: revision-type
+        value: $(tasks.git.results.revision-type)
+      - name: revision-name
+        value: $(tasks.git.results.revision-name)
+      - name: author
+        value: $(params.author)
+      - name: email
+        value: $(params.email)
+
+    - name: pull-request
+      taskRef:
+        name: github-pull-request
+      workspaces:
+      - name: source
+        workspace: do101-source
+      - name: shared
+        workspace: do101-shared
+      runAfter:
+        - promote
+      params:
+      - name: revision-type
+        value: $(tasks.git.results.revision-type)
+      - name: revision-name
+        value: $(tasks.git.results.revision-name)
+
+    - name: release
+      taskRef:
+        name: tag
+      runAfter:
+        - pull-request
+      workspaces:
+      - name: source
+        workspace: do101-source
+      params:
+      - name: author
+        value: $(params.author)
+      - name: email
+        value: $(params.email)
+      - name: revision-type
+        value: $(tasks.git.results.revision-type)
+      - name: revision-name
+        value: $(tasks.git.results.revision-name)
+
+  finally:
+    - name: finally
+      taskRef:
+        name: finally
+      params:
+      - name: uid
+        value: $(context.pipelineRun.uid)
+      - name: name
+        value: $(context.pipelineRun.name)
+      - name: repofullname
+        value: $(params.repofullname)
+      - name: repourl
+        value: $(params.repourl)
+      workspaces:
+        - name: source
+          workspace: do101-source
+        - name: shared
+          workspace: do101-shared
+---
+# Source: tekton-demo/templates/resources/nodejs-git.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: do101-git
+spec:
+  type: git
+  params:
+    - name: url
+    - name: revision
+    - name: submodules
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: do101-development
+  namespace: labs-ci-cd
+  labels:
+    app: do101
+spec:
+  type: image
+  params:
+    - name: url
+      value: image-registry.openshift-image-registry.svc:5000/do101-development/do101-development
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: do101-documentation
+  namespace: labs-ci-cd
+  labels:
+    app: do101
+spec:
+  type: image
+  params:
+    - name: url
+      value: image-registry.openshift-image-registry.svc:5000/do101-development/do101-documentation
+---
+# Source: tekton-demo/templates/resources/nodejs-images.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: do101-production
+  namespace: labs-ci-cd
+  labels:
+    app: do101
+spec:
+  type: image
+  params:
+    - name: url
+      value: image-registry.openshift-image-registry.svc:5000/do101-production/do101-production
+---
+# Source: tekton-demo/templates/github/trigger-eventlistener.yaml
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: EventListener
+    app.kubernetes.io/part-of: Triggers
+    eventlistener: do101
+  name: do101-trigger
+  namespace: labs-ci-cd
+spec:
+  port:
+    targetPort: http-listener
+  to:
+    kind: Service
+    name: el-do101
+    weight: 100
+  wildcardPolicy: None
+---
+# Source: tekton-demo/templates/github/github-webhook-create.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: do101-create-webhook
+  namespace: labs-ci-cd
+spec:
+  params:
+  - name: ExternalDomain
+    description: "The external domain for the EventListener e.g. `$(inputs.params.EventListenerName).<PROXYIP>.nip.io`"
+  - name: GitHubUser
+    description: "The GitHub user"
+  - name: GitHubRepo
+    description: "The GitHub repo where the webhook will be created"
+  - name: GitHubOrg
+    description: "The GitHub organization where the webhook will be created"
+  - name: GitHubSecretName
+    description: "The Secret name for GitHub access token. This is always mounted and must exist"
+  - name: GitHubAccessTokenKey
+    description: "The GitHub access token key name"
+  - name: GitHubSecretStringKey
+    description: "The GitHub secret string key name"
+  - name: GitHubDomain
+    description: "The GitHub domain. Override for GitHub Enterprise"
+    default: "github.com"
+  - name: WebhookEvents
+    description: "List of events the webhook will send notifications for"
+    default: '[\"push\",\"pull_request\"]'
+  volumes:
+  - name: do101-github-webhook-secret
+    secret:
+      secretName: $(inputs.params.GitHubSecretName)
+  - name: do101-github-deploy-secret
+    secret:
+      secretName: do101-github-deploy-secret
+
+  steps:
+  - name: create-webhook
+    image: registry.redhat.io/openshift4/ose-cli:latest
+    volumeMounts:
+    - name: do101-github-webhook-secret
+      mountPath: /var/secret
+    command:
+    - sh
+    args:
+    - -ce
+    - |
+      set -e
+      echo "Create Webhook"
+      if [ $(inputs.params.GitHubDomain) = "github.com" ];then
+        curl -v -d "{\"name\": \"web\",\"active\": true,\"events\": $(inputs.params.WebhookEvents),\"config\": {\"url\": \"$(inputs.params.ExternalDomain)\",\"content_type\": \"json\",\"insecure_ssl\": \"1\" ,\"secret\": \"$(cat /var/secret/$(inputs.params.GitHubSecretStringKey))\"}}" -X POST -u $(inputs.params.GitHubUser):$(cat /var/secret/$(inputs.params.GitHubAccessTokenKey)) -L https://api.github.com/repos/$(inputs.params.GitHubOrg)/$(inputs.params.GitHubRepo)/hooks
+      else
+        curl -d "{\"name\": \"web\",\"active\": true,\"events\": $(inputs.params.WebhookEvents),\"config\": {\"url\": \"$(inputs.params.ExternalDomain)/\",\"content_type\": \"json\",\"insecure_ssl\": \"1\" ,\"secret\": \"$(cat /var/secret/$(inputs.params.GitHubSecretStringKey))\"}}" -X POST -u $(inputs.params.GitHubUser):$(cat /var/secret/$(inputs.params.GitHubAccessTokenKey)) -L https://$(inputs.params.GitHubDomain)/api/v3/repos/$(inputs.params.GitHubOrg)/$(inputs.params.GitHubRepo)/hooks
+      fi
+
+  - name: create-deployment-key
+    image: registry.redhat.io/rhel8/nodejs-12
+    volumeMounts:
+    - name: do101-github-webhook-secret
+      mountPath: /var/secret
+    - name: do101-github-deploy-secret
+      mountPath: /var/idrsa
+    script: |
+      #!/bin/sh
+      ssh-keygen -y -f /var/idrsa/ssh-privatekey > ~/.ssh/id_rsa.pub
+      curl \
+        -i\
+        -H"Authorization: token $(cat /var/secret/token)"\
+        --data @- https://api.github.com/repos/mvmaestri/do101-apps/keys << EOF
+          {
+            "title" : "deploymentt $(date)",
+            "key" : "$(cat ~/.ssh/id_rsa.pub)",
+            "read_only" : false
+          }
+---
+# Source: tekton-demo/templates/tasks/task-apply.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: apply
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+  - name: source
+  - name: shared
+  steps:
+    - name: helm-apply
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        if [ -d "chart" ]; then
+          /workspace/shared/helm template -f chart/values.yaml chart | oc apply -f-
+        else
+          echo "Chart does not exist"
+          exit 0
+        fi
+      securityContext:
+        runAsUser: 0
+---
+# Source: tekton-demo/templates/tasks/task-build.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: build
+  namespace: labs-ci-cd
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+spec:
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+      type: string
+    - name: TLSVERIFY
+      description: Verify the TLS on the registry endpoint (for push/pull to a non-TLS registry)
+      default: "false"
+      type: string
+  workspaces:
+    - name: source
+
+  results:
+  - name: image
+    description: url of the image just built
+  - name: digest
+    description: digest of the image just built
+    
+  steps:
+
+    - name: image-build
+      image: registry.redhat.io/rhel8/buildah@sha256:a70cfab267df59020cc6a6cea6a4661db65240e2e919f61bed54e2aa87a9bbf0
+      workingDir: /workspace/source/weather
+      command: ['buildah', 'bud', '--tls-verify=$(inputs.params.TLSVERIFY)', '--layers', '-f', 'Dockerfile', '-t', 'image-registry.openshift-image-registry.svc:5000/do101-development/do101-development:$(inputs.params.revision-name)', '.']
+      resources: {}
+      volumeMounts:
+        - name: varlibcontainers
+          mountPath: /var/lib/containers
+        - name: gen-source
+          mountPath: /gen-source
+      securityContext:
+        privileged: true
+
+    - name: image-push
+      image: registry.redhat.io/rhel8/buildah@sha256:a70cfab267df59020cc6a6cea6a4661db65240e2e919f61bed54e2aa87a9bbf0
+      command: ['buildah', 'push', '--tls-verify=$(inputs.params.TLSVERIFY)', '--digestfile', '$(workspaces.source.path)/image-digest', 'image-registry.openshift-image-registry.svc:5000/do101-development/do101-development:$(inputs.params.revision-name)', 'docker://image-registry.openshift-image-registry.svc:5000/do101-development/do101-development:$(inputs.params.revision-name)']
+      volumeMounts:
+        - name: varlibcontainers
+          mountPath: /var/lib/containers
+      resources: {}
+      securityContext:
+        privileged: true
+
+  volumes:
+    - name: varlibcontainers
+      emptyDir: {}
+    - name: gen-source
+      emptyDir: {}
+---
+# Source: tekton-demo/templates/tasks/task-deploy.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: cluster
+      description: cluster app url
+      type: string
+    - name: ref
+      description: git ref
+      type: string
+    - name: revision
+      description: git unique head commit id
+      type: string
+    - name: revision-short
+      description: git unique head commit id short version
+      type: string
+    - name: revision-type
+      description: revision type usually branch type
+      type: string
+    - name: revision-name
+      description: revision name usually version or branch name
+      type: string
+  steps:
+    - name: app-create
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite develop name structure
+            appname=do101-$revisionName
+          fi
+
+          oc get deployment/$appname -n do101-development
+          if [[ $? -ne 0 ]]; then
+            oc new-app --name=$appname -i=do101-development:$(inputs.params.revision-name) --namespace=do101-development --labels=app.name=do101
+          else
+            echo "Application already exists."
+          fi
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+
+    - name: app-docs
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-documentation
+
+          oc get deployment/$appname -n do101-development
+          if [[ $? -ne 0 ]]; then
+            oc new-app --name=$appname -i=do101-documentation:$(inputs.params.revision-name) --namespace=do101-development --labels=app.name=do101
+          else
+            echo "Application already exists."
+          fi
+
+        else
+          echo "Skipping. Only develop deploys documentation"
+          exit 0
+        fi
+
+    - name: app-expose
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          hostname=$(inputs.params.revision-type)-$revisionName-do101-development.apps.s45.core.rht-labs.com
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite appname structure
+            appname=do101-$revisionName
+            # overwrite hostname
+            hostname=$revisionName-do101-development.apps.s45.core.rht-labs.com
+            
+            # documentation development route
+            documentation=do101-documentation-do101-development.apps.s45.core.rht-labs.com
+            oc get route/do101-documentation -n do101-development
+            if [[ $? -ne 0 ]]; then
+              echo "Exposing"
+              oc create route edge --service do101-documentation --port 8080 --hostname $documentation -n do101-development
+            else
+              echo "Documentation is already exposed."
+              echo $documentation
+              echo ""
+            fi
+
+
+          fi
+
+          oc get svc/$appname -n do101-development
+          if [[ $? -ne 0 ]]; then
+            echo "Exposing"
+            oc expose svc/$appname -n do101-development
+          else
+            echo "Application is already exposed."
+            echo $hostname
+            echo ""
+          fi
+
+          oc get route/$appname -n do101-development
+          if [[ $? -ne 0 ]]; then
+            echo "Creating routes"
+            oc create route edge --service $appname --port 8080 --hostname $hostname -n do101-development
+            sleep 5
+            oc patch svc/$appname -p '{ "spec": {"type":"LoadBalancer"}}, { "ports": [ { "name": "gw", "protocol": "TCP", "port": 8080,"targetPort": 8080 } ] } }' -n do101-development
+          else
+            echo ""
+            echo "Route is already available."
+            echo $hostname
+          fi
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+
+    - name: app-labels
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-} # replace . to / 
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite appname structure
+            appname=do101-$revisionName
+          fi
+        
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+
+    - name: app-envs
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+        environment=do101-development
+        
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite appname structure
+            appname=do101-$revisionName
+            oc set env deployment/$appname --overwrite version=$(inputs.params.revision-short) -n $environment
+          else
+            oc set env deployment/$appname --overwrite revision-id=$(inputs.params.revision-short) -n $environment
+            oc set env deployment/$appname --overwrite revision-name=$revisionName -n $environment
+          fi
+          
+          oc set env deployment/$appname --overwrite environment=development -n $environment
+          oc set env deployment/$appname --overwrite revision-type=$(inputs.params.revision-type) -n $environment
+          oc set env deployment/$appname --list -n $environment
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+
+    - name: app-probes
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite appname structure
+            appname=do101-$revisionName
+          fi
+
+          oc set probe deployment/$appname --remove --readiness --liveness -n do101-development
+          oc set probe deployment/$appname --readiness --get-url=http://:8080/ --initial-delay-seconds=30 -n do101-development
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+
+    - name: app-autoscale
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          appname=do101-$(inputs.params.revision-type)
+          min=1
+          max=10
+          threshold=50
+        elif [ "$(inputs.params.revision-type)" == "feature" ]; then
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          min=1
+          max=2
+          threshold=75
+        fi
+
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+
+          oc get hpa $appname -n do101-development
+          if [[ $? -ne 0 ]]; then
+            oc autoscale deployment $appname \
+              --min $min --max $max --cpu-percent=$threshold \
+              --namespace do101-development
+          else
+            echo "Application autoscale is already configured."
+          fi
+        fi
+
+    - name: app-triggers
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+
+          if [ "$(inputs.params.revision-type)" == "develop" ]; then
+            # overwrite appname structure
+            appname=do101-$revisionName
+          fi
+
+          oc set triggers deployment/$appname -n do101-development
+
+        else
+          echo "Branch type $(inputs.params.revision-type) does not deploy to development"
+          exit 0
+        fi
+---
+# Source: tekton-demo/templates/tasks/task-docs.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: docs
+  namespace: labs-ci-cd
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+      type: string
+    - name: author
+      description: revision commit author username
+    - name: VERSION
+      description: The version of nodejs
+      default: nodejs:12
+      type: string
+    - name: TLSVERIFY
+      description: Verify the TLS on the registry endpoint (for push/pull to a non-TLS registry)
+      default: "false"
+      type: string
+
+  results:
+  - name: image
+    description: url of the image just built
+  - name: digest
+    description: digest of the image just built
+
+  steps:
+          
+    - name: image-build
+      image: registry.redhat.io/rhel8/buildah@sha256:a70cfab267df59020cc6a6cea6a4661db65240e2e919f61bed54e2aa87a9bbf0
+      workingDir: /workspace/source/weather/docs
+      resources: {}
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          buildah bud --tls-verify=$(inputs.params.TLSVERIFY) --layers -t image-registry.openshift-image-registry.svc:5000/do101-development/do101-documentation:$(inputs.params.revision-name) .
+        fi
+      volumeMounts:
+        - name: varlibcontainers
+          mountPath: /var/lib/containers
+        # - name: gen-source
+        #   mountPath: /gen-source
+      securityContext:
+        privileged: true
+        
+    - name: image-push
+      image: registry.redhat.io/rhel8/buildah@sha256:a70cfab267df59020cc6a6cea6a4661db65240e2e919f61bed54e2aa87a9bbf0
+      script: |
+        #!/bin/sh
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          buildah push --tls-verify=$(inputs.params.TLSVERIFY) --digestfile $(workspaces.source.path)/image-digest image-registry.openshift-image-registry.svc:5000/do101-development/do101-documentation:$(inputs.params.revision-name) docker://image-registry.openshift-image-registry.svc:5000/do101-development/do101-documentation:$(inputs.params.revision-name)
+        fi
+      volumeMounts:
+        - name: varlibcontainers
+          mountPath: /var/lib/containers
+      resources: {}
+      securityContext:
+        privileged: true
+
+    - name: image-digest
+      image: registry.redhat.io/rhel8/buildah@sha256:a70cfab267df59020cc6a6cea6a4661db65240e2e919f61bed54e2aa87a9bbf0
+      script: |
+        #!/bin/sh
+        printf %s "null" >> /tekton/results/digest
+        printf %s "null" >> /tekton/results/image
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          printf %s "image-registry.openshift-image-registry.svc:5000/do101-development/do101-documentation:$(inputs.params.revision-name)" >> /tekton/results/image
+          cat $(workspaces.source.path)/image-digest | tee /tekton/results/digest
+        fi
+        exit 0
+
+  volumes:
+    - name: varlibcontainers
+      emptyDir: {}
+    # - name: gen-source
+    #   emptyDir: {}
+---
+# Source: tekton-demo/templates/tasks/task-finally.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: finally
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+    - name: source
+    - name: shared
+  params:
+    - name: uid
+      type: string
+    - name: name
+      type: string
+    - name: repofullname
+      type: string
+    - name: repourl
+      type: string
+  steps:
+    - name: status
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/shared
+      script: |
+        #!/bin/sh
+        ./tkn pr desc $(params.name)
+---
+# Source: tekton-demo/templates/tasks/task-git-clone.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: git-clone
+  labels:
+    app.kubernetes.io/version: "0.2"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: git
+    tekton.dev/displayName: "git clone"
+spec:
+  description: >-
+    These Tasks are Git tasks to work with repositories used by other tasks
+    in your Pipeline.
+    The git-clone Task will clone a repo from the provided url into the
+    output Workspace. By default the repo will be cloned into the root of
+    your Workspace. You can clone into a subdirectory by setting this Task's
+    subdirectory param.
+  workspaces:
+    - name: output
+      description: The git repo will be cloned onto the volume backing this workspace
+  params:
+    - name: url
+      description: git url to clone
+      type: string
+    - name: revision
+      description: git revision to checkout (branch, tag, sha, ref…)
+      type: string
+      default: ""
+    - name: refspec
+      description: (optional) git refspec to fetch before checking out revision
+      default: ""
+    - name: submodules
+      description: defines if the resource should initialize and fetch the submodules
+      type: string
+      default: "true"
+    - name: depth
+      description: performs a shallow clone where only the most recent commit(s) will be fetched
+      type: string
+      default: "1"
+    - name: sslVerify
+      description: defines if http.sslVerify should be set to true or false in the global git config
+      type: string
+      default: "true"
+    - name: subdirectory
+      description: subdirectory inside the "output" workspace to clone the git repo into
+      type: string
+      default: ""
+    - name: deleteExisting
+      description: clean out the contents of the repo's destination directory (if it already exists) before trying to clone the repo there
+      type: string
+      default: "true"
+    - name: httpProxy
+      description: git HTTP proxy server for non-SSL requests
+      type: string
+      default: ""
+    - name: httpsProxy
+      description: git HTTPS proxy server for SSL requests
+      type: string
+      default: ""
+    - name: noProxy
+      description: git no proxy - opt out of proxying HTTP/HTTPS requests
+      type: string
+      default: ""
+    - name: verbose
+      description: log the commands used during execution
+      type: string
+      default: "true"
+    - name: ref
+      type: string
+    - name: repourl
+      type: string
+    - name: repofullname
+      type: string
+    - name: author
+      type: string
+    - name: message
+      type: string
+    - name: pipelinerun
+      type: string
+  results:
+    - name: commit
+      description: The precise commit SHA that was fetched by this Task
+    - name: url
+      description: The precise URL that was fetched by this Task
+    - name: cluster
+      description: apps cluster url
+    - name: ref
+      description: reference
+    - name: revision
+      description: unique id from git head commit
+    - name: revision-short
+      description: unique id from git head commit short version
+    - name: revision-type
+      description: Contains the type of branch - feature, release,...
+    - name: revision-name
+      description: Contains the name of the branch without the type, ie. omitting the first slash
+    - name: full-revision-name
+      description: Contains the name of the branch without the type, ie. omitting the first slash
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: message
+      description: Contains the commit message
+    - name: author
+      description: Contains the author username
+
+  steps:
+    - name: clone
+      image: gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.45.0@sha256:8ab0f58d8381b0b71f5b2bae1f63522989d739e3154d8cab1bacfa0ef5317214
+      script: |
+        #!/bin/sh
+        set -eu -o pipefail
+        if [[ "$(params.verbose)" == "true" ]] ; then
+          set -x
+        fi
+        CHECKOUT_DIR="$(workspaces.output.path)/$(params.subdirectory)"
+        cleandir() {
+          # Delete any existing contents of the repo directory if it exists.
+          #
+          # We don't just "rm -rf $CHECKOUT_DIR" because $CHECKOUT_DIR might be "/"
+          # or the root of a mounted volume.
+          if [[ -d "$CHECKOUT_DIR" ]] ; then
+            # Delete non-hidden files and directories
+            rm -rf "$CHECKOUT_DIR"/*
+            # Delete files and directories starting with . but excluding ..
+            rm -rf "$CHECKOUT_DIR"/.[!.]*
+            # Delete files and directories starting with .. plus any other character
+            rm -rf "$CHECKOUT_DIR"/..?*
+          fi
+        }
+        if [[ "$(params.deleteExisting)" == "true" ]] ; then
+          cleandir
+        fi
+        test -z "$(params.httpProxy)" || export HTTP_PROXY=$(params.httpProxy)
+        test -z "$(params.httpsProxy)" || export HTTPS_PROXY=$(params.httpsProxy)
+        test -z "$(params.noProxy)" || export NO_PROXY=$(params.noProxy)
+        /ko-app/git-init \
+          -url "$(params.url)" \
+          -revision "$(params.revision)" \
+          -refspec "$(params.refspec)" \
+          -path "$CHECKOUT_DIR" \
+          -sslVerify="$(params.sslVerify)" \
+          -submodules="$(params.submodules)" \
+          -depth "$(params.depth)"
+        cd "$CHECKOUT_DIR"
+        RESULT_SHA="$(git rev-parse HEAD)"
+        EXIT_CODE="$?"
+        if [ "$EXIT_CODE" != 0 ] ; then
+          exit $EXIT_CODE
+        fi
+        # ensure we don't add a trailing newline to the result
+        echo -n "$RESULT_SHA" > $(results.commit.path)
+        echo -n "$(params.url)" > $(results.url.path)
+
+    - name: variables
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      resources: {}
+      script: |
+        #!/bin/sh
+        echo $(oc config view)
+        server=$(echo $(oc config view --minify -o jsonpath='{.clusters[*].cluster.server}'))
+        cluster=$(echo "apps."${server//https:\/\/api./})
+        cluster=${cluster//:6443/}
+        echo $cluster
+
+        echo $(params.ref)
+        echo $(params.revision)
+        echo $(params.author)
+        echo $(params.message)
+        echo $(params.ref) > $(results.ref.path)
+        echo $(params.revision) | sed 's/ *$//g' > $(results.revision.path)
+        echo $(params.author) > $(results.author.path)
+        echo $(params.message) > $(results.message.path)
+        echo $(params.repourl) > $(results.repourl.path)
+        echo $(params.repofullname) > $(results.repofullname.path)
+        echo $cluster > $(results.url.path)/tekton/results/cluster
+        echo $(params.ref) | awk -F "/" '{if (NF > 1) {printf "%s", $3 > "/tekton/results/revision-type"; printf "%s", $4 > "/tekton/results/revision-name"; printf "%s/%s", $3, $4 > "/tekton/results/full-revision-name"} else {printf "%s", "unknown" > "/tekton/results/revision-type"; printf "%s", $3 > "/tekton/results/revision-name"; printf "%s", $4 > "/tekton/results/full-revision-name"}}'
+        if [ "$(cat /tekton/results/revision-type)" == "develop" ]; then
+          printf %s "develop" >> /tekton/results/revision-name
+        fi
+        echo "Revision-type:" $(cat /tekton/results/revision-type)
+        echo "Revision-name:" $(cat /tekton/results/revision-name)
+
+    - name: validate
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/output
+      script: |
+        #!/bin/sh
+
+        ref=$(cat /tekton/results/ref)
+        revisionType=$(cat /tekton/results/revision-type)
+        revisionName=$(cat /tekton/results/revision-name)
+        printf %s "$(git rev-parse --short HEAD)" >> /tekton/results/revision-short
+        package=weather/package.json
+        git fetch --all --tags > /dev/null 2>&1
+        if git rev-parse -q --verify "refs/tags/$revisionName" >/dev/null; then
+            echo "Tag $revisionName already exists"
+            exit 1
+        fi
+
+        if [ ! -f $package ]; then
+            echo "Missing package.json"
+            exit 1 
+        fi
+
+        # verify if it's not a tag webhook event
+        if [[ $ref == *"refs/tags/"* ]]; then
+          echo "This is a tag commit. Not building."
+          exit 1
+        fi
+
+        if [ "$revisionType" == "release" ] || [ "$revisionType" = "hotfix" ] || [ "$revisionType" = "patch" ] || [ "$revisionType" == "feature" ] || [ "$revisionType" = "develop" ]; then
+          exit 0
+        else
+          echo "Branch $revisionType is not supported as part of git flow implementation"
+          exit 1
+        fi
+
+        echo OK
+
+        before=$(cat $package \
+        | grep version \
+        | head -1 \
+        | awk -F: '{ print $2 }' \
+        | sed 's/[",]//g')
+        
+        before=$(echo -e $before)
+        # hack for first version to be upgraded as major
+        if [ "$before" == "0.0.0" ]; then
+          importance=major
+        else
+          importance=minor
+        fi
+
+        if [ "$(cat /tekton/results/revision-type)" == "release" ]; then
+          version=$(npm version $importance)
+          if [ "$version" = "v$(cat /tekton/results/revision-name)" ]; then
+            echo Version is OK
+            exit 0
+          else
+            echo "Version from package.json ($before) does not match with branch $(cat /tekton/results/revision-type)/$(cat /tekton/results/revision-name)"
+            exit 1
+          fi
+        elif [ "$(cat /tekton/results/revision-type)" == "patch" ] || [ "$(cat /tekton/results/revision-type)" = "hotfix" ]; then
+          version=$(npm version patch)
+          if [ "$version" = "v$(cat /tekton/results/revision-name)" ]; then
+            echo "Version from package.json upgraded to $version"
+          else
+            echo "Version from package.json ($before) does not match with branch $(cat /tekton/results/revision-type)/$(cat /tekton/results/revision-name)"
+            exit 1
+          fi
+        else
+          echo "Skipping npm version upgrade since we are in a $(cat /tekton/results/revision-type) branch"
+          exit 0
+        fi
+      securityContext:
+        runAsUser: 0
+
+    # - name: status
+    #   image: registry.redhat.io/rhel8/nodejs-12
+    #   resources: {}
+    #   workingDir: /workspace/output
+    #   script: |
+    #     #!/bin/sh
+    #     curl -LO https://github.com/tektoncd/cli/releases/download/v0.13.0/tkn_0.13.0_Linux_x86_64.tar.gz
+    #     tar xvzf tkn_0.13.0_Linux_x86_64.tar.gz -C /usr/local/bin/ tkn
+    #     /usr/local/bin/tkn pr desc $(params.pipelinerun)
+    #   securityContext:
+    #     runAsUser: 0
+---
+# Source: tekton-demo/templates/tasks/task-github-pull-request.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: github-pull-request
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+    - name: source
+    - name: shared
+  params:
+    - name: revision-type
+      description: revision type usually branch type
+      type: string
+    - name: revision-name
+      description: revision name usually version or branch name
+      type: string
+  steps:
+
+    - name: pull-request
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/source
+      script: |
+        #!/bin/sh
+        pwd
+        ls -ls
+        ls -ls /workspace/shared
+        /workspace/shared/hub pull-request \
+          --message="v$(inputs.params.revision-name)" \
+          --message="#### v$(inputs.params.revision-name)" \
+          --message="This is a template" \
+          --labels=release \
+          --base=mvmaestri:master \
+          --head=mvmaestri:$(inputs.params.revision-type)/$(inputs.params.revision-name)
+      env:
+        - name: GITHUB_USER
+          value: mvmaestri
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: do101-github-webhook-secret
+              key: password
+      securityContext:
+        runAsUser: 0
+---
+# Source: tekton-demo/templates/tasks/task-github.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: github
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: status
+      type: string
+    - name: repofullname
+      type: string
+    - name: revision
+      type: string
+    - name: repourl
+      type: string
+  steps:
+    - name: update-github
+      image: registry.access.redhat.com/ubi8/ubi:latest@sha256:edc34f89cf9c818c2fb28b8ea1780f384db563ce4293dc0ab8e73ec01791e5af
+      env:
+        - name: GITHUBTOKEN
+          valueFrom:
+            secretKeyRef:
+              name: do101-github-webhook-secret
+              key: password
+      script: |
+        #!/usr/libexec/platform-python
+        import json
+        import os
+        import http.client
+        status_url = """/repos/$(params.repofullname)/statuses/$(params.revision)"""
+
+        data = {
+            "state": "$(params.status)",
+            "target_url": "https://replaceme",
+            "description": "Building",
+            "context": "tekton"
+        }
+        conn = http.client.HTTPSConnection("api.github.com")
+        r = conn.request(
+            "POST",
+            status_url.rstrip("\n"),
+            body=json.dumps(data),
+            headers={
+                "User-Agent": "TektonCD, the peaceful cat",
+                "Authorization": "Bearer " + os.environ["GITHUBTOKEN"],
+            })
+        resp = conn.getresponse()
+        if not str(resp.status).startswith("2"):
+            print("Error: %d" % (resp.status))
+            print(resp.read())
+            # sys.exit(resp.read())
+        else:
+          print("GitHub status '$(params.status)' has been set")
+---
+# Source: tekton-demo/templates/tasks/task-helm.yaml
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: helm
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+      type: string
+  resources:
+    inputs:
+      - name: source
+        type: git
+  steps:
+    - name: helm-prepare
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+          cp /usr/local/bin/helm /workspace/source/weather
+      securityContext:
+        runAsUser: 0
+
+    - name: chart-lint
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+          ls -ls
+          ./helm lint chart
+          ./helm template -f chart/values.yaml chart
+      securityContext:
+        runAsUser: 0
+
+  volumes:
+    - name: varlibcontainers
+      emptyDir: {}
+    - name: gen-source
+      emptyDir: {}
+---
+# Source: tekton-demo/templates/tasks/task-prepare.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: prepare
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+  - name: shared
+  steps:
+    # todo: use nexus as configurable params
+    - name: helm
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/shared
+      script: |
+        #!/bin/sh
+        nexus=https://nexus-labs-ci-cd.apps.s45.core.rht-labs.com/repository/labs-static
+        if curl --output /dev/null --silent --head --fail "$nexus/helm"; then
+          echo "Downloading helm from nexus"
+          wget -q -O helm $nexus/helm
+          chmod +x helm
+        else
+          echo "Downloading helm"
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+          cp /usr/local/bin/helm helm
+          curl -u admin:admin123 --upload-file helm $nexus/helm
+        fi
+      securityContext:
+        runAsUser: 0
+
+    - name: hub
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/shared
+      script: |
+        #!/bin/sh
+        nexus=https://nexus-labs-ci-cd.apps.s45.core.rht-labs.com/repository/labs-static
+        if curl --output /dev/null --silent --head --fail "$nexus/hub"; then
+          echo "Downloading hub from nexus"
+          wget -q -O hub $nexus/hub
+          chmod +x hub
+        else
+          echo "Downloading hub"
+          curl -s https://api.github.com/repos/github/hub/releases/latest | grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4 | wget -qi -
+          tar -xzf "$(find . -name "*hub-linux-amd64*")"
+          folder="$(find . -name "*hub-linux-amd64*" -type d)"
+          folder=${folder//.\//}
+          chmod +x $folder/bin/hub
+          mv $folder/bin/hub hub
+          curl -u admin:admin123 --upload-file hub $nexus/hub
+        fi
+      securityContext:
+        runAsUser: 0
+
+    - name: tkn
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/shared
+      script: |
+        #!/bin/sh
+        nexus=https://nexus-labs-ci-cd.apps.s45.core.rht-labs.com/repository/labs-static
+        if curl --output /dev/null --silent --head --fail "$nexus/tkn"; then
+          echo "Downloading tkn from nexus"
+          wget -q -O tkn $nexus/tkn
+          chmod +x tkn
+        else
+          echo "Downloading tkn"
+          curl -LO https://github.com/tektoncd/cli/releases/download/v0.13.0/tkn_0.13.0_Linux_x86_64.tar.gz
+          tar xvzf tkn_0.13.0_Linux_x86_64.tar.gz
+          chmod +x tkn
+          curl -u admin:admin123 --upload-file tkn $nexus/tkn
+        fi
+      securityContext:
+        runAsUser: 0
+---
+# Source: tekton-demo/templates/tasks/task-promote.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: promote
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+  - name: source
+  - name: shared
+  params:
+    - name: cluster
+      description: cluster app url
+      type: string
+    - name: ref
+      description: git ref
+      type: string
+    - name: repofullname
+      type: string
+    - name: revision
+      description: git unique head commit id
+      type: string
+    - name: revision-short
+      description: git unique head commit id short version
+      type: string
+    - name: revision-type
+      description: revision type usually branch type
+      type: string
+    - name: revision-name
+      description: revision name usually version or branch name
+      type: string
+    - name: author
+      type: string
+    - name: email
+      type: string
+
+  steps:
+    # todo: use when expressions when available
+    - name: validate
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      script: |
+        #!/bin/sh
+        revisionType=$(params.revision-type)
+        if [ "$revisionType" == "release" ] || [ "$revisionType" = "hotfix" ] || [ "$revisionType" = "patch" ]; then
+          echo OK
+          exit 0
+        else
+          echo "Preventing $revisionType to be promoted to a production environment"
+          exit 1
+        fi
+
+    # todo: use tekton auth secrets
+    - name: release-notes
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+
+        ls -ls
+
+        before=$(cat package.json \
+        | grep version \
+        | head -1 \
+        | awk -F: '{ print $2 }' \
+        | sed 's/[",]//g')        
+        before=$(echo -e $before)
+
+        git config --global user.name "$(params.author)"
+        git config --global user.email "$(params.email)"
+
+        git fetch --all --tags > /dev/null 2>&1
+        git checkout -b $(params.revision-type)/$(params.revision-name) > /dev/null 2>&1
+        git log master..$(params.revision-type)/$(params.revision-name) --oneline --no-merges --decorate > release-v$(params.revision-name).md > /dev/null 2>&1
+        
+        # hack for first version to be upgraded as major
+        if [ "$before" == "0.0.0" ]; then
+          npm version major > /dev/null 2>&1
+        else
+          npm version minor > /dev/null 2>&1
+        fi
+
+        git add release-v$(params.revision-name).md
+        git add package.json
+        git commit -m "Including release notes"
+        git tag -a $(params.revision-name) -m "Upgrade to v$(params.revision-name)"
+        git push origin $(params.revision-type)/$(params.revision-name) --tags
+      securityContext:
+        runAsUser: 0
+
+    - name: release-image
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+        oc tag do101-development/do101-development:$(inputs.params.revision-name) do101-production/do101-production:$(inputs.params.revision-name)
+        oc tag do101-production/do101-production:$(inputs.params.revision-name) do101-production/do101-production:$(inputs.params.revision-name)
+        oc get deployment/$appname -n do101-production
+        if [[ $? -ne 0 ]]
+        then
+            oc new-app --name=$appname -i=do101-production:$(inputs.params.revision-name) --namespace=do101-production --labels=app.name=do101
+        else
+            echo "Application already exists."
+        fi
+
+    - name: app-expose
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+        hostname=v$revisionName-do101-production.apps.s45.core.rht-labs.com
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+        
+        sleep 10
+        oc get svc/$appname -n do101-production
+        if [[ $? -ne 0 ]]; then
+          echo "Exposing"
+          oc expose svc/$appname -n do101-production
+        else
+          echo "Application is already exposed."
+          echo $hostname
+        fi
+
+        sleep 10
+        
+        oc get route/$appname -n do101-production
+        if [[ $? -ne 0 ]]; then
+          echo "Creating routes"
+          oc create route edge --service $appname --port 8080 --hostname $hostname -n do101-production
+          sleep 5
+          oc patch svc/$appname -p '{ "spec": {"type":"LoadBalancer"}}, { "ports": [ { "name": "gw", "protocol": "TCP", "port": 8080,"targetPort": 8080 } ] } }' -n do101-production
+          # oc expose svc/nodejs-tekton-release-1-2-0 -n nodejs-tekton-production
+        else
+          echo "Route is already available."
+          echo $hostname
+        fi
+
+    - name: app-labels
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+        environment=do101-production
+        oc label deployment/$appname --overwrite app.kubernetes.io/name=$appname -n $environment
+        oc label deployment/$appname --overwrite app.version=$revisionName -n $environment
+        oc label deployment/$appname --overwrite app.revision-id=$(inputs.params.revision-short) -n $environment
+        oc label deployment/$appname --overwrite app.revision-type=$(inputs.params.revision-type) -n $environment
+        oc label deployment/$appname --overwrite app.revision-name=$revisionName -n $environment
+        oc label deployment/$appname --overwrite app.revision-author=$(inputs.params.author) -n $environment
+
+    - name: app-envs
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+        environment=do101-production
+        oc set env deployment/$appname --list -n $environment
+        oc set env deployment/$appname --overwrite environment=production -n $environment
+        oc set env deployment/$appname --overwrite version=$(inputs.params.revision-name) -n $environment
+        oc set env deployment/$appname --overwrite revision-id=$(inputs.params.revision-short) -n $environment
+        oc set env deployment/$appname --overwrite revision-name=$revisionName -n $environment
+        oc set env deployment/$appname --overwrite revision-type=$(inputs.params.revision-type) -n $environment
+
+    - name: app-secrets
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          # example
+          # oc set env deployment/$appname --from secret/input -n do101-production
+
+    - name: app-probes
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          oc set probe deployment/$appname --remove --readiness --liveness -n do101-production
+          oc set probe deployment/$appname --readiness --get-url=http://:8080/ --initial-delay-seconds=30 -n do101-production
+
+    - name: app-autoscale
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      script: |
+        #!/bin/sh
+
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-}
+
+        if [ "$(inputs.params.revision-type)" == "release" ] || [ "$(inputs.params.revision-type)" == "hotfix" ] || [ "$(inputs.params.revision-type)" == "patch" ]; then
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          min=1
+          max=10
+          threshold=50
+
+          oc get hpa $appname -n do101-production --ignore-not-found
+          if [[ $? -ne 0 ]]; then
+            oc autoscale deployment $appname \
+              --min $min --max $max --cpu-percent=$threshold \
+              --namespace do101-production
+          else
+            echo "Application autoscale is already configured."
+          fi
+        fi
+
+    - name: app-triggers
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          replace=$(inputs.params.revision-name)
+          revisionName=${replace//./-}
+          appname=do101-$(inputs.params.revision-type)-$revisionName
+          oc set triggers deployment/$appname -n do101-production
+
+    - name: report
+      image: registry.redhat.io/ubi8/ubi:latest@sha256:bce7e9f69fb7d4533447232478fd825811c760288f87a35699f9c8f030f2c1a6
+      env:
+        - name: GITHUBTOKEN
+          valueFrom:
+            secretKeyRef:
+              name: do101-github-webhook-secret
+              key: password
+      script: |
+        #!/usr/libexec/platform-python
+        import json
+        import os
+        import http.client
+        status_url = """/repos/$(params.repofullname)/statuses/$(params.revision)"""
+
+        data = {
+            "state": "success",
+            "target_url": "https://replaceme",
+            "description": "Building",
+            "context": "tekton"
+        }
+        conn = http.client.HTTPSConnection("api.github.com")
+        r = conn.request(
+            "POST",
+            status_url.rstrip("\n"),
+            body=json.dumps(data),
+            headers={
+                "User-Agent": "TektonCD, the peaceful cat",
+                "Authorization": "Bearer " + os.environ["GITHUBTOKEN"],
+            })
+        resp = conn.getresponse()
+        if not str(resp.status).startswith("2"):
+            print("Error: %d" % (resp.status))
+            print(resp.read())
+            # sys.exit(resp.read())
+        else:
+          print("GitHub status 'success' has been set")
+---
+# Source: tekton-demo/templates/tasks/task-standards.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: standards
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+    - name: source
+    - name: shared
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+      type: string
+  steps:
+
+    - name: helm-lint
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        if [ -d "chart" ]; then
+          /workspace/shared/helm lint chart
+          /workspace/shared/helm template -f chart/values.yaml chart
+        else
+          echo "Chart does not exist"
+          exit 0
+        fi
+      securityContext:
+        runAsUser: 0
+
+    - name: code-prepare
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        npm ping --registry https://nexus-labs-ci-cd.apps.s45.core.rht-labs.com/repository/labs-npm
+        if [[ $? -ne 0 ]]; then
+          npm install --only-dev --unsafe-perm=true --allow-root
+        else
+          echo Using nexus
+          npm --registry https://nexus-labs-ci-cd.apps.s45.core.rht-labs.com/repository/labs-npm install --only-dev --unsafe-perm=true --allow-root
+        fi
+      securityContext:
+        runAsUser: 0
+
+    - name: code-audit
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          npm audit
+      securityContext:
+        runAsUser: 0
+
+    - name: code-lint
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          npm run lint
+      securityContext:
+        runAsUser: 0
+
+    - name: code-test
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        if [[ $(npm run | grep "^  test-unit" | wc -l) == "1" ]]; then
+          npm run test-unit
+        else
+          echo "Not implemented (npm run test-unit)"
+        fi
+      securityContext:
+        runAsUser: 0
+
+    - name: code-coverage
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        if [[ $(npm run | grep "^  coverage" | wc -l) == "1" ]]; then
+          npm run coverage
+        else
+          echo "Not implemented (npm run coverage)"
+        fi
+      securityContext:
+        runAsUser: 0
+
+  volumes:
+    - name: varlibcontainers
+      emptyDir: {}
+    - name: gen-source
+      emptyDir: {}
+---
+# Source: tekton-demo/templates/tasks/task-status.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: status
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: ref
+      type: string
+    - name: revision
+      type: string
+    - name: repourl
+      type: string
+    - name: repofullname
+      type: string
+    - name: author
+      type: string
+    - name: message
+      type: string
+  workspaces:
+  - name: source
+  description: The git repo will be cloned onto the volume backing this workspace
+  results:
+    - name: cluster
+      description: apps cluster url
+    - name: ref
+      description: reference
+    - name: revision
+      description: unique id from git head commit
+    - name: revision-short
+      description: unique id from git head commit short version
+    - name: revision-type
+      description: Contains the type of branch - feature, release,...
+    - name: revision-name
+      description: Contains the name of the branch without the type, ie. omitting the first slash
+    - name: full-revision-name
+      description: Contains the name of the branch without the type, ie. omitting the first slash
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: message
+      description: Contains the commit message
+    - name: author
+      description: Contains the author username
+  steps:
+    - name: variables
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      resources: {}
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        echo $(oc config view)
+        server=$(echo $(oc config view --minify -o jsonpath='{.clusters[*].cluster.server}'))
+        cluster=$(echo "apps."${server//https:\/\/api./})
+        cluster=${cluster//:6443/}
+        echo $cluster
+
+        echo $(params.ref)
+        echo $(params.revision)
+        echo $(params.author)
+        echo $(params.message)
+        echo $(params.ref) > /tekton/results/ref
+        echo $(params.revision) | sed 's/ *$//g' > /tekton/results/revision
+        echo $(params.author) > /tekton/results/author
+        echo $(params.message) > /tekton/results/message
+        echo $(params.repourl) > /tekton/results/repourl
+        echo $(params.repofullname) > /tekton/results/repofullname
+        echo $cluster > /tekton/results/cluster
+        echo $(params.ref) | awk -F "/" '{if (NF > 1) {printf "%s", $3 > "/tekton/results/revision-type"; printf "%s", $4 > "/tekton/results/revision-name"; printf "%s/%s", $3, $4 > "/tekton/results/full-revision-name"} else {printf "%s", "unknown" > "/tekton/results/revision-type"; printf "%s", $3 > "/tekton/results/revision-name"; printf "%s", $4 > "/tekton/results/full-revision-name"}}'
+        if [ "$(cat /tekton/results/revision-type)" == "develop" ]; then
+          printf %s "develop" >> /tekton/results/revision-name
+        fi
+        echo "Revision-type:" $(cat /tekton/results/revision-type)
+        echo "Revision-name:" $(cat /tekton/results/revision-name)
+
+    - name: validate
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        ref=$(cat /tekton/results/ref)
+        revisionType=$(cat /tekton/results/revision-type)
+        revisionName=$(cat /tekton/results/revision-name)
+        # echo $(git rev-parse --short HEAD) > /tekton/results/revision-short
+        printf %s "$(git rev-parse --short HEAD)" >> /tekton/results/revision-short
+        package=weather/package.json
+        git fetch --all --tags > /dev/null 2>&1
+        if git rev-parse -q --verify "refs/tags/$revisionName" >/dev/null; then
+            echo "Tag $revisionName already exists"
+            exit 1
+        fi
+
+        if [ ! -f $package ]; then
+            echo "Missing package.json"
+            exit 1 
+        fi
+
+        # verify if it's not a tag webhook event
+        if [[ $ref == *"refs/tags/"* ]]; then
+          echo "This is a tag commit. Not building."
+          exit 1
+        fi
+
+        if [ "$revisionType" == "release" ] || [ "$revisionType" = "hotfix" ] || [ "$revisionType" = "patch" ] || [ "$revisionType" == "feature" ] || [ "$revisionType" = "develop" ]; then
+          exit 0
+        else
+          echo "Branch $revisionType is not supported as part of git flow implementation"
+          exit 1
+        fi
+
+        echo OK
+
+    # - name: debug
+    #   image: registry.redhat.io/rhel8/nodejs-12
+    #   workingDir: /workspace/source/weather
+    #   command: ["/bin/bash", "-c"]
+    #   args:
+    #     - |-
+    #       set -ex
+    #       find /workspace/source/weather
+
+    # - name: pause
+    #   image: docker
+    #   args: ["sleep", "120000"]
+---
+# Source: tekton-demo/templates/tasks/task-tag.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: tag
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: author
+      type: string
+    - name: email
+      type: string
+    - name: revision-type
+      type: string
+    - name: revision-name
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: debug
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      workingDir: /workspace/source/weather
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          set -ex
+          find /workspace/source/weather
+---
+# Source: tekton-demo/templates/tasks/task-test-integration.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: test-integration
+  namespace: labs-ci-cd
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+  steps:
+
+    - name: test-integration
+      image: registry.redhat.io/rhel8/nodejs-12@sha256:3c7f0b36e4313819009df28c4b666320e0cff45041ccbc3861327054f9e1d1f6
+      resources: {}
+      workingDir: /workspace/source/weather
+      script: |
+        #!/bin/sh
+        npm test
+      securityContext:
+        runAsUser: 0
+
+    # todo: condition to only run in dev env
+    - name: test-report
+      image: registry.redhat.io/ubi8/ubi:latest@sha256:bce7e9f69fb7d4533447232478fd825811c760288f87a35699f9c8f030f2c1a6
+      env:
+        - name: GITHUBTOKEN
+          valueFrom:
+            secretKeyRef:
+              name: do101-github-webhook-secret
+              key: password
+      script: |
+        #!/usr/libexec/platform-python
+        import json
+        import os
+        import http.client
+        status_url = """/repos/$(params.repofullname)/statuses/$(params.revision)"""
+
+        data = {
+            "state": "success",
+            "target_url": "https://replaceme",
+            "description": "Successful deployed to dev. Tests are passing.",
+            "context": "tekton"
+        }
+        conn = http.client.HTTPSConnection("api.github.com")
+        r = conn.request(
+            "POST",
+            status_url.rstrip("\n"),
+            body=json.dumps(data),
+            headers={
+                "User-Agent": "TektonCD, the peaceful cat",
+                "Authorization": "Bearer " + os.environ["GITHUBTOKEN"],
+            })
+        resp = conn.getresponse()
+        if not str(resp.status).startswith("2"):
+            print("Error: %d" % (resp.status))
+            print(resp.read())
+        else:
+          print("GitHub status 'success' has been set")
+---
+# Source: tekton-demo/templates/tasks/task-test-performance.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: test-performance
+  namespace: labs-ci-cd
+spec:
+  params:
+    - name: ref
+      description: Git reference
+    - name: repourl
+      description: repository url from github payload
+    - name: repofullname
+      description: full name user-org/reponame from github
+    - name: revision
+      description: commit head unique id
+      type: string
+    - name: revision-type
+      description: revision type
+      type: string
+    - name: revision-name
+      description: revision name
+  steps:
+    - name: test-performance
+      image: registry.redhat.io/openshift4/ose-cli:latest@sha256:0bc2df86424b032cd77984edd8e481a1e1875a231fe99fd2fc8cd6d0f8e31485
+      resources: {}
+      script: |
+        #!/bin/bash
+
+        replace=$(inputs.params.revision-name)
+        revisionName=${replace//./-} # replace . to / 
+        appname=do101-$(inputs.params.revision-type)-$revisionName
+
+        if [ "$(inputs.params.revision-type)" == "develop" ]; then
+          endpoint=$(oc get route/do101-$(inputs.params.revision-type) -n do101-development -o=jsonpath='{ .status.ingress[*].host }')
+        elif [ "$(inputs.params.revision-type)" == "feature" ]; then
+          endpoint=$(oc get route/$appname -n do101-development -o=jsonpath='{ .status.ingress[*].host }')
+        else
+          echo "Skipping"
+          exit 0
+        fi
+
+        if [ "$(inputs.params.revision-type)" == "feature" ] || [ "$(inputs.params.revision-type)" == "develop" ]; then
+          
+          echo Endpoint: $endpoint
+          DURATION=10       # how long should load be applied ? - in seconds
+          TPS=200           # number of requests per second
+          end=$((SECONDS+$DURATION))
+          #start load
+          while [ $SECONDS -lt $end ];
+          do
+            for ((i=1;i<=$TPS;i++)); do
+              curl -X POST https://$endpoint -H 'Accept: application/json' -H 'Authorization: Bearer xxxxxxxxxxxxx' -H 'Content-Type: application/json' -d '{}' -o /dev/null -s -w '%{time_starttransfer}\n' >> response-times.log &
+            done
+            sleep 1
+          done
+          wait
+          #end load
+          echo "Load test has been completed"
+          exit 0
+        fi
+      securityContext:
+        runAsUser: 0
+---
+# Source: tekton-demo/templates/github/github-webhook-run.yaml
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  name: create-do101-github-webhook
+  namespace: labs-ci-cd
+spec:
+  serviceAccountName: tekton-triggers-createwebhook
+  taskRef:
+    name: do101-create-webhook
+  params:
+  - name: GitHubOrg
+    value: mvmaestri
+  - name: GitHubUser
+    value: mvmaestri
+  - name: GitHubRepo
+    value: do101-apps
+  - name: GitHubSecretName
+    value: do101-github-webhook-secret
+  - name: GitHubAccessTokenKey
+    value: password
+  - name: GitHubSecretStringKey
+    value: secret
+  - name: ExternalDomain
+    value: http://do101-trigger-labs-ci-cd.apps.s45.core.rht-labs.com
+---
+# Source: tekton-demo/templates/github/trigger-binding.yaml
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: do101-trigger-binding
+  namespace: labs-ci-cd
+spec:
+  # description: >-
+  #   This `task` can be used to transport github webhook payload into the trigger template file.
+  params:
+  - name: ref
+    value: $(body.ref)
+  - name: revision
+    value: $(body.head_commit.id)
+  - name: repourl
+    value: $(body.repository.html_url)
+  - name: reponame
+    value: $(body.repository.name)
+  - name: repofullname
+    value: $(body.repository.full_name)
+  - name: message
+    value: $(body.head_commit.message)
+  - name: author
+    value: $(body.head_commit.author.username)
+  - name: email
+    value: $(body.head_commit.author.email)
+---
+# Source: tekton-demo/templates/github/trigger-template.yaml
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: do101-trigger-template
+  namespace: labs-ci-cd
+spec:
+  # description: >-
+  #   This `task` consumes data from the trigger binding file and fires a new pipelinerun with a pipeline as reference.
+  params:
+  - name: ref
+    description: git reference or branch name
+  - name: revision
+    description: The revision of your git repository
+  - name: repourl
+    description: The url of your git repository
+  - name: reponame
+    description: The name of your git repository
+  - name: repofullname
+    description: The full name of your git repository
+  - name: message
+    description: commit message
+  - name: author
+    description: commit author username
+  - name: email
+    description: commit author email
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: $(params.reponame)-$(params.author)-
+      namespace: labs-ci-cd
+      labels:
+        webhooks.tekton.dev/repo: $(params.reponame)
+        webhooks.tekton.dev/author: $(params.author)
+      annotations:
+        argocd.argoproj.io/compare-options: IgnoreExtraneous
+    spec:
+      serviceAccountName: do101-tekton-triggers-sa
+      workspaces:
+          - name: do101-source
+            persistentVolumeClaim:
+              claimName: do101-pvc
+          - name: do101-shared
+            volumeClaimTemplate:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 1Gi
+      params:
+        - name: ref
+          value: $(params.ref)
+        - name: revision
+          value: $(params.revision)
+        - name: author
+          value: $(params.author)
+        - name: email
+          value: $(params.email)
+        - name: message
+          value: $(params.message)
+        - name: repourl
+          value: $(params.repourl)
+        - name: repofullname
+          value: $(params.repofullname)
+      pipelineRef:
+        name: do101
+      resources:
+        - name: do101-git
+          resourceSpec:
+            type: git
+            params:
+              - name: url
+                value: $(params.repourl)
+              - name: revision
+                value: $(params.revision)
+        - name: do101-development
+          resourceRef:
+            name: do101-development
+        - name: do101-production
+          resourceRef:
+            name: do101-production
+        - name: do101-documentation
+          resourceRef:
+            name: do101-documentation

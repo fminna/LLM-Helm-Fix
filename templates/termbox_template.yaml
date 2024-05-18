@@ -1,0 +1,208 @@
+---
+# Source: termbox/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: termbox-release-name
+  labels:
+    app: termbox
+    chart: termbox-0.1.11
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: termbox
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 3030
+        protocol: TCP
+      - port: 9102
+        protocol: TCP
+---
+# Source: termbox/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-release-name
+data:
+  config.yaml: |-     # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 1
+    
+    # Number of workers to start in parallel after the first worker.
+    # The first worker is always started independently. After it has completed
+    # its start-up, this number controls the number of workers to start in
+    # parallel until `num_workers` have been started. Note that setting this
+    # number to a too high a value might lead to high resource consumption
+    # (especially of CPU) during the start-up process.
+    startup_concurrency: 2
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 300
+    
+    # Number of milliseconds to wait for a heartbeat from worker before killing
+    # and restarting it
+    worker_heartbeat_timeout: 7500
+    
+    # Logger info
+    logging:
+      level: info
+      # Sets up sample logging for some 'interesting' events.
+      # Map keys correspond to the full log level names.
+      # Map values specify the probability for such events to be logged
+      # regardless of the configured logging level.
+      name: termbox
+      sampled_levels:
+        'trace/webrequest': 0.2
+      streams:
+        - type: stdout
+          named_levels: true
+    
+    # Rate limiter (enabled by default)
+    #ratelimit:
+    #  type: memory
+    #   optional: Kademlia backend
+    #   type: kad
+    #   seeds:
+    #    - 192.0.2.10
+    #    - 192.0.2.20
+    
+    # DNS caching, switched on by default. To disable caching use:
+    # dns_cache: false
+    # To specify caching parameters use:
+    dns_cache:
+      ttl: 5 # Time-to-live for cache entries, in seconds. Default: 5
+      size: 100 # Optional cache size. Default: 100
+    
+    services:
+      - name: wikibase-termbox
+        # a relative path or the name of an npm package, if different from name
+        module: ./serverBuild/src/server/server.js
+        # per-service config
+        conf:
+          WIKIBASE_REPO: '{env(WIKIBASE_REPO, https://www.wikidata.org/w)}' #use env var with fallback
+          WIKIBASE_REPO_HOSTNAME_ALIAS: '{env(WIKIBASE_REPO_HOSTNAME_ALIAS, wikidata.org)}'
+          SSR_PORT: 3030
+          MEDIAWIKI_REQUEST_TIMEOUT: '{env(MEDIAWIKI_REQUEST_TIMEOUT)}'
+          MESSAGES_CACHE_MAX_AGE: '{env(MESSAGES_CACHE_MAX_AGE)}'
+          LANGUAGES_CACHE_MAX_AGE: '{env(LANGUAGES_CACHE_MAX_AGE)}'
+          HEALTHCHECK_QUERY: '{env(HEALTHCHECK_QUERY)}'
+        entrypoint: default #required for ES6 style exports
+---
+# Source: termbox/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: termbox-release-name
+  labels:
+    app: termbox
+    chart: termbox-0.1.11
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: termbox
+    release: release-name
+    routed_via: release-name
+  ports:
+  - name: http
+    protocol: TCP
+    port: 3030
+---
+# Source: termbox/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: termbox-release-name
+  labels:
+    app: termbox
+    chart: termbox-0.1.11
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: termbox
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: termbox
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: bf8b37d6272a1e57708b1b287afe0430fe7e41c08a16204785217a4d0c805761
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:
+        # The main application container
+        - name: termbox-release-name
+          image: "docker-registry.wikimedia.org/wikimedia/wikibase-termbox:latest"
+          command: ["node"]
+          args: ["serverBuild/src/server/service-runner-entrypoint.js", "-c", "/etc/termbox/config.yaml"]
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3030
+          livenessProbe:
+            tcpSocket:
+              port: 3030
+          readinessProbe:
+            httpGet:
+              path: /_info
+              port: 3030
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: termbox-release-name
+            - name: HEALTHCHECK_QUERY
+              value: "language=de&entity=Q1&revision=3&editLink=/edit/Q1347&preferredLanguages=de|en"
+            - name: LANGUAGES_CACHE_MAX_AGE
+              value: "300000"
+            - name: MEDIAWIKI_REQUEST_TIMEOUT
+              value: "3000"
+            - name: MESSAGES_CACHE_MAX_AGE
+              value: "60000"
+            - name: WIKIBASE_REPO
+              value: "https://www.wikidata.org/w"
+            - name: WIKIBASE_REPO_HOSTNAME_ALIAS
+              value: "wikidata.org"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/termbox
+          resources:
+            requests:
+              cpu: 1m
+              memory: 140Mi
+            limits:
+              cpu: 1
+              memory: 300Mi        
+      volumes:
+        
+        - name: config-volume
+          configMap:
+            name: config-release-name
+---
+# Source: termbox/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'termbox-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'termbox-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(TERMBOX_RELEASE_NAME_SERVICE_HOST)', 'http://termbox-release-name:3030']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

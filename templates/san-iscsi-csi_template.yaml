@@ -1,0 +1,428 @@
+---
+# Source: san-iscsi-csi/templates/rbac.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Arthur Chaloin <arthur.chaloin@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>
+
+# This YAML file contains all RBAC objects that are necessary to run external
+# CSI provisioner.
+#
+# In production, each CSI driver deployment has to be customized:
+# - to avoid conflicts, use non-default namespace and different names
+#   for non-namespaced entities like the ClusterRole
+# - decide whether the deployment replicates the external CSI
+#   provisioner, in which case leadership election must be enabled;
+#   this influences the RBAC setup, see below
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-provisioner
+  labels:
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+---
+# Source: san-iscsi-csi/templates/rbac.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: external-provisioner-runner-san-iscsi-csi
+  labels:
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["create", "get", "list", "watch", "update", "delete"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: san-iscsi-csi/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: csi-provisioner-role-san-iscsi-csi
+  labels:
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+subjects:
+  - kind: ServiceAccount
+    name: csi-provisioner
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: external-provisioner-runner-san-iscsi-csi
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: san-iscsi-csi/templates/rbac.yaml
+# Provisioner must be able to work with endpoints in current namespace
+# if (and only if) leadership election is enabled
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: external-provisioner-cfg-san-iscsi-csi
+  labels:
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+rules:
+# Only one of the following rules for endpoints or leases is required based on
+# what is set for `--leader-election-type`. Endpoints are deprecated in favor of Leases.
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "watch", "list", "delete", "update", "create"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "watch", "list", "delete", "update", "create"]
+---
+# Source: san-iscsi-csi/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: csi-provisioner-role-cfg-san-iscsi-csi
+  labels:
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+subjects:
+  - kind: ServiceAccount
+    name: csi-provisioner
+roleRef:
+  kind: Role
+  name: external-provisioner-cfg-san-iscsi-csi
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: san-iscsi-csi/templates/daemonset.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Arthur Chaloin <arthur.chaloin@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: san-iscsi-csi-node-server
+  labels:
+    app.kubernetes.io/version: 4.0.2
+    app.kubernetes.io/component: dynamic-provisionning-node
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+
+spec:
+  selector:
+    matchLabels:
+      name: san-iscsi-csi-node-server
+      app.kubernetes.io/name: san-iscsi-csi
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        name: san-iscsi-csi-node-server
+        app.kubernetes.io/name: san-iscsi-csi
+        app.kubernetes.io/instance: release-name
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      
+      containers:
+        - name: san-iscsi-csi-node
+          image: docker.io/enix/san-iscsi-csi:v4.0.2
+          command:
+            - san-iscsi-csi-node
+            - -bind=unix:///var/lib/kubelet/plugins/san-iscsi.csi.enix.io/csi.sock
+            - -chroot=/host          
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /var/lib/kubelet/plugins/san-iscsi.csi.enix.io
+            - name: mountpoint-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: san-iscsi-csi-run-dir
+              mountPath: /var/run/san-iscsi.csi.enix.io
+            - name: device-dir
+              mountPath: /dev
+            - name: iscsi-dir
+              mountPath: /etc/iscsi
+            - name: host
+              mountPath: /host
+              mountPropagation: Bidirectional
+          ports:
+          - containerPort: 9808
+            name: healthz
+            protocol: TCP
+          - containerPort: 9842
+            name: metrics
+            protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 60
+        - name: liveness-probe
+          image: quay.io/k8scsi/livenessprobe:v2.2.0
+          args:
+            - --csi-address=/csi/csi.sock          
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+        - name: driver-registrar
+          image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.1.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/san-iscsi.csi.enix.io/csi.sock          
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/san-iscsi.csi.enix.io
+            type: DirectoryOrCreate
+        - name: iscsi-dir
+          hostPath:
+            path: /etc/iscsi
+        - name: device-dir
+          hostPath:
+            path: /dev
+        - name: san-iscsi-csi-run-dir
+          hostPath:
+            path: /var/run/san-iscsi.csi.enix.io
+        - name: host
+          hostPath:
+            path: /
+        - name: init-node
+          configMap:
+            name: init-node
+            defaultMode: 0700
+---
+# Source: san-iscsi-csi/templates/deployment.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Arthur Chaloin <arthur.chaloin@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: san-iscsi-csi-controller-server
+  labels:
+    app.kubernetes.io/version: 4.0.2
+    app.kubernetes.io/component: dynamic-provisionning-controller
+    app.kubernetes.io/name: san-iscsi-csi
+    app.kubernetes.io/instance: release-name
+
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: san-iscsi-csi-controller-server
+      app.kubernetes.io/name: san-iscsi-csi
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: san-iscsi-csi-controller-server
+        app.kubernetes.io/name: san-iscsi-csi
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccount: csi-provisioner
+      containers:
+        - name: san-iscsi-csi-controller
+          image: docker.io/enix/san-iscsi-csi:v4.0.2
+          command:
+            - san-iscsi-csi-controller
+            - -bind=unix:///csi/csi.sock          
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          ports:
+            - containerPort: 9842
+              name: metrics
+              protocol: TCP
+        - name: csi-provisioner
+          image: k8s.gcr.io/sig-storage/csi-provisioner:v2.1.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --worker-threads=1
+            - --timeout=30s          
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-attacher
+          image: k8s.gcr.io/sig-storage/csi-attacher:v2.2.1
+          args:
+            - --csi-address=/csi/csi.sock
+            - --worker-threads=1
+            - --timeout=30s          
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-resizer
+          image: k8s.gcr.io/sig-storage/csi-resizer:v1.1.0
+          args:
+            - --csi-address=/csi/csi.sock          
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-snapshotter
+          image: k8s.gcr.io/sig-storage/csi-snapshotter:v4.0.0
+          args:
+            - --csi-address=/csi/csi.sock          
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          emptyDir:
+            medium: Memory
+---
+# Source: san-iscsi-csi/templates/podmonitor.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>
+---
+# Source: san-iscsi-csi/templates/psp.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>
+---
+# Source: san-iscsi-csi/templates/servicemonitor.yaml
+# Copyright (c) 2021 Enix, SAS
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+# or implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# Authors:
+# Paul Laffitte <paul.laffitte@enix.fr>
+# Alexandre Buisine <alexandre.buisine@enix.fr>

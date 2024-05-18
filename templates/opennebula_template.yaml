@@ -1,0 +1,3263 @@
+---
+# Source: opennebula/templates/oned-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opennebula-oned
+---
+# Source: opennebula/templates/configurator-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-configurator
+data:
+  functions.sh: |
+    #!/bin/bash
+    
+    wait_tcp_port(){
+      until printf "" 2>/dev/null >"/dev/tcp/$1/$2"; do
+        sleep 1
+      done
+    }
+    
+    finish(){
+      echo "Configuration has been successfully finished"
+      exec sleep infinity
+    }
+    
+    # Check and set corrent permissions on object
+    # Optional variables: user, group, chmod
+    fix_permissions() {
+      local object=$1 id=$2
+      if [ -n "$chmod" ]; then
+        one${object} chmod "$id" "$chmod"
+      fi
+    
+      if [ -n "$user" ]; then
+        if OUTPUT="$(one${object} chown "$id" "$user")"; then
+          true
+        else
+          RC=$?
+          if ! echo "$OUTPUT" | grep -q "already owns"; then
+            echo "$OUTPUT"; exit $RC
+          fi
+        fi
+      fi
+    
+      if [ -n "$group" ]; then
+        if OUTPUT="$(one${object} chgrp "$id" "$group")"; then
+          true
+        else
+          RC=$?
+          if ! echo "$OUTPUT" | grep -q "already owns"; then
+            echo "$OUTPUT"; exit $RC
+          fi
+        fi
+      fi
+    }
+    
+    # Adds object to cluster
+    # Optional variables: clusters
+    add_to_cluster() {
+      local object=$1 id=$2
+      for CLUSTER in $clusters; do
+        onecluster add${object} "$CLUSTER" "$id"
+      done
+    }
+    
+    configure_cluster() {
+      (
+        local "$@"
+        echo "[cluster] $@"
+        set -e
+    
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+    
+        # Search cluster
+        if OUTPUT="$(onecluster list -lID,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New cluster
+          if OUTPUT="$(onecluster create "$name")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+            onecluster update "$ID" "$CONFIG"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+        else
+          # Existing cluster
+          onecluster update "$ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    configure_image() {
+      (
+        set -e
+        echo "[image] $@"
+        local "$@"
+    
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$datastore" ]; then
+          echo 'datastore is required'
+          exit -1
+        fi
+        if [ -z "$path" ] && [ -z "$size" ]; then
+          echo 'path (or size) is required'
+          exit -1
+        fi
+    
+        # Search image
+        if OUTPUT="$(oneimage list -lID,USER,NAME --csv -fNAME="$name" $user)"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New image
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if [ -n "$path" ]; then
+            echo "PATH=\"$path\"" >> "$CONFIG"
+          fi
+          if [ -n "$size" ]; then
+            echo "SIZE=\"$size\"" >> "$CONFIG"
+          fi
+          if [ -n "$type" ]; then
+            echo "TYPE=\"$type\"" >> "$CONFIG"
+          fi
+          if OUTPUT="$(oneimage create -d "$datastore" "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          oneimage unlock "$ID"
+          fix_permissions image "$ID"
+          oneimage rename "$ID" "$name"
+        else
+          # Existing image
+          OUTPUT="$(oneimage show -x "$ID")"
+          if echo "$OUTPUT" | grep -q '<STATE>5</STATE>'; then
+            echo 'image in error state!'
+            exit -1
+          fi
+          oneimage update "$ID" "$CONFIG"
+          if [ -n "$type" ]; then
+            oneimage chtype "$ID" "$type"
+          fi
+          fix_permissions image "$ID"
+        fi
+      )
+    }
+    
+    configure_datastore() {
+      (
+        set -e
+        echo "[datastore] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+    
+        # Search datastore
+        if OUTPUT="$(onedatastore list -lID,USER,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New datastore
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if OUTPUT="$(onedatastore create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          fix_permissions datastore "$ID"
+          onedatastore rename "$ID" "$name"
+          add_to_cluster datastore "$ID"
+        else
+          # Existing datastore
+          onedatastore update "$ID" "$CONFIG"
+          fix_permissions datastore "$ID"
+          add_to_cluster datastore "$ID"
+        fi
+      )
+    }
+    
+    configure_group() {
+      (
+        set -e
+        echo "[group] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+    
+        # Search group
+        if OUTPUT="$(onegroup list -lID,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        if [ -z "$ID" ]; then
+          # New group
+          if OUTPUT="$(onegroup create "$name")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+        fi
+    
+        if [ -n "$template" ]; then
+          # Write template
+          echo "$template" > "$CONFIG"
+          onegroup update "$ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    configure_hook() {
+      (
+        set -e
+        echo "[datastore] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+    
+        # Search hook
+        if OUTPUT="$(onehook list -lID,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New hook
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if OUTPUT="$(onehook create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          onehook rename "$ID" "$name"
+        else
+          # Existing hook
+          onehook update "$ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    
+    configure_marketplace() {
+      (
+        set -e
+        echo "[marketplace] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+    
+        # Search market
+        if OUTPUT="$(onemarket list -lID,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New market
+          echo "NAME=\"$name\"" >> "$CONFIG"
+          if OUTPUT="$(onemarket create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+        else
+          # Existing market
+          onemarket update "$ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    configure_template() {
+      (
+        set -e
+        echo "[template] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+    
+        # Search template
+        if OUTPUT="$(onetemplate list -lID,USER,NAME --csv -fNAME="$name" ${user})"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New template
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if OUTPUT="$(onetemplate create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          fix_permissions template "$ID"
+          onetemplate rename "$ID" "$name"
+        else
+          # Existing template
+          onetemplate update "$ID" "$CONFIG"
+          fix_permissions template "$ID"
+        fi
+      )
+    }
+    
+    configure_vnet() {
+      (
+        set -e
+        echo "[vnet] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+    
+        # Search vnet
+        if OUTPUT="$(onevnet list -lID,USER,NAME --csv -fNAME="$name" $user)"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New vnet
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if OUTPUT="$(onevnet create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          fix_permissions vnet "$ID"
+          onevnet rename "$ID" "$name"
+          add_to_cluster vnet "$ID"
+        else
+          # Existing vnet
+          onevnet update "$ID" "$CONFIG"
+          fix_permissions vnet "$ID"
+          add_to_cluster vnet "$ID"
+        fi
+      )
+    }
+    
+    configure_vnet_ar() {
+      (
+        set -e
+        echo "[vnet_ar] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+        if [ -z "ar_uniq_key" ]; then
+          echo 'ar_uniq_key is required'
+          exit -1
+        fi
+    
+        # Search vnet
+        if OUTPUT="$(onevnet list -lID,USER,NAME --csv -fNAME="$name" $user)"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "AR = [$(echo "$template" | awk NF | paste -s -d,)]" > "$CONFIG"
+    
+        # Search unique value for ar_uniq_key
+        ar_uniq_val="$(sed -n 's/.*'"${ar_uniq_key}"' *= *"\?\([^",]\+\)"\?.*/\1/p' "$CONFIG")"
+        if [ -z "$ar_uniq_val" ]; then
+          echo "" >&2
+          echo 'template have no $ar_uniq_key attribute'
+          exit -1
+        fi
+    
+        # Search address range
+        if OUTPUT="$(onevnet show -x "$ID")"; then
+          AR_ID="$(echo "$OUTPUT" | ruby -r rexml/document -e 'include REXML; p XPath.first(Document.new($stdin), "/VNET/AR_POOL/AR['"${ar_uniq_key}"'=\"'"${ar_uniq_val}"'\"]/AR_ID/text()")' | grep -o '[0-9]\+' || true)"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        if [ -z "$AR_ID" ]; then
+          # New address range
+          onevnet addar "$ID" "$CONFIG"
+        else
+          # Existing address range
+          echo "AR = [AR_ID=\"$AR_ID\",$(echo "$template" | awk NF | paste -s -d,)]" > "$CONFIG"
+          onevnet updatear "$ID" "$AR_ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    configure_vntemplate() {
+      (
+        set -e
+        echo "[vntemplate] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$template" ]; then
+          echo 'template is required'
+          exit -1
+        fi
+    
+        # Search vntemplate
+        if OUTPUT="$(onevntemplate list -lID,USER,NAME --csv -fNAME="$name" $user)"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        TMPNAME="tmp-$(cat /proc/sys/kernel/random/uuid)"
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        # Write template
+        echo "$template" > "$CONFIG"
+    
+        if [ -z "$ID" ]; then
+          # New vntemplate
+          echo "NAME=\"$TMPNAME\"" >> "$CONFIG"
+          if OUTPUT="$(onevntemplate create "$CONFIG")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          fix_permissions vntemplate "$ID"
+          onevntemplate rename "$ID" "$name"
+        else
+          # Existing vntemplate
+          onevntemplate update "$ID" "$CONFIG"
+          fix_permissions vntemplate "$ID"
+        fi
+      )
+    }
+    
+    configure_acl() {
+      (
+        set -e
+        echo "[acl] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$acl" ]; then
+          echo 'acl is required'
+          exit -1
+        fi
+    
+        if OUTPUT="$(oneacl create "$acl")"; then
+          true
+        elif echo "$OUTPUT" | grep -q 'already exists'; then
+          true
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+      )
+    }
+    
+    configure_host() {
+      (
+        set -e
+        echo "[host] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit -1
+        fi
+        if [ -z "$im_mad" ]; then
+          echo 'im_mad is required'
+          exit -1
+        fi
+        if [ -z "$vmm_mad" ]; then
+          echo 'vmm_mad is required'
+          exit -1
+        fi
+    
+        # Search host
+        if OUTPUT="$(onehost list -lID,NAME --csv -fNAME="$name")"; then
+          ID="$(echo "$OUTPUT" | awk -F, 'FNR==2{print $1}')"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        if [ -z "$ID" ]; then
+          # New host
+          if OUTPUT="$(onehost create -i "$im_mad" -v "$vmm_mad" "$name")"; then
+            ID="$(echo "$OUTPUT" | awk '{print $NF}' )"
+          else
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+          add_to_cluster host "$ID"
+        fi
+    
+        if [ -n "$template" ]; then
+          # Write template
+          echo "$template" > "$CONFIG"
+          onehost update -a "$ID" "$CONFIG"
+        fi
+      )
+    }
+    
+    xmlrpc_call() {
+      local method=$1 params=
+      shift
+      while [ $# -gt 0 ]; do
+        params="$params"'<param><value><'"${1%:*}"'>'"${1#*:}"'</'"${1%:*}"'></value></param>'
+        shift
+      done
+      wget -q -O- "${ONE_XMLRPC:-http://localhost:2633/RPC2}" --post-data '<?xml version="1.0"?><methodCall><methodName>'"$method"'</methodName><params><param><value>'"$(cat /var/lib/one/.one/one_auth)"'</value></param>'"$params"'</params></methodCall>'
+    }
+    
+    xml_name2id() {
+      grep -o '&lt;'"$1"'&gt;&lt;ID&gt;[^&]\+&lt;/ID&gt;&lt;NAME&gt;[^&]\+&lt;/NAME&gt;' | sed 's/\(&lt;[^&]\+&gt;\)\{1,2\}/,/g' | awk -F, "\$3 == \"$2\" {print \$2}"
+    }
+    
+    # Same as configure_host, but sh compatible (works with busybox)
+    configure_host_lightweight() {
+      (
+        set -e
+        echo "[host] $@"
+        local "$@"
+        if [ -z "$name" ]; then
+          echo 'name is required'
+          exit 1
+        fi
+        if [ -z "$im_mad" ]; then
+          echo 'im_mad is required'
+          exit 1
+        fi
+        if [ -z "$vmm_mad" ]; then
+          echo 'vmm_mad is required'
+          exit 1
+        fi
+    
+        # Search host
+        if OUTPUT="$(xmlrpc_call one.hostpool.info)"; then
+          ID="$(echo "$OUTPUT" | xml_name2id HOST "$name")"
+        else
+          RC=$?; echo "$OUTPUT"; exit $RC
+        fi
+    
+        CONFIG="$(mktemp)"
+        trap "rm -f \"$CONFIG\"" EXIT
+    
+        if [ -n "$cluster" ]; then
+          # check if numberic
+          if [ "$cluster" -eq "$cluster" ] 2>/dev/null; then
+            CLUSTER_ID="$cluster"
+          else
+            CLUSTER_ID=$(xmlrpc_call one.clusterpool.info | xml_name2id CLUSTER "$cluster")
+            if [ -z "$CLUSTER_ID" ]; then
+              echo "Could not find cluster with name $cluster"
+              exit 1
+            fi
+          fi
+        fi
+    
+        if [ -z "$ID" ]; then
+          # New host
+          if OUTPUT="$(xmlrpc_call one.host.allocate "string:$name" "string:$im_mad" "string:$vmm_mad" "i4:${CLUSTER_ID:--1}")"; ! echo "$OUTPUT" | grep -q '<value><boolean>1</boolean></value>'; then
+            RC=$?; echo "$OUTPUT"; exit $RC
+          else
+            ID="$(echo "$OUTPUT" | sed -n 's|<value><i4>\([0-9]\+\)</i4></value>|\1|p')"
+          fi
+        else
+          if [ -n "$cluster" ]; then
+            if OUTPUT="$(xmlrpc_call one.cluster.addhost "i4:$CLUSTER_ID" "i4:$ID")"; ! echo "$OUTPUT" | grep -q '<value><boolean>1</boolean></value>'; then
+              RC=$?; echo "$OUTPUT"; exit $RC
+            fi
+          fi
+        fi
+    
+        if [ -n "$template" ]; then
+          # Write template
+          echo "$template" > "$CONFIG"
+          if OUTPUT="$(xmlrpc_call one.host.update "i4:$ID" "string:$(cat "$CONFIG")" i4:1)"; ! echo "$OUTPUT" | grep -q '<value><boolean>1</boolean></value>'; then
+            RC=$?; echo "$OUTPUT"; exit $RC
+          fi
+        fi
+      )
+    }
+    
+  configurator.oned: |
+    #!/bin/bash
+    set -e
+    . $(dirname $0)/functions.sh
+    
+    finish
+    
+  configurator.host: |
+    #!/bin/sh
+    set -e
+    . $(dirname $0)/functions.sh
+    echo "Node hostname: $HOSTNAME"
+    if echo "$HOSTNAME" | grep -q -E '.*'; then
+      echo "Setting up SSH keys:"
+      nsenter --target 1 --mount --uts --ipc --net --pid -- bash <<\EOUS
+    set -x
+    mkdir -p /var/lib/one/.ssh
+    chmod 700 /var/lib/one/.ssh
+    ssh-keygen -y -f /dev/stdin > /var/lib/one/.ssh/authorized_keys <<EOF
+    $SSH_KEY
+    EOF
+    chown 9869:9869 /var/lib/one /var/lib/one/.ssh /var/lib/one/.ssh/authorized_keys 
+    EOUS
+      echo "Running user script:"
+      nsenter --target 1 --mount --uts --ipc --net --pid -- bash <<\EOUS
+    set -x
+    mkdir -p /var/lib/one/datastores
+    # mount -t nfs some:/share/one/100 /var/lib/one/datastores/100
+    find /var/lib/one/datastores -maxdepth 1 -exec chown 9869:9869 {} \;
+    EOUS
+    
+      echo "Registring host in OpenNebula"
+      configure_host_lightweight name="$HOSTNAME" im_mad='kvm' vmm_mad='kvm' template=''
+    
+    fi
+    
+    finish
+---
+# Source: opennebula/templates/flow-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-flow
+  labels:
+    app: opennebula-flow
+data:
+  oneflow-server.conf: |+
+    :action_number: 1
+    :action_period: 60
+    :autoscaler_interval: 30
+    :concurrency: 10
+    :core_auth: cipher
+    :debug_level: 2
+    :default_cooldown: 300
+    :force_deletion: false
+    :host: 0.0.0.0
+    :one_xmlrpc: http://opennebula-oned:2633/RPC2
+    :port: 2474
+    :shutdown_action: terminate
+    :vm_name_template: $ROLE_NAME_$VM_NUMBER_(service_$SERVICE_ID)
+    :wait_timeout: 30
+---
+# Source: opennebula/templates/gate-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-gate
+  labels:
+    app: opennebula-gate
+data:
+  onegate-server.conf: |+
+    :auth: onegate
+    :core_auth: cipher
+    :debug_level: 3
+    :host: 0.0.0.0
+    :one_xmlrpc: http://opennebula-oned:2633/RPC2
+    :oneflow_server: http://opennebula-flow:2474
+    :permissions:
+      :service:
+        :change_cardinality: true
+        :show: true
+      :vm:
+        :action_by_id: true
+        :show: true
+        :show_by_id: true
+        :update: true
+        :update_by_id: true
+    :port: 5030
+    :restricted_actions: []
+    :restricted_attrs:
+    - SCHED_REQUIREMENTS
+    - SERVICE_ID
+    - ROLE_NAME
+---
+# Source: opennebula/templates/hem-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-hem
+  labels:
+    app: opennebula-hem
+data:
+  onehem-server.conf: |+
+    :concurrency: 10
+    :debug_level: 3
+    :hook_base_path: /var/lib/one/remotes/hooks
+    :remote_hook_base_path: /var/tmp/one/hooks
+    :replier_endpoint: tcp://localhost:2102
+    :subscriber_endpoint: tcp://localhost:2101
+---
+# Source: opennebula/templates/novnc-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-novnc
+  labels:
+    app: opennebula-novnc
+data:
+  sunstone-server.conf: |+
+    :auth: opennebula
+    :core_auth: cipher
+    :debug_level: 3
+    :env: prod
+    :get_extended_vm_info: false
+    :host: 0.0.0.0
+    :keep_me_logged: true
+    :lang: en_US
+    :leases:
+      suspense:
+        color: '#000000'
+        time: "+1209600"
+        warning:
+          color: '#085aef'
+          time: "-86400"
+      terminate:
+        color: '#e1ef08'
+        time: "+1209600"
+        warning:
+          color: '#ef2808'
+          time: "-86400"
+    :marketplace_url: http://marketplace.opennebula.io/
+    :memcache_host: opennebula-memcached
+    :memcache_namespace: opennebula.sunstone
+    :memcache_port: 11211
+    :mode: mixed
+    :one_xmlrpc: http://opennebula-oned:2633/RPC2
+    :one_xmlrpc_timeout: 60
+    :oneflow_server: http://opennebula-flow:2474/
+    :paginate: '[[6, 12, 36, 72], [6, 12, 36, 72]]'
+    :port: 9869
+    :remote_version: http://downloads.opennebula.org/latest
+    :routes:
+    - oneflow
+    - support
+    :sessions: memcache
+    :table_order: desc
+    :threshold_high: 66
+    :threshold_low: 33
+    :threshold_min: 0
+    :tmpdir: /var/tmp
+    :two_factor_auth_issuer: opennebula
+    :vnc_proxy_cert: null
+    :vnc_proxy_ipv6: false
+    :vnc_proxy_key: null
+    :vnc_proxy_port: 29876
+    :vnc_proxy_support_wss: false
+    :vnc_request_password: false
+    :webauthn_origin: http://localhost:9869
+    :webauthn_rpname: OpenNebula Cloud
+    :webauthn_timeout: 60000
+---
+# Source: opennebula/templates/oned-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-oned
+  labels:
+    app: opennebula-oned
+data:
+  oned.conf: |+
+    
+    AUTH_MAD = [
+      AUTHN = "ssh,x509,ldap,server_cipher,server_x509",
+      EXECUTABLE = "one_auth_mad"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "core",
+      PASSWORD_CHANGE = "YES"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "public",
+      PASSWORD_CHANGE = "NO"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "ssh",
+      PASSWORD_CHANGE = "YES"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "x509",
+      PASSWORD_CHANGE = "NO"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "YES",
+      MAX_TOKEN_TIME = "86400",
+      NAME = "ldap",
+      PASSWORD_CHANGE = "YES"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "server_cipher",
+      PASSWORD_CHANGE = "NO"
+    ]
+    AUTH_MAD_CONF = [
+      DRIVER_MANAGED_GROUPS = "NO",
+      MAX_TOKEN_TIME = "-1",
+      NAME = "server_x509",
+      PASSWORD_CHANGE = "NO"
+    ]
+    CLUSTER_ENCRYPTED_ATTR = "PROVISION/PACKET_TOKEN"
+    DATASTORE_CAPACITY_CHECK = "yes"
+    DATASTORE_ENCRYPTED_ATTR = "PROVISION/PACKET_TOKEN"
+    DATASTORE_MAD = [
+      ARGUMENTS = "-t 15 -d dummy,fs,lvm,ceph,dev,iscsi_libvirt,vcenter -s shared,ssh,ceph,fs_lvm,qcow2,vcenter",
+      EXECUTABLE = "one_datastore"
+    ]
+    DB = [
+      BACKEND = "sqlite",
+      TIMEOUT = 2500
+    ]
+    DEFAULT_CDROM_DEVICE_PREFIX = "hd"
+    DEFAULT_COST = [
+      CPU_COST = 0,
+      DISK_COST = 0,
+      MEMORY_COST = 0
+    ]
+    DEFAULT_DEVICE_PREFIX = "sd"
+    DEFAULT_IMAGE_TYPE = "OS"
+    DEFAULT_UMASK = 177
+    DEFAULT_VDC_CLUSTER_DATASTORE_ACL = "USE"
+    DEFAULT_VDC_CLUSTER_HOST_ACL = "MANAGE"
+    DEFAULT_VDC_CLUSTER_NET_ACL = "USE"
+    DEFAULT_VDC_DATASTORE_ACL = "USE"
+    DEFAULT_VDC_HOST_ACL = "MANAGE"
+    DEFAULT_VDC_VNET_ACL = "USE"
+    DS_MAD_CONF = [
+      MARKETPLACE_ACTIONS = "export",
+      NAME = "ceph",
+      PERSISTENT_ONLY = "NO",
+      REQUIRED_ATTRS = "DISK_TYPE,BRIDGE_LIST"
+    ]
+    DS_MAD_CONF = [
+      NAME = "dev",
+      PERSISTENT_ONLY = "YES",
+      REQUIRED_ATTRS = "DISK_TYPE"
+    ]
+    DS_MAD_CONF = [
+      NAME = "iscsi_libvirt",
+      PERSISTENT_ONLY = "YES",
+      REQUIRED_ATTRS = "DISK_TYPE,ISCSI_HOST"
+    ]
+    DS_MAD_CONF = [
+      NAME = "dummy",
+      PERSISTENT_ONLY = "NO",
+      REQUIRED_ATTRS = ""
+    ]
+    DS_MAD_CONF = [
+      MARKETPLACE_ACTIONS = "export",
+      NAME = "fs",
+      PERSISTENT_ONLY = "NO",
+      REQUIRED_ATTRS = ""
+    ]
+    DS_MAD_CONF = [
+      NAME = "lvm",
+      PERSISTENT_ONLY = "NO",
+      REQUIRED_ATTRS = "DISK_TYPE,BRIDGE_LIST"
+    ]
+    DS_MAD_CONF = [
+      MARKETPLACE_ACTIONS = "export",
+      NAME = "vcenter",
+      PERSISTENT_ONLY = "NO",
+      REQUIRED_ATTRS = "VCENTER_INSTANCE_ID,VCENTER_DS_REF,VCENTER_DC_REF"
+    ]
+    FEDERATION = [
+      MASTER_ONED = "",
+      MODE = "STANDALONE",
+      SERVER_ID = -1,
+      ZONE_ID = 0
+    ]
+    GROUP_RESTRICTED_ATTR = "VM_USE_OPERATIONS"
+    GROUP_RESTRICTED_ATTR = "VM_MANAGE_OPERATIONS"
+    GROUP_RESTRICTED_ATTR = "VM_ADMIN_OPERATIONS"
+    HM_MAD = [
+      ARGUMENTS = "-p 2101 -l 2102 -b 0.0.0.0",
+      EXECUTABLE = "one_hm"
+    ]
+    HOOK_LOG_CONF = [
+      LOG_RETENTION = 20
+    ]
+    HOSTNAME = "localhost"
+    HOST_ENCRYPTED_ATTR = "PROVISION/PACKET_TOKEN"
+    HOST_ENCRYPTED_ATTR = "PROVISION/EC2_ACCESS"
+    HOST_ENCRYPTED_ATTR = "PROVISION/EC2_SECRET"
+    IMAGE_RESTRICTED_ATTR = "SOURCE"
+    IMAGE_RESTRICTED_ATTR = "VCENTER_IMPORTED"
+    IM_MAD = [
+      ARGUMENTS = "-c monitord.conf",
+      EXECUTABLE = "onemonitord",
+      NAME = "monitord",
+      THREADS = 8
+    ]
+    INHERIT_DATASTORE_ATTR = "CEPH_HOST"
+    INHERIT_DATASTORE_ATTR = "CEPH_SECRET"
+    INHERIT_DATASTORE_ATTR = "CEPH_KEY"
+    INHERIT_DATASTORE_ATTR = "CEPH_USER"
+    INHERIT_DATASTORE_ATTR = "CEPH_CONF"
+    INHERIT_DATASTORE_ATTR = "CEPH_TRASH"
+    INHERIT_DATASTORE_ATTR = "POOL_NAME"
+    INHERIT_DATASTORE_ATTR = "ISCSI_USER"
+    INHERIT_DATASTORE_ATTR = "ISCSI_USAGE"
+    INHERIT_DATASTORE_ATTR = "ISCSI_HOST"
+    INHERIT_DATASTORE_ATTR = "GLUSTER_HOST"
+    INHERIT_DATASTORE_ATTR = "GLUSTER_VOLUME"
+    INHERIT_DATASTORE_ATTR = "DISK_TYPE"
+    INHERIT_DATASTORE_ATTR = "ALLOW_ORPHANS"
+    INHERIT_DATASTORE_ATTR = "VCENTER_ADAPTER_TYPE"
+    INHERIT_DATASTORE_ATTR = "VCENTER_DISK_TYPE"
+    INHERIT_DATASTORE_ATTR = "VCENTER_DS_REF"
+    INHERIT_DATASTORE_ATTR = "VCENTER_DS_IMAGE_DIR"
+    INHERIT_DATASTORE_ATTR = "VCENTER_DS_VOLATILE_DIR"
+    INHERIT_DATASTORE_ATTR = "VCENTER_INSTANCE_ID"
+    INHERIT_IMAGE_ATTR = "ISCSI_USER"
+    INHERIT_IMAGE_ATTR = "ISCSI_USAGE"
+    INHERIT_IMAGE_ATTR = "ISCSI_HOST"
+    INHERIT_IMAGE_ATTR = "ISCSI_IQN"
+    INHERIT_IMAGE_ATTR = "DISK_TYPE"
+    INHERIT_IMAGE_ATTR = "VCENTER_ADAPTER_TYPE"
+    INHERIT_IMAGE_ATTR = "VCENTER_DISK_TYPE"
+    INHERIT_VNET_ATTR = "VLAN_TAGGED_ID"
+    INHERIT_VNET_ATTR = "FILTER"
+    INHERIT_VNET_ATTR = "FILTER_IP_SPOOFING"
+    INHERIT_VNET_ATTR = "FILTER_MAC_SPOOFING"
+    INHERIT_VNET_ATTR = "MTU"
+    INHERIT_VNET_ATTR = "METRIC"
+    INHERIT_VNET_ATTR = "INBOUND_AVG_BW"
+    INHERIT_VNET_ATTR = "INBOUND_PEAK_BW"
+    INHERIT_VNET_ATTR = "INBOUND_PEAK_KB"
+    INHERIT_VNET_ATTR = "OUTBOUND_AVG_BW"
+    INHERIT_VNET_ATTR = "OUTBOUND_PEAK_BW"
+    INHERIT_VNET_ATTR = "OUTBOUND_PEAK_KB"
+    INHERIT_VNET_ATTR = "CONF"
+    INHERIT_VNET_ATTR = "BRIDGE_CONF"
+    INHERIT_VNET_ATTR = "OVS_BRIDGE_CONF"
+    INHERIT_VNET_ATTR = "IP_LINK_CONF"
+    INHERIT_VNET_ATTR = "EXTERNAL"
+    INHERIT_VNET_ATTR = "VCENTER_NET_REF"
+    INHERIT_VNET_ATTR = "VCENTER_SWITCH_NAME"
+    INHERIT_VNET_ATTR = "VCENTER_SWITCH_NPORTS"
+    INHERIT_VNET_ATTR = "VCENTER_PORTGROUP_TYPE"
+    INHERIT_VNET_ATTR = "VCENTER_CCR_REF"
+    INHERIT_VNET_ATTR = "VCENTER_INSTANCE_ID"
+    IPAM_MAD = [
+      ARGUMENTS = "-t 1 -i dummy",
+      EXECUTABLE = "one_ipam"
+    ]
+    LISTEN_ADDRESS = "0.0.0.0"
+    LOG = [
+      DEBUG_LEVEL = 3,
+      SYSTEM = "file"
+    ]
+    MAC_PREFIX = "02:00"
+    MARKET_MAD = [
+      ARGUMENTS = "-t 15 -m http,s3,one,linuxcontainers,turnkeylinux,dockerhub",
+      EXECUTABLE = "one_market"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "monitor",
+      NAME = "one",
+      PUBLIC = "yes",
+      REQUIRED_ATTRS = "",
+      SUNSTONE_NAME = "OpenNebula.org Marketplace"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "create, delete, monitor",
+      NAME = "http",
+      REQUIRED_ATTRS = "BASE_URL,PUBLIC_DIR",
+      SUNSTONE_NAME = "HTTP server"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "create, delete, monitor",
+      NAME = "s3",
+      REQUIRED_ATTRS = "ACCESS_KEY_ID,SECRET_ACCESS_KEY,REGION,BUCKET",
+      SUNSTONE_NAME = "Amazon S3"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "monitor",
+      NAME = "linuxcontainers",
+      PUBLIC = "yes",
+      REQUIRED_ATTRS = "",
+      SUNSTONE_NAME = "LinuxContainers.org"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "monitor",
+      NAME = "turnkeylinux",
+      PUBLIC = "yes",
+      REQUIRED_ATTRS = "",
+      SUNSTONE_NAME = "TurnkeyLinux"
+    ]
+    MARKET_MAD_CONF = [
+      APP_ACTIONS = "monitor",
+      NAME = "dockerhub",
+      PUBLIC = "yes",
+      REQUIRED_ATTRS = "",
+      SUNSTONE_NAME = "DockerHub"
+    ]
+    MONITORING_INTERVAL_DATASTORE = 300
+    MONITORING_INTERVAL_DB_UPDATE = 0
+    MONITORING_INTERVAL_MARKET = 600
+    NETWORK_SIZE = 254
+    PORT = 2633
+    RAFT = [
+      BROADCAST_TIMEOUT_MS = 500,
+      ELECTION_TIMEOUT_MS = 5000,
+      LIMIT_PURGE = 100000,
+      LOG_PURGE_TIMEOUT = 60,
+      LOG_RETENTION = 250000,
+      XMLRPC_TIMEOUT_MS = 1000
+    ]
+    RAFT_FOLLOWER_HOOK = [
+      ARGUMENTS = "follower",
+      COMMAND = "/scripts/vip.sh"
+    ]
+    RAFT_LEADER_HOOK = [
+      ARGUMENTS = "leader",
+      COMMAND = "/scripts/vip.sh"
+    ]
+    SCRIPTS_REMOTE_DIR = "/var/tmp/one"
+    SESSION_EXPIRATION_TIME = 900
+    TM_MAD = [
+      ARGUMENTS = "-t 15 -d dummy,lvm,shared,fs_lvm,qcow2,ssh,ceph,dev,vcenter,iscsi_libvirt",
+      EXECUTABLE = "one_tm"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      DS_MIGRATE = "YES",
+      LN_TARGET = "NONE",
+      NAME = "dummy",
+      SHARED = "YES"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SELF",
+      LN_TARGET = "NONE",
+      NAME = "lvm",
+      SHARED = "YES"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      CLONE_TARGET_SSH = "SYSTEM",
+      DISK_TYPE_SSH = "FILE",
+      DS_MIGRATE = "YES",
+      LN_TARGET = "NONE",
+      LN_TARGET_SSH = "SYSTEM",
+      NAME = "shared",
+      SHARED = "YES",
+      TM_MAD_SYSTEM = "ssh"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      DRIVER = "raw",
+      LN_TARGET = "SYSTEM",
+      NAME = "fs_lvm",
+      SHARED = "YES"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      CLONE_TARGET_SSH = "SYSTEM",
+      DISK_TYPE_SSH = "FILE",
+      DRIVER = "qcow2",
+      DS_MIGRATE = "YES",
+      LN_TARGET = "NONE",
+      LN_TARGET_SSH = "SYSTEM",
+      NAME = "qcow2",
+      SHARED = "YES",
+      TM_MAD_SYSTEM = "ssh"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      DS_MIGRATE = "YES",
+      LN_TARGET = "SYSTEM",
+      NAME = "ssh",
+      SHARED = "NO"
+    ]
+    TM_MAD_CONF = [
+      ALLOW_ORPHANS = "mixed",
+      CLONE_TARGET = "SELF",
+      CLONE_TARGET_SHARED = "SELF",
+      CLONE_TARGET_SSH = "SYSTEM",
+      DISK_TYPE_SHARED = "RBD",
+      DISK_TYPE_SSH = "FILE",
+      DRIVER = "raw",
+      DS_MIGRATE = "NO",
+      LN_TARGET = "NONE",
+      LN_TARGET_SHARED = "NONE",
+      LN_TARGET_SSH = "SYSTEM",
+      NAME = "ceph",
+      SHARED = "YES",
+      TM_MAD_SYSTEM = "ssh,shared"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SELF",
+      DS_MIGRATE = "NO",
+      LN_TARGET = "NONE",
+      NAME = "iscsi_libvirt",
+      SHARED = "YES"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "NONE",
+      CLONE_TARGET_SHARED = "SELF",
+      CLONE_TARGET_SSH = "SYSTEM",
+      DISK_TYPE_SHARED = "FILE",
+      DISK_TYPE_SSH = "FILE",
+      LN_TARGET = "NONE",
+      LN_TARGET_SHARED = "NONE",
+      LN_TARGET_SSH = "SYSTEM",
+      NAME = "dev",
+      SHARED = "YES"
+    ]
+    TM_MAD_CONF = [
+      CLONE_TARGET = "SYSTEM",
+      LN_TARGET = "NONE",
+      NAME = "vcenter",
+      SHARED = "YES"
+    ]
+    USER_RESTRICTED_ATTR = "VM_USE_OPERATIONS"
+    USER_RESTRICTED_ATTR = "VM_MANAGE_OPERATIONS"
+    USER_RESTRICTED_ATTR = "VM_ADMIN_OPERATIONS"
+    VLAN_IDS = [
+      RESERVED = "0, 1, 4095",
+      START = "2"
+    ]
+    VM_ADMIN_OPERATIONS = "migrate, delete, recover, retry, deploy, resched"
+    VM_ENCRYPTED_ATTR = "CONTEXT/PASSWORD"
+    VM_MAD = [
+      ARGUMENTS = "-t 15 -r 0 firecracker",
+      EXECUTABLE = "one_vmm_exec",
+      KEEP_SNAPSHOTS = "no",
+      NAME = "firecracker",
+      SUNSTONE_NAME = "Firecracker",
+      TYPE = "xml"
+    ]
+    VM_MAD = [
+      ARGUMENTS = "-t 15 -r 0 kvm",
+      DEFAULT = "vmm_exec/vmm_exec_kvm.conf",
+      EXECUTABLE = "one_vmm_exec",
+      IMPORTED_VMS_ACTIONS = "terminate, terminate-hard, hold, release, suspend, resume, delete, reboot, reboot-hard, resched, unresched, disk-attach, disk-detach, nic-attach, nic-detach, snapshot-create, snapshot-delete",
+      KEEP_SNAPSHOTS = "yes",
+      NAME = "kvm",
+      SUNSTONE_NAME = "KVM",
+      TYPE = "kvm"
+    ]
+    VM_MAD = [
+      ARGUMENTS = "-t 15 -r 0 lxd",
+      EXECUTABLE = "one_vmm_exec",
+      IMPORTED_VMS_ACTIONS = "terminate, terminate-hard, reboot, reboot-hard, poweroff, poweroff-hard, suspend, resume, stop, delete,  nic-attach, nic-detach",
+      KEEP_SNAPSHOTS = "no",
+      NAME = "lxd",
+      SUNSTONE_NAME = "LXD",
+      TYPE = "xml"
+    ]
+    VM_MAD = [
+      ARGUMENTS = "-p -t 15 -r 0 vcenter -s sh",
+      COLD_NIC_ATTACH = "yes",
+      DEFAULT = "vmm_exec/vmm_exec_vcenter.conf",
+      DS_LIVE_MIGRATION = "yes",
+      EXECUTABLE = "one_vmm_sh",
+      IMPORTED_VMS_ACTIONS = "terminate, terminate-hard, hold, release, suspend, resume, delete, reboot, reboot-hard, resched, unresched, poweroff, poweroff-hard, disk-attach, disk-detach, nic-attach, nic-detach, snapshot-create, snapshot-delete, migrate, live-migrate",
+      KEEP_SNAPSHOTS = "yes",
+      NAME = "vcenter",
+      SUNSTONE_NAME = "VMWare vCenter",
+      TYPE = "xml"
+    ]
+    VM_MANAGE_OPERATIONS = "undeploy, hold, release, stop, suspend, resume, reboot, poweroff, disk-attach, nic-attach, disk-snapshot, terminate, disk-resize, snapshot, updateconf, rename, resize, update, disk-saveas"
+    VM_RESTRICTED_ATTR = "CONTEXT/FILES"
+    VM_RESTRICTED_ATTR = "NIC/MAC"
+    VM_RESTRICTED_ATTR = "NIC/VLAN_ID"
+    VM_RESTRICTED_ATTR = "NIC/BRIDGE"
+    VM_RESTRICTED_ATTR = "NIC/FILTER"
+    VM_RESTRICTED_ATTR = "NIC/INBOUND_AVG_BW"
+    VM_RESTRICTED_ATTR = "NIC/INBOUND_PEAK_BW"
+    VM_RESTRICTED_ATTR = "NIC/INBOUND_PEAK_KB"
+    VM_RESTRICTED_ATTR = "NIC/OUTBOUND_AVG_BW"
+    VM_RESTRICTED_ATTR = "NIC/OUTBOUND_PEAK_BW"
+    VM_RESTRICTED_ATTR = "NIC/OUTBOUND_PEAK_KB"
+    VM_RESTRICTED_ATTR = "NIC/OPENNEBULA_MANAGED"
+    VM_RESTRICTED_ATTR = "NIC/VCENTER_INSTANCE_ID"
+    VM_RESTRICTED_ATTR = "NIC/VCENTER_NET_REF"
+    VM_RESTRICTED_ATTR = "NIC/VCENTER_PORTGROUP_TYPE"
+    VM_RESTRICTED_ATTR = "NIC/EXTERNAL"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/MAC"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/VLAN_ID"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/BRIDGE"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/INBOUND_AVG_BW"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/INBOUND_PEAK_BW"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/INBOUND_PEAK_KB"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/OUTBOUND_AVG_BW"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/OUTBOUND_PEAK_BW"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/OUTBOUND_PEAK_KB"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/OPENNEBULA_MANAGED"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/VCENTER_INSTANCE_ID"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/VCENTER_NET_REF"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/VCENTER_PORTGROUP_TYPE"
+    VM_RESTRICTED_ATTR = "NIC_ALIAS/EXTERNAL"
+    VM_RESTRICTED_ATTR = "NIC_DEFAULT/MAC"
+    VM_RESTRICTED_ATTR = "NIC_DEFAULT/VLAN_ID"
+    VM_RESTRICTED_ATTR = "NIC_DEFAULT/BRIDGE"
+    VM_RESTRICTED_ATTR = "NIC_DEFAULT/FILTER"
+    VM_RESTRICTED_ATTR = "NIC_DEFAULT/EXTERNAL"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_BYTES_SEC"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_BYTES_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_BYTES_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/READ_BYTES_SEC"
+    VM_RESTRICTED_ATTR = "DISK/READ_BYTES_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/READ_BYTES_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_BYTES_SEC"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_BYTES_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_BYTES_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_IOPS_SEC"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_IOPS_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/TOTAL_IOPS_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/READ_IOPS_SEC"
+    VM_RESTRICTED_ATTR = "DISK/READ_IOPS_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/READ_IOPS_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_IOPS_SEC"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_IOPS_SEC_MAX_LENGTH"
+    VM_RESTRICTED_ATTR = "DISK/WRITE_IOPS_SEC_MAX"
+    VM_RESTRICTED_ATTR = "DISK/OPENNEBULA_MANAGED"
+    VM_RESTRICTED_ATTR = "DISK/VCENTER_DS_REF"
+    VM_RESTRICTED_ATTR = "DISK/VCENTER_INSTANCE_ID"
+    VM_RESTRICTED_ATTR = "DISK/ORIGINAL_SIZE"
+    VM_RESTRICTED_ATTR = "DISK/SIZE_PREV"
+    VM_RESTRICTED_ATTR = "DEPLOY_ID"
+    VM_RESTRICTED_ATTR = "CPU_COST"
+    VM_RESTRICTED_ATTR = "MEMORY_COST"
+    VM_RESTRICTED_ATTR = "DISK_COST"
+    VM_RESTRICTED_ATTR = "PCI"
+    VM_RESTRICTED_ATTR = "EMULATOR"
+    VM_RESTRICTED_ATTR = "RAW"
+    VM_RESTRICTED_ATTR = "USER_PRIORITY"
+    VM_RESTRICTED_ATTR = "USER_INPUTS/CPU"
+    VM_RESTRICTED_ATTR = "USER_INPUTS/MEMORY"
+    VM_RESTRICTED_ATTR = "USER_INPUTS/VCPU"
+    VM_RESTRICTED_ATTR = "VCENTER_VM_FOLDER"
+    VM_RESTRICTED_ATTR = "VCENTER_ESX_HOST"
+    VM_RESTRICTED_ATTR = "TOPOLOGY/PIN_POLICY"
+    VM_RESTRICTED_ATTR = "TOPOLOGY/HUGEPAGE_SIZE"
+    VM_USE_OPERATIONS = ""
+    VNC_PORTS = [
+      RESERVED = "32768:65536",
+      START = 5900
+    ]
+    VNET_ENCRYPTED_ATTR = "AR/PACKET_TOKEN"
+    VNET_RESTRICTED_ATTR = "VN_MAD"
+    VNET_RESTRICTED_ATTR = "PHYDEV"
+    VNET_RESTRICTED_ATTR = "VLAN_ID"
+    VNET_RESTRICTED_ATTR = "BRIDGE"
+    VNET_RESTRICTED_ATTR = "CONF"
+    VNET_RESTRICTED_ATTR = "BRIDGE_CONF"
+    VNET_RESTRICTED_ATTR = "OVS_BRIDGE_CONF"
+    VNET_RESTRICTED_ATTR = "IP_LINK_CONF"
+    VNET_RESTRICTED_ATTR = "FILTER"
+    VNET_RESTRICTED_ATTR = "FILTER_IP_SPOOFING"
+    VNET_RESTRICTED_ATTR = "FILTER_MAC_SPOOFING"
+    VNET_RESTRICTED_ATTR = "AR/VN_MAD"
+    VNET_RESTRICTED_ATTR = "AR/PHYDEV"
+    VNET_RESTRICTED_ATTR = "AR/VLAN_ID"
+    VNET_RESTRICTED_ATTR = "AR/BRIDGE"
+    VNET_RESTRICTED_ATTR = "AR/FILTER"
+    VNET_RESTRICTED_ATTR = "AR/FILTER_IP_SPOOFING"
+    VNET_RESTRICTED_ATTR = "AR/FILTER_MAC_SPOOFING"
+    VNET_RESTRICTED_ATTR = "CLUSTER_IDS"
+    VNET_RESTRICTED_ATTR = "EXTERNAL"
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "dummy"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "802.1Q"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "ebtables"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "fw"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "openvswitch",
+      NAME = "ovswitch"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "vxlan"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "vcenter_port_groups",
+      NAME = "vcenter"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "openvswitch",
+      NAME = "ovswitch_vxlan"
+    ]
+    VN_MAD_CONF = [
+      BRIDGE_TYPE = "linux",
+      NAME = "bridge"
+    ]
+    VXLAN_IDS = [
+      START = "2"
+    ]
+    
+  monitord.conf: |+
+    
+    DB = [
+      CONNECTIONS = 15
+    ]
+    IM_MAD = [
+      ARGUMENTS = "-r 3 -t 15 -w 90 kvm",
+      EXECUTABLE = "one_im_ssh",
+      NAME = "kvm",
+      SUNSTONE_NAME = "KVM",
+      THREADS = 0
+    ]
+    IM_MAD = [
+      ARGUMENTS = "-r 3 -t 15 -w 90 lxd",
+      EXECUTABLE = "one_im_ssh",
+      NAME = "lxd",
+      SUNSTONE_NAME = "LXD",
+      THREADS = 0
+    ]
+    IM_MAD = [
+      ARGUMENTS = "-r 3 -t 15 -w 90 firecracker",
+      EXECUTABLE = "one_im_ssh",
+      NAME = "firecracker",
+      SUNSTONE_NAME = "Firecracker",
+      THREADS = 0
+    ]
+    IM_MAD = [
+      ARGUMENTS = "-c -t 15 -r 0 vcenter",
+      EXECUTABLE = "one_im_sh",
+      NAME = "vcenter",
+      SUNSTONE_NAME = "VMWare vCenter"
+    ]
+    LOG = [
+      DEBUG_LEVEL = 3,
+      SYSTEM = "file"
+    ]
+    NETWORK = [
+      ADDRESS = "0.0.0.0",
+      MONITOR_ADDRESS = "auto",
+      PORT = 32156,
+      PRIKEY = "",
+      PUBKEY = "",
+      THREADS = 8
+    ]
+    PROBES_PERIOD = [
+      BEACON_HOST = 30,
+      MONITOR_HOST = 120,
+      MONITOR_VM = 30,
+      STATE_VM = 5,
+      SYNC_STATE_VM = 180,
+      SYSTEM_HOST = 600
+    ]
+---
+# Source: opennebula/templates/oned-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-scripts
+data:
+  init.sh: |+
+    #!/bin/bash
+    set -o pipefail
+    
+    # Fatal error
+    fatal() {
+        >&2 echo -en "ERROR:\t"
+        >&2 echo "$1"
+        exit 1
+    }
+    
+    # Information message
+    info() {
+        echo -en "INFO:\t"
+        echo "$1"
+    }
+    
+    cleanup() {
+      exec 3>&2
+      exec 2> /dev/null
+    
+      for PID in $(jobs -p | tac); do
+        kill $PID > /dev/null 2>&1
+    
+        local counter=0
+        while ps $PID > /dev/null 2>&1; do
+          let counter=counter+1
+          if [ $counter -gt 10 ]; then
+            kill -9 $PID > /dev/null 2>&11
+            break
+          fi
+          sleep 1
+        done
+      done
+    
+      exec 2>&3
+      exec 3>&-     
+    }
+    
+    # Parses option between square brackets (eg. DB = [ DB_BACKEND = "mysql" ] )
+    parse_opt() {
+      sed 's/\(.*\)#.*/\1/g' | sed -n 's/.*'"$1"' *= *"\?\([^ ,"]\+\)"\?.*/\1/p'
+    }
+    
+    # Sets DB_BACKEND, DB_SERVER, DB_PORT, DB_USER, DB_PASSWD, DB_NAME environment variables
+    load_db_config() {
+      if [ ! -f /config/oned.conf ]; then
+        fatal "/config/oned.conf does not exists"
+      fi
+      local DB_CONFIG=$(awk '/^[^#]*DB *= *\[/,/]/' /config/oned.conf)
+      DB_BACKEND=${DB_BACKEND:-$(echo "$DB_CONFIG" | parse_opt BACKEND)}
+      DB_SERVER=${DB_SERVER:-$(echo "$DB_CONFIG" | parse_opt SERVER)}
+      DB_PORT=${DB_PORT:-$(echo "$DB_CONFIG" | parse_opt PORT)}
+      DB_USER=${DB_USER:-$(echo "$DB_CONFIG" | parse_opt USER)}
+      DB_PASSWD=${DB_PASSWD:-$(echo "$DB_CONFIG" | parse_opt PASSWD)}
+      DB_NAME=${DB_NAME:-$(echo "$DB_CONFIG" | parse_opt NAME)}
+      DB_CONNECTIONS=${DB_CONNECTIONS:-$(echo "$DB_CONNECTIONS" | parse_opt CONNECTIONS)}
+      if [ "$DB_PORT" = "0" ]; then
+        DB_PORT="3306"
+      fi
+      case "$DB_BACKEND" in
+        sqlite)
+          return
+          ;;
+        mysql)
+          # load defaults
+          DB_SERVER=${DB_SERVER:-127.0.0.1}
+          DB_PORT=${DB_PORT:-3306}
+          DB_USER=${DB_USER:-oneadmin}
+          DB_PASSWD=${DB_PASSWD:-oneadmin}
+          DB_CONNECTIONS=${DB_CONNECTIONS:-50}
+          ;;
+        '')
+          fatal "can not get database backend form config"
+          ;;
+        *)
+          fatal "only mysql and sqlite backends are supported"
+          ;;
+      esac
+    }
+    
+    # Sets FEDERATION_MODE, FEDERATION_ZONE_ID, FEDERATION_SERVER_ID, FEDERATION_MASTER_ONED environment variables
+    load_federation_config(){
+      if [ ! -f /config/oned.conf ]; then
+        fatal "/config/oned.conf does not exists"
+      fi
+      local FEDERATION_CONFIG=$(awk '/^[^#]*FEDERATION *= *\[/,/]/' /config/oned.conf)
+    
+      FEDERATION_MODE=${FEDERATION_MODE:-$(echo "$FEDERATION_CONFIG" | parse_opt MODE)}
+      FEDERATION_ZONE_ID=${FEDERATION_ZONE_ID:-$(echo "$FEDERATION_CONFIG" | parse_opt ZONE_ID)}
+      FEDERATION_SERVER_ID=${FEDERATION_SERVER_ID:-$(echo "$FEDERATION_CONFIG" | parse_opt SERVER_ID)}
+      FEDERATION_MASTER_ONED=${FEDERATION_MASTER_ONED:-$(echo "$FEDERATION_CONFIG" | parse_opt MASTER_ONED)}
+    
+      if ! [[ "$FEDERATION_ZONE_ID" =~ ^[0-9]+$ ]]; then
+        fatal "can not get ZONE_ID from config"
+      fi
+    
+      if [ "$FEDERATION_MODE" != "STANDALONE" ]; then
+        fatal "MODE is not set to STANDALONE"
+      elif [ "$FEDERATION_SERVER_ID" != "-1" ]; then
+        fatal "SERVER_ID is not set to -1"
+      fi
+    }
+    
+    # Sets LOCAL_VERSION, NEW_VERSION environment variables
+    load_version_info() {
+      case "$DB_BACKEND" in
+        sqlite)
+          if [ -f /var/lib/one/one.db ]; then
+            LOCAL_VERSION=$(onedb version -s /var/lib/one/one.db | awk '$1 == "Local:" {print $2}')
+            if [ $? -ne 0 ]; then
+              fatal "can not connect to sqlite database"
+            fi
+          fi
+          ;;
+        mysql)
+          MYSQL_OPTS=$(mktemp)
+          echo -e "[client]\npassword=$DB_PASSWD" > "$MYSQL_OPTS"
+    
+          RETRY=1
+          until DB_TABLES="$(mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" "$DB_NAME" -N -B -e "SHOW TABLES like 'local_db_versioning'" 2>/dev/null)"; do
+            info "can not connect to mysql database mysql://$DB_USER@$DB_SERVER:$DB_PORT/$DB_NAME (try $((RETRY++)))"
+            sleep 10
+          done
+          unset RETRY
+    
+          LOCAL_VERSION=$(mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" "$DB_NAME" -N -B -e 'SELECT version FROM local_db_versioning WHERE oid=(SELECT MAX(oid) FROM local_db_versioning)' 2>/dev/null)
+          if [ $? -ne 0 ] && [ "$DB_TABLES" = "local_db_versioning" ]; then
+            fatal "local_db_versioning exists but have no versions"
+          fi
+          rm -f "$MYSQL_OPTS"
+          ;;
+        '')
+          fatal "Database information is not loaded"
+          ;;
+        *)
+          fatal "Only sqlite and mysql backend support gathering version info"
+          ;;
+      esac
+      NEW_VERSION=$(ls -1 /usr/lib/one/ruby/onedb/local  | sed -n 's/^.*_to_\(.*\)\.rb$/\1/p' | sort -V | tail -n1)
+      if [ -z "$NEW_VERSION" ]; then
+        fatal "can not find new version number"
+      fi
+    }
+    
+    # Performing OpenNebula database upgrade
+    perform_upgrade() {
+      if [ -z "$DB_BACKEND" ]; then
+        fatal "Database information is not loaded"
+      fi
+      if [ -z "$NEW_VERSION" ]; then
+        fatal "Version information is not loaded"
+      fi
+    
+      if [ -z "$LOCAL_VERSION" ]; then
+        fatal "Failed to get local version for database"
+      elif [ "$LOCAL_VERSION" = "$NEW_VERSION" ]; then
+        info "Database schema is up to date"
+        return 0
+      fi
+    
+      NEWER_VERSION=$(echo -e "$LOCAL_VERSION\n$NEW_VERSION" | sort -V | tail -n1)
+    
+      if [ "$NEWER_VERSION" = "$LOCAL_VERSION" ]; then
+        fatal "Database version $LOCAL_VERSION is higher than $NEW_VERSION."
+      elif [ "$NEWER_VERSION" = "$NEW_VERSION" ]; then
+        info "Database version $LOCAL_VERSION is lower than $NEW_VERSION. Performing upgrade..."
+    
+        case "$DB_BACKEND" in
+          sqlite)
+            onedb upgrade -s /var/lib/one/one.db
+            if [ $? -ne 0 ]; then
+              fatal "failed upgrade database"
+            fi
+            return 0
+            ;;
+          mysql)
+            onedb upgrade -p "$DB_PASSWD" -u "$DB_USER" -S "$DB_SERVER" -P "$DB_PORT" -d "$DB_NAME"
+            if [ $? -ne 0 ]; then
+              fatal "failed upgrade database"
+            fi
+            return 0
+            ;;
+          '')
+            fatal "Database information is not loaded"
+            ;;
+          *)
+            fatal "Only sqlite and mysql backend support upgrade"
+            ;;
+        esac
+        if [ $? -ne 0 ]; then
+          fatal "database schema migration was failed"
+        fi
+      fi
+    }
+    
+    # Sets MY_ID
+    load_my_id(){
+      MY_ID=$(echo "$HOSTNAME" | awk -F- '{print $NF}')
+      if ! [[ "$MY_ID" =~ ^[0-9]+$ ]]; then
+        fatal "hostname does not contain instance_id suffix"
+      fi
+    }
+    
+    # Removes existing database
+    drop_db(){
+      case "$DB_BACKEND" in
+        sqlite)
+          rm -f "$(readlink -f /var/lib/one/one.db)"
+          ;;
+        mysql)
+          MYSQL_OPTS=$(mktemp)
+          echo -e "[client]\npassword=$DB_PASSWD" > "$MYSQL_OPTS"
+          mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" -e "DROP DATABASE $DB_NAME;"
+          mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" -e "CREATE DATABASE $DB_NAME;"
+          rm -f "$MYSQL_OPTS"
+          ;;
+        '')
+          fatal "Database information is not loaded"
+          ;;
+        *)
+          fatal "Only sqlite and mysql backend support cleanup"
+          ;;
+      esac
+    }
+    
+    # Creates new cluster
+    bootstrap_cluster(){
+       rm -f \
+         /var/lib/one/.one/ec2_auth \
+         /var/lib/one/.one/occi_auth \
+         /var/lib/one/.one/oneflow_auth \
+         /var/lib/one/.one/onegate_auth \
+         /var/lib/one/.one/sunstone_auth
+    
+       setup_logging
+       info "starting oned"
+       oned -f &
+       ONED_PID="$!"
+    
+       sleep 5
+       until onezone list >/dev/null 2>&1; do
+         if ! kill -0 "$ONED_PID" >/dev/null 2>&1; then
+           drop_db
+           fatal "oned process is dead"
+         fi
+         info "oned is not ready. waiting 5 sec"
+         sleep 5
+       done
+    
+       info "adding $HOSTNAME to zone $FEDERATION_ZONE_ID"
+       MY_XMLRPC="http://$(hostname -f | cut -d. -f-2):${ONE_PORT}/RPC2"
+       onezone server-add "$FEDERATION_ZONE_ID" --name "$HOSTNAME" --rpc "$MY_XMLRPC"
+       if [ $? -ne 0 ]; then
+         drop_db
+         fatal "error adding $HOSTNAME to zone $FEDERATION_ZONE_ID"
+       fi
+    
+       info "setting serveradmin password"
+       SERVERADMIN_PASSWORD_FILE=$(mktemp)
+       cat /secrets/sunstone_auth | cut -d: -f2 > "$SERVERADMIN_PASSWORD_FILE"
+       oneuser passwd 1 --sha256 -r "$SERVERADMIN_PASSWORD_FILE"
+       if [ $? -ne 0 ]; then
+         fatal "error setting serveradmin password"
+       fi
+       rm -f "$SERVERADMIN_PASSWORD_FILE"
+    
+       info 'stopping oned'
+       cleanup
+       info 'oned stopped'
+    
+       info "bootstrap procedure finished"
+    }
+    
+    # Joining node to the existing cluster
+    bootstrap_node(){
+      info "checking connection"
+      ONE_XMLRPC="$LEADER_XMLRPC" onezone show "$FEDERATION_ZONE_ID" >/dev/null
+      if [ $? -ne 0 ]; then
+        fatal "can not get zone $FEDERATION_ZONE_ID from $LEADER_XMLRPC"
+      fi
+    
+      wait_previous_host
+      wait_leader
+    
+      info "downloading data from mysql://$DB_USER@$LEADER_IP:$DB_PORT/$DB_NAME"
+      MYSQL_OPTS=$(mktemp)
+      echo -e "[client]\npassword=$DB_PASSWD" > "$MYSQL_OPTS"
+      mysqldump --defaults-file="$MYSQL_OPTS" --single-transaction=TRUE -u "$DB_USER" -h "$LEADER_IP" -P "$DB_PORT" "$DB_NAME" | \
+        mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" "$DB_NAME"
+      if [ $? -ne 0 ]; then
+        fatal "can not bootstrap database"
+      else
+        info "database succesfully bootstraped"
+      fi
+      rm -f "$MYSQL_OPTS"
+    
+      MY_SERVER_ID="$(ONE_XMLRPC="$LEADER_XMLRPC" onezone show "$FEDERATION_ZONE_ID" -x | /var/lib/one/remotes/datastore/xpath.rb "/ZONE/SERVER_POOL/SERVER[NAME=\"$HOSTNAME\"]/ID)" | tr -d '\0')"
+      if [ -n "$MY_SERVER_ID" ]; then
+        info "$HOSTNAME already member of zone $FEDERATION_ZONE_ID, reseting"
+        ONE_XMLRPC="$LEADER_XMLRPC" onezone server-reset "$FEDERATION_ZONE_ID" "$MY_SERVER_ID"
+      else
+        info "adding $HOSTNAME to zone $FEDERATION_ZONE_ID via $LEADER_XMLRPC"
+        MY_XMLRPC="http://$(hostname -f | cut -d. -f-2):${ONE_PORT}/RPC2"
+        ONE_XMLRPC="$LEADER_XMLRPC" onezone server-add "$FEDERATION_ZONE_ID" --name "$HOSTNAME" --rpc "$MY_XMLRPC"
+        if [ $? -ne 0 ]; then
+          drop_db
+          fatal "can not add server to zone $FEDERATION_ZONE_ID via $LEADER_XMLRPC"
+        fi
+        # Sometimes zone have missing server after deploy, we need force syncronize server list to avoid this situations
+        info "fetching server list for zone $FEDERATION_ZONE_ID from mysql://$DB_USER@$LEADER_IP:$DB_PORT/$DB_NAME"
+        MYSQL_OPTS=$(mktemp)
+        echo -e "[client]\npassword=$DB_PASSWD" > "$MYSQL_OPTS"
+        mysqldump --defaults-file="$MYSQL_OPTS" --single-transaction=TRUE -u"$DB_USER" -h "$LEADER_IP" -P "$DB_PORT" "$DB_NAME" zone_pool --where="oid = $FEDERATION_ZONE_ID" --replace | \
+          mysql --defaults-file="$MYSQL_OPTS" -u "$DB_USER" -h "$DB_SERVER" -P "$DB_PORT" "$DB_NAME"
+        if [ $? -ne 0 ]; then
+          drop_db
+          fatal "can not syncronize server list for zone $FEDERATION_ZONE_ID from mysql://$DB_USER@$LEADER_IP:$DB_PORT/$DB_NAME"
+        fi
+      fi
+    }
+    
+    # Waits for leader, sets LEADER_IP and LEADER_XMLRPC
+    wait_leader() {
+      local MAX_RETRIES="$1"
+      local RETRY=0
+    
+      LEADER_IP=
+      LEADER_SVC=${LEADER_SVC:-$(hostname -d | awk -F. '{print $1}' | sed 's/-servers$/-headless/')}
+      info "resolving $LEADER_SVC"
+    
+      until [ -n "$LEADER_IP" ]; do
+        LEADER_OUT=$(getent hosts "$LEADER_SVC")
+        LEADER_IP=$(echo "$LEADER_OUT" | awk 'NR=1 {print $1}')
+        LEADER_DOMAIN=$(echo "$LEADER_OUT" | awk 'NR=1 {print $2}' | awk -F. '{print $3}')
+        LEADER_COUNT=$(echo "$LEADER_IP" | wc -l)
+    
+        LEADER_XMLRPC="http://${LEADER_IP}:${ONE_PORT}/RPC2"
+    
+        if [ -z "$LEADER_IP" ]; then
+          info "current leader not found. waiting 10 sec (try ${RETRY:-0}${MAX_RETRIES:+/$MAX_RETRIES})"
+          if [ "$RETRY" = "$MAX_RETRIES" ]; then
+            info "leader not found."
+            return 1
+          fi
+          RETRY=$((RETRY+1))
+          sleep 10
+        elif [ "$LEADER_COUNT" != "1" ]; then
+          fatal "multiple leaders found: $(echo $LEADER_IP | tr '\n' ' ')"
+        elif [ "$LEADER_DOMAIN" != "svc" ]; then
+          fatal "$LEADER_SVC is not a kubernetes service"
+        fi
+      done
+     
+      info "leader found. ($LEADER_IP)"
+    }
+    
+    wait_previous_host(){
+      local RETRY=0
+      if [ "$FEDERATION_SERVER_ID" != "0" ]; then
+        PREVIOUS_HOSTNAME="${HOSTNAME%-*}-$((FEDERATION_SERVER_ID-1))"
+        until [[ "$(ONE_XMLRPC="$LEADER_XMLRPC" onezone show "$FEDERATION_ZONE_ID" -x | /var/lib/one/remotes/datastore/xpath.rb "/ZONE/SERVER_POOL/SERVER[NAME=\"$PREVIOUS_HOSTNAME\"]/STATE)" | tr -d '\0')" =~ ^(0|2|3)$ ]]; do
+          info "waiting until $PREVIOUS_HOSTNAME be deployed (try $((RETRY++)))"
+          sleep 10
+        done
+      fi
+    }
+    
+    # Bootstraps new host
+    perform_bootstrap() {
+      if [ -z "$DB_BACKEND" ]; then
+        fatal "Database information is not loaded"
+      fi
+      if [ -z "$FEDERATION_ZONE_ID" ]; then
+        fatal "Federation information is not loaded"
+      fi
+    
+      # remove DB = [], take PORT
+      ONE_PORT=$(awk -v RS='\n[^#\n]*DB = \\[[^]]*]' -v ORS= '1;NR==1{print}' /config/oned.conf | sed -n 's/^[^#]*PORT *= \([0-9]\+\).*/\1/p')
+      if ! [[ "$ONE_PORT" =~ ^[0-9]+$ ]]; then
+        fatal "can not read OpenNebula XML-RPC port from config"
+      fi
+    
+      info "starting bootstrap procedure"
+      if [ "$FEDERATION_SERVER_ID" -ne "0" ] && [ "$DB_BACKEND" != 'mysql' ]; then
+        fatal "Only mysql backend support joining multiple instances"
+      fi
+    
+      # If CREATE_CLUSTER=1 set, allow to initialize database from first pod, otherwise always wait for leader
+      if [ "${CREATE_CLUSTER:-0}" = "1" ] && [ "$FEDERATION_SERVER_ID" -eq "0" ]; then
+        wait_leader 3
+        info "creating new cluster"
+        bootstrap_cluster
+        return $?
+      else
+        wait_leader
+        bootstrap_node
+      fi
+    
+      rm -f "$MYSQL_OPTS"
+      info "bootstrap procedure finished"
+    }
+    
+    # Injects database config into streamed oned.conf file
+    inject_db_config() {
+      if [ -z "$DB_BACKEND" ]; then
+        fatal "Database information is not loaded"
+      fi
+    
+      awk -v RS='\n[^#\n]*DB = \\[[^]]*]' \
+        -v ORS= '1;NR==1{printf "\nDB = [ BACKEND = \"'"${DB_BACKEND}\\\"${DB_SERVER:+,\n       SERVER  = \\\"${DB_SERVER}\\\"}${DB_PORT:+,\n       PORT    = ${DB_PORT}}${DB_USER:+,\n       USER    = \\\"${DB_USER}\\\"}${DB_PASSWD:+,\n       PASSWD  = \\\"${DB_PASSWD}\\\"}${DB_NAME:+,\n       DB_NAME = \\\"${DB_NAME}\\\"}${DB_CONNECTIONS:+,\n       CONNECTIONS = ${DB_CONNECTIONS}}${DB_ENCODING:+,\n       ENCODING = \\\"${DB_ENCODING}\\\"}"'\n]"}'
+    }
+    
+    # Injects federation config into streamed oned.conf file
+    inject_federation_config() {
+      if [ -z "$FEDERATION_ZONE_ID" ]; then
+        fatal "Federation information is not loaded"
+      fi
+    
+      awk -v RS='\n[^#\n]*FEDERATION = \\[[^]]*]' \
+        -v ORS= '1;NR==1{printf "\nFEDERATION = [\n    MODE          = \"'"$FEDERATION_MODE"'\",\n    ZONE_ID       = '"$FEDERATION_ZONE_ID"',\n    SERVER_ID     = '"$FEDERATION_SERVER_ID"',\n    MASTER_ONED   = \"'"$FEDERATION_MASTER_ONED"'\"\n]"}'
+    }
+    
+    # Setups keys for opennebula
+    setup_keys(){
+      info "setup keys"
+      mkdir -p "/var/lib/one/.one"
+      rm -rf /var/lib/one/.one/*
+      for FILE in \
+        ec2_auth \
+        occi_auth \
+        one_auth \
+        one_key \
+        oneflow_auth \
+        onegate_auth \
+        sunstone_auth
+      do
+        if [ ! -f "/secrets/${FILE}" ]; then
+          fatal "/secrets/${FILE} does not exists"
+        fi
+        cat "/secrets/${FILE}" > "/var/lib/one/.one/${FILE}"
+        if [ $? -ne 0 ]; then
+          fatal "error copying /secrets/${FILE} to /var/lib/one/.one/${FILE}"
+        fi
+      done
+    }
+    
+    # Setups oned.conf and runs injectiors from the argumets
+    setup_config(){
+      info "setup oned.conf ${*:+[$*]}"
+      for i in "$@"; do
+        local INJECT_FUNCTIONS+=" | inject_${i}_config"
+      done
+      eval "cat /config/oned.conf $INJECT_FUNCTIONS" > /etc/one/oned.conf
+      if [ $? -ne 0 ]; then
+        fatal "error copying /config/oned.conf to /etc/one/oned.conf"
+      fi
+    }
+    
+    # Sets up logging to stdout
+    setup_logging(){
+      for i in oned.log sched.log onehem.log sunstone.log novnc.log onegate.log oneflow.log; do ln -sf "/proc/1/fd/1" "/var/log/one/$i"; done
+    }
+    
+    # Prints usage and exit
+    usage() {
+      cat <<EOT
+    
+    USAGE:
+      $0 <action>
+    
+    ACTIONS:
+      config [db] [federation]     Setup oned.conf and keys
+      bootstrap                    Perform the bootstrap procedure
+      upgrade                      Perform the upgrade procedure
+      start                        Setup oned.conf and keys, perform bootstrap (or upgrade) and then start oned
+      debug                        Setup oned.conf and keys, then do nothing
+    
+    OPTIONS:
+      --create-cluster             Allow to bootstrap new cluster
+      --leader <server_id>         Specified federation server_id will force to run in solo mode
+    
+    EOT
+      exit 1
+    }
+    
+    # Loads vars and defaults
+    init() {
+      trap cleanup EXIT
+      info "initializing"
+      setup_logging
+      load_db_config
+      load_federation_config
+      load_version_info
+    
+      # Setup sqlite path
+      if [ "$DB_BACKEND" = "sqlite" ]; then
+        ln -sf /data/one.db /var/lib/one/one.db
+      fi
+    
+      setup_keys
+    
+      if [ -n "$LEADER_SERVER_ID" ] && [ "$LEADER_SERVER_ID" -lt 0 ] 2>/dev/null; then
+        fatal "federation server_id must be a number"
+      fi
+    
+      # Override SERVER_ID by MY_ID
+      load_my_id
+      if [ "${LEADER_SERVER_ID}" = "$MY_ID" ]; then
+        info "Solo mode requested"
+        FEDERATION_SERVER_ID="-1"
+      else
+        FEDERATION_SERVER_ID="$MY_ID"
+      fi
+    
+    }
+    
+    load_keys() {
+      while [ $# -gt 0 ]; do
+        case $1 in
+        --create-cluster)
+          CREATE_CLUSTER="1"
+          shift
+          ;;
+        --leader)
+          if [ -n "$2" ] && [ "$2" -ge 0 ] 2>/dev/null; then
+            LEADER_SERVER_ID="$2"
+          else
+            fatal "Specify exactly one federation server_id to run in solo mode"
+          fi
+          shift
+          shift
+          ;;
+        --*)
+          usage
+          ;;
+        *)
+          if [ -n "$ACTION" ]; then
+            if [ "$ACTION" = "config" ]; then
+              EXTRA_ARGS+=" $1"
+              shift
+              continue
+            else
+              usage
+            fi
+          fi
+          ACTION="$1"
+          shift
+          ;;
+        esac
+      done
+      if [ -z "$ACTION" ]; then
+        usage
+      fi
+    }
+    
+    main() {
+      load_keys "$@"
+      case $ACTION in
+        config)
+          init
+          setup_config $EXTRA_ARGS
+          exit $?
+          ;;
+        upgrade)
+          init
+          setup_config db federation
+          perform_upgrade
+          ;;
+        bootstrap)
+          init
+          setup_config db
+          perform_bootstrap
+          setup_config db federation
+          ;;
+        start)
+          init
+          if [ -n "$LOCAL_VERSION" ]; then
+            setup_config db federation
+            perform_upgrade
+          else
+            setup_config db
+            perform_bootstrap
+            setup_keys
+            setup_config db federation
+          fi
+          info "starting opennebula"
+          oned -f
+          ;;
+        debug)
+          init
+          setup_config db federation
+          info "doing nothing (debug mode requested)"
+          sleep infinity
+          ;;
+        *)
+          fatal "wrong action $ACTION"
+          ;;
+      esac
+    }
+    
+    main "$@"
+    
+  vip.sh: |+
+    #!/bin/bash
+    set -e -o pipefail
+    CA_CERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    API_URL="https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_PORT_443_TCP_PORT"
+    ROLE_LABEL=${ROLE_LABEL:-role}
+    ROLE_LABEL_LEADER=${ROLE_LABEL_LEADER:-leader}
+    ROLE_LABEL_FOLLOWER=${ROLE_LABEL_FOLLOWER:-follower}
+    
+    pcurl() {
+      curl -f -k -sS --cacert "$CA_CERT" -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" "$@"
+    }
+    parse_names() {
+      ruby -rjson -e "JSON.parse(STDIN.read)['items'].each {|item| puts item['metadata']['name']}"
+    }
+    label_pod() {
+        echo "Setting pod/$1 ${2%%=*}=${2##*=}"
+        pcurl -XPATCH -o /dev/null --data "[{\"op\": \"add\", \"path\": \"/metadata/labels/${2%%=*}\", \"value\": \"${2##*=}\"}]" -H "Content-Type:application/json-patch+json" "$API_URL/api/v1/namespaces/$NAMESPACE/pods/$1"
+    }
+    
+    case $1 in
+      leader)
+        # start hem
+        [ "$HEM_INTEGRATED" != 1 ] || onehem-server start || true
+        # set leader
+        label_pod "$HOSTNAME" "$ROLE_LABEL=$ROLE_LABEL_LEADER"
+        # remove old leaders
+        OLD_LEADERS="$(pcurl $CURL_PARAMS -XGET "${API_URL}/api/v1/namespaces/${NAMESPACE}/pods?labelSelector=${ROLE_LABEL}%3D${ROLE_LABEL_LEADER}" | parse_names)"
+        for POD in $OLD_LEADERS; do
+          if [ "$POD" != "$HOSTNAME" ]; then
+            label_pod "$POD" "$ROLE_LABEL=$ROLE_LABEL_FOLLOWER"
+          fi
+        done
+        ;;
+      follower)
+        # stop hem
+        [ "$HEM_INTEGRATED" != 1 ] || onehem-server stop || true
+        # set follower
+        label_pod "$HOSTNAME" "$ROLE_LABEL=$ROLE_LABEL_FOLLOWER"
+        ;;
+      *)
+        echo "Usage: $0 <leader|follower>"
+        exit 1
+        ;;
+    esac
+---
+# Source: opennebula/templates/sched-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-sched
+  labels:
+    app: opennebula-sched
+data:
+  sched.conf: |+
+    
+    DEFAULT_DS_SCHED = [
+      POLICY = 1
+    ]
+    DEFAULT_NIC_SCHED = [
+      POLICY = 1
+    ]
+    DEFAULT_SCHED = [
+      POLICY = 1
+    ]
+    DIFFERENT_VNETS = YES
+    LIVE_RESCHEDS = 0
+    LOG = [
+      DEBUG_LEVEL = 3,
+      SYSTEM = "std"
+    ]
+    MAX_DISPATCH = 30
+    MAX_HOST = 1
+    MAX_VM = 5000
+    MEMORY_SYSTEM_DS_SCALE = 0
+    MESSAGE_SIZE = "1073741824"
+    ONE_XMLRPC = "http://opennebula-oned:2633/RPC2"
+    SCHED_INTERVAL = 30
+    TIMEOUT = 60
+---
+# Source: opennebula/templates/sunstone-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opennebula-sunstone
+  labels:
+    app: opennebula-sunstone
+data:
+  sunstone-server.conf: |+
+    :auth: opennebula
+    :core_auth: cipher
+    :debug_level: 3
+    :env: prod
+    :get_extended_vm_info: false
+    :host: 0.0.0.0
+    :keep_me_logged: true
+    :lang: en_US
+    :leases:
+      suspense:
+        color: '#000000'
+        time: "+1209600"
+        warning:
+          color: '#085aef'
+          time: "-86400"
+      terminate:
+        color: '#e1ef08'
+        time: "+1209600"
+        warning:
+          color: '#ef2808'
+          time: "-86400"
+    :marketplace_url: http://marketplace.opennebula.io/
+    :memcache_host: opennebula-memcached
+    :memcache_namespace: opennebula.sunstone
+    :memcache_port: 11211
+    :mode: mixed
+    :one_xmlrpc: http://opennebula-oned:2633/RPC2
+    :one_xmlrpc_timeout: 60
+    :oneflow_server: http://opennebula-flow:2474/
+    :paginate: '[[6, 12, 36, 72], [6, 12, 36, 72]]'
+    :port: 9869
+    :remote_version: http://downloads.opennebula.org/latest
+    :routes:
+    - oneflow
+    - support
+    :sessions: memcache
+    :table_order: desc
+    :threshold_high: 66
+    :threshold_low: 33
+    :threshold_min: 0
+    :tmpdir: /var/tmp
+    :two_factor_auth_issuer: opennebula
+    :vnc_client_port: 443/websockify
+    :vnc_proxy_cert: null
+    :vnc_proxy_ipv6: false
+    :vnc_proxy_key: null
+    :vnc_proxy_port: 29876
+    :vnc_proxy_support_wss: only
+    :vnc_request_password: false
+    :webauthn_origin: http://localhost:9869
+    :webauthn_rpname: OpenNebula Cloud
+    :webauthn_timeout: 60000
+---
+# Source: opennebula/templates/oned-rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: opennebula-oned
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["patch", "list"]
+---
+# Source: opennebula/templates/oned-rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: opennebula-oned
+subjects:
+- kind: ServiceAccount
+  name: opennebula-oned
+  namespace: default
+roleRef:
+  kind: Role
+  name: opennebula-oned
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: opennebula/templates/exporter-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-exporter
+  labels:
+    app: opennebula-exporter
+spec:
+  ports:
+  - name: http
+    port: 9100
+  selector:
+    app: opennebula-exporter
+  type: ClusterIP
+---
+# Source: opennebula/templates/flow-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-flow
+  labels:
+    app: opennebula-flow
+spec:
+  ports:
+  - name: http
+    port: 2474
+  selector:
+    app: opennebula-flow
+  type: ClusterIP
+---
+# Source: opennebula/templates/gate-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-gate
+  labels:
+    app: opennebula-gate
+spec:
+  ports:
+  - name: http
+    port: 5030
+  selector:
+    app: opennebula-gate
+  type: ClusterIP
+---
+# Source: opennebula/templates/memcached-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-memcached
+  labels:
+    app: opennebula-memcached
+spec:
+  clusterIP: None
+  ports:
+  - name: memcached
+    port: 11211
+  selector:
+    app: opennebula-memcached
+  type: ClusterIP
+---
+# Source: opennebula/templates/novnc-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-novnc
+  labels:
+    app: opennebula-novnc
+spec:
+  ports:
+  - name: websocket
+    port: 29876
+  selector:
+    app: opennebula-novnc
+  type: ClusterIP
+---
+# Source: opennebula/templates/oned-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-oned-servers
+  labels:
+    app: opennebula-oned
+spec:
+  publishNotReadyAddresses: true
+  clusterIP: None
+  ports:
+  - name: http
+    port: 2633
+  - name: hm-subscriber
+    port: 2101
+  - name: hm-replier
+    port: 2102
+  selector:
+    app: opennebula-oned
+  type: ClusterIP
+---
+# Source: opennebula/templates/oned-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-oned-headless
+  labels:
+    app: opennebula-oned
+spec:
+  clusterIP: None
+  ports:
+  - name: http
+    port: 2633
+  - name: hm-subscriber
+    port: 2101
+  - name: hm-replier
+    port: 2102
+  selector:
+    app: opennebula-oned
+    role: leader
+  type: ClusterIP
+---
+# Source: opennebula/templates/oned-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-oned
+  labels:
+    app: opennebula-oned
+spec:
+  ports:
+  - name: http
+    port: 2633
+  - name: hm-subscriber
+    port: 2101
+  - name: hm-replier
+    port: 2102
+  selector:
+    app: opennebula-oned
+    role: leader
+  type: ClusterIP
+---
+# Source: opennebula/templates/oned-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-oned-monitord
+  labels:
+    app: opennebula-oned
+spec:
+  ports:
+  - name: monitord
+    port: 32156
+    nodePort: 32156
+  selector:
+    app: opennebula-oned
+  type: NodePort
+---
+# Source: opennebula/templates/sunstone-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennebula-sunstone
+  labels:
+    app: opennebula-sunstone
+spec:
+  ports:
+  - name: http
+    port: 9869
+  selector:
+    app: opennebula-sunstone
+  type: ClusterIP
+---
+# Source: opennebula/templates/configurator-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: opennebula-configurator
+  name: opennebula-configurator
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: opennebula-configurator
+      role: host
+  template:
+    metadata:
+      labels:
+        app: opennebula-configurator
+        role: host
+      annotations:
+        checksum/scripts: ec624386081cf8a2bc827774636cd3d1429fc4ca8b7045f54375a93722f9c131
+    spec:
+      containers:
+      - name: configurator
+        image: "alpine:3.12"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - /scripts/configurator.host
+        env:
+        - name: ONE_XMLRPC
+          value: http://opennebula-oned:2633/RPC2
+        - name: SSH_KEY
+          valueFrom:
+            secretKeyRef:
+              key: id_rsa
+              name: opennebula-ssh-keys
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: one-keys
+          mountPath: /var/lib/one/.one/one_auth
+          subPath: one_auth
+        securityContext:
+          privileged: true
+          runAsUser: 0
+      imagePullSecrets:
+      - name: regsecret
+      hostIPC: true
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      volumes:
+      - name: scripts
+        configMap:
+          name: opennebula-configurator
+          defaultMode: 0777
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/configurator-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: opennebula-configurator
+  name: opennebula-configurator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-configurator
+      role: oned
+  template:
+    metadata:
+      labels:
+        app: opennebula-configurator
+        role: oned
+      annotations:
+        checksum/scripts: e4c3212598e18cebc0213a0161eb8d8d3b06b305e72e633ded201fc6e183d0cc
+    spec:
+      containers:
+      - name: configurator
+        image: "ghcr.io/kvaps/opennebula-exporter:v5.12.0.4"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - /scripts/configurator.oned
+        env:
+        - name: ONE_XMLRPC
+          value: http://opennebula-oned:2633/RPC2
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: one-keys
+          mountPath: /var/lib/one/.one/one_auth
+          subPath: one_auth
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-configurator.deployment
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: scripts
+        configMap:
+          name: opennebula-configurator
+          defaultMode: 0777
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/exporter-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-exporter
+  labels:
+    app: opennebula-exporter
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-exporter
+  template:
+    metadata:
+      labels:
+        app: opennebula-exporter
+    spec:
+      containers:
+      - name: exporter
+        image: ghcr.io/kvaps/opennebula-exporter:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        args:
+        - --web.telemetry-path=/metrics
+        - --web.listen-address=:9100
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "opennebula_exporter > /metrics/opennebula.prom.$$ && mv /metrics/opennebula.prom.$$ /metrics/opennebula.prom"
+          initialDelaySeconds: 5
+          failureThreshold: 1
+          timeoutSeconds: 10
+          periodSeconds: 60
+        env:
+        - name: ONE_XMLRPC
+          value: http://opennebula-oned:2633/RPC2
+        ports:
+        - name: http
+          containerPort: 9100
+        volumeMounts:
+        - name: one-keys
+          mountPath: /var/lib/one/.one/one_auth
+          subPath: one_auth
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-exporter
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/flow-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-flow
+  labels:
+    app: opennebula-flow
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-flow
+  template:
+    metadata:
+      labels:
+        app: opennebula-flow
+      annotations:
+        checksum/config: 96cc6503101a7ce53dd71492438a99684f3b3e2a0325a247690e832967079d5d
+    spec:
+      containers:
+      - name: oneflow
+        image: ghcr.io/kvaps/opennebula-flow:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ "/usr/bin/ruby", "/usr/lib/one/oneflow/oneflow-server.rb" ]
+        ports:
+        - name: http
+          containerPort: 2474
+        volumeMounts:
+        - mountPath: /etc/one/oneflow-server.conf
+          name: config
+          subPath: oneflow-server.conf
+        - mountPath: /var/lib/one/.one/oneflow_auth
+          name: one-keys
+          subPath: oneflow_auth
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-flow
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: config
+        configMap:
+          name: opennebula-flow
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/gate-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-gate
+  labels:
+    app: opennebula-gate
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-gate
+  template:
+    metadata:
+      labels:
+        app: opennebula-gate
+      annotations:
+        checksum/config: 8325b5d45713b786d89ad8656095fef7c3a3c4530e7c826c880b3561d831ff41
+    spec:
+      containers:
+      - name: onegate
+        image: ghcr.io/kvaps/opennebula-gate:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ "/usr/bin/ruby", "/usr/lib/one/onegate/onegate-server.rb" ]
+        ports:
+        - name: http
+          containerPort: 5030
+        volumeMounts:
+        - mountPath: /etc/one/onegate-server.conf
+          name: config
+          subPath: onegate-server.conf
+        - mountPath: /var/lib/one/.one/onegate_auth
+          name: one-keys
+          subPath: onegate_auth
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-gate
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: config
+        configMap:
+          name: opennebula-gate
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/memcached-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-memcached
+  labels:
+    app: opennebula-memcached
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-memcached
+  template:
+    metadata:
+      labels:
+        app: opennebula-memcached
+
+    spec:
+      containers:
+      - name: memcached
+        image: docker.io/library/memcached:1.5.6-alpine
+        args: [ '-p', '11211' ]
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: memcached
+          containerPort: 11211
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-memcached
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+---
+# Source: opennebula/templates/novnc-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-novnc
+  labels:
+    app: opennebula-novnc
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-novnc
+  template:
+    metadata:
+      labels:
+        app: opennebula-novnc
+      annotations:
+        checksum/config: c20d4390487e5153a6bde0314fa04fb7af1ab47fbff836fffb3d20bb68ec0f6c
+    spec:
+      containers:
+      - name: novnc
+        image: ghcr.io/kvaps/opennebula-sunstone:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ '/usr/bin/ruby', '/usr/bin/novnc-server', 'start' ]
+        ports:
+        - name: websocket
+          containerPort: 29876
+        volumeMounts:
+        - name: config
+          mountPath: /etc/one/sunstone-server.conf
+          subPath: sunstone-server.conf
+        - name: shared
+          mountPath: /var/lib/one/sunstone_vnc_tokens
+          subPath: sunstone_vnc_tokens
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-novnc
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: config
+        configMap:
+          name: opennebula-novnc
+      - name: shared
+        emptyDir: {}
+---
+# Source: opennebula/templates/sched-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-sched
+  labels:
+    app: opennebula-sched
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennebula-sched
+  template:
+    metadata:
+      labels:
+        app: opennebula-sched
+      annotations:
+        checksum/config: 69ae538dbe1f7060f3e410ec7d0549976a7197de7c3ca994b49775770186eec9
+    spec:
+      containers:
+      - name: sched
+        image: ghcr.io/kvaps/opennebula:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ '/usr/bin/mm_sched' ]
+        volumeMounts:
+        - name: config
+          mountPath: /etc/one/sched.conf
+          subPath: sched.conf
+        - name: one-keys
+          mountPath: /var/lib/one/.one/one_auth
+          subPath: one_auth
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-sched
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: config
+        configMap:
+          name: opennebula-sched
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+---
+# Source: opennebula/templates/sunstone-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennebula-sunstone
+  labels:
+    app: opennebula-sunstone
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: opennebula-sunstone
+  template:
+    metadata:
+      labels:
+        app: opennebula-sunstone
+      annotations:
+        checksum/config: a7397dde46cd47030243e551de63052fddb2e0fc992770e0777c6eaea2cdfe48
+    spec:
+      containers:
+      - name: sunstone
+        image: ghcr.io/kvaps/opennebula-sunstone:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ "/usr/bin/ruby", "/usr/lib/one/sunstone/sunstone-server.rb" ]
+        lifecycle:
+          postStart:
+            exec:
+              command: [ '/bin/sh', '-c', 'echo 1 > /var/lock/one/.novnc.lock' ]
+        ports:
+        - name: http
+          containerPort: 9869
+        volumeMounts:
+        - name: config
+          mountPath: /etc/one/sunstone-server.conf
+          subPath: sunstone-server.conf
+        - name: one-keys
+          mountPath: /var/lib/one/.one/sunstone_auth
+          subPath: sunstone_auth
+        - name: one-keys
+          mountPath: /var/lib/one/.one/one_auth
+          subPath: one_auth
+        - name: shared
+          mountPath: /var/tmp
+          subPath: tmp
+        - name: shared
+          mountPath: /var/log/one
+          subPath: log
+        - name: shared
+          mountPath: /var/lib/one/sunstone_vnc_tokens
+          subPath: sunstone_vnc_tokens
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9869
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - configMap:
+          name: opennebula-sunstone
+        name: config
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+      - name: shared
+        emptyDir: {}
+---
+# Source: opennebula/templates/oned-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: opennebula-oned
+  labels:
+    app: opennebula-oned
+  annotations:
+    kubectl.kubernetes.io/default-exec-container: oned
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: opennebula-oned
+  serviceName: opennebula-oned-servers
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: opennebula-oned
+      annotations:
+        checksum/config: e50f8b0f3ecc35af6cd8895a78d83c875c4c5399eb766f56fc24109ad7dbccca
+    spec:
+      serviceAccountName: opennebula-oned
+      containers:
+      - name: mysql
+        args:
+        - --character-set-server=utf8mb4
+        - --collation-server=utf8mb4_unicode_ci
+        - --skip-log-bin
+        image: docker.io/library/mysql:8.0.19
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        env:
+        - name: MYSQL_USER
+          value: oneadmin
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mysqlPassword
+              name: opennebula-db-keys
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mysqlRootPassword
+              name: opennebula-db-keys
+        - name: MYSQL_DATABASE
+          value: opennebula
+      - name: oned
+        image: ghcr.io/kvaps/opennebula:v5.12.0.4-1
+        imagePullPolicy: IfNotPresent
+        command: [ '/scripts/init.sh' ]
+        lifecycle:
+          postStart:
+            exec:
+              command: [ '/bin/sh', '-c', 'ssh-agent -a $SSH_AUTH_SOCK && ssh-add' ]
+        args: [ 'start' ]
+        
+        ports:
+        - name: http
+          containerPort: 2633
+        - name: hm-subscriber
+          containerPort: 2101
+        - name: hm-replier
+          containerPort: 2102
+        - name: monitord
+          containerPort: 32156
+        env:
+        - name: HEM_INTEGRATED
+          value: '1'
+        
+        - name: LEADER_SVC_NAME
+          value: opennebula-oned-leader
+        - name: DB_BACKEND
+          value: mysql
+        - name: DB_SERVER
+          value: 127.0.0.1
+        - name: DB_USER
+          value: oneadmin
+        - name: DB_PASSWD
+          valueFrom:
+            secretKeyRef:
+              key: mysqlPassword
+              name: opennebula-db-keys
+        - name: DB_NAME
+          value: opennebula
+        - name: DB_CONNECTIONS
+          value: "50"
+        - name: SSH_AUTH_SOCK
+          value: /var/run/one/ssh-agent.sock
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: config
+          mountPath: /etc/one/monitord.conf
+          subPath: monitord.conf
+        - name: hem-config
+          mountPath: /etc/one/onehem-server.conf
+          subPath: onehem-server.conf
+        - name: scripts
+          mountPath: /scripts
+        - name: one-run
+          mountPath: /run/one
+        - name: one-keys
+          mountPath: /secrets
+        - name: ssh-keys
+          mountPath: /var/lib/one/.ssh
+        - name: shared
+          mountPath: /var/lib/one/vms
+          subPath: vms
+        - name: shared
+          mountPath: /var/tmp
+          subPath: tmp
+        - name: shared
+          mountPath: /var/log/one
+          subPath: log
+        
+        readinessProbe:
+          exec:
+            command:
+            - /usr/bin/onezone
+            - list
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 15
+        
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: opennebula-oned
+      imagePullSecrets:
+      - name: regsecret
+      securityContext:
+        fsGroup: 9869
+        runAsUser: 9869
+      volumes:
+      - name: config
+        configMap:
+          name: opennebula-oned
+      - name: hem-config
+        configMap:
+          name: opennebula-hem
+      - name: scripts
+        configMap:
+          name: opennebula-scripts
+          defaultMode: 0777
+      - name: ssh-keys
+        secret:
+          secretName: opennebula-ssh-keys
+          defaultMode: 0400
+      - name: one-keys
+        secret:
+          secretName: opennebula-one-keys
+      - name: one-run
+        emptyDir: {}
+      - name: data
+        emptyDir: {}
+      - name: shared
+        emptyDir: {}
+---
+# Source: opennebula/templates/gate-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennebula-gate
+  labels:
+    app: opennebula-gate
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: opennebula-gate.example.org
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: opennebula-gate
+            port:
+              number: 5030
+  tls:
+    - hosts:
+      - opennebula-gate.example.org
+      secretName: opennebula-gate-tls
+---
+# Source: opennebula/templates/novnc-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennebula-novnc
+  labels:
+    app: opennebula-novnc
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: opennebula.example.org
+    http:
+      paths:
+      - path: /websockify
+        pathType: Prefix
+        backend:
+          service:
+            name: opennebula-novnc
+            port:
+              number: 29876
+  tls:
+    - hosts:
+      - opennebula.example.org
+      secretName: opennebula-tls
+---
+# Source: opennebula/templates/oned-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennebula-oned
+  labels:
+    app: opennebula-oned
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: opennebula.example.org
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: opennebula-oned
+            port:
+              number: 2633
+  tls:
+    - hosts:
+      - opennebula.example.org
+      secretName: opennebula-tls
+---
+# Source: opennebula/templates/sunstone-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennebula-sunstone
+  labels:
+    app: opennebula-sunstone
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: opennebula.example.org
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: opennebula-sunstone
+            port:
+              number: 9869
+  tls:
+    - hosts:
+      - opennebula.example.org
+      secretName: opennebula-tls
+---
+# Source: opennebula/templates/oned-secret.yaml
+kind: Secret
+metadata:
+  name: opennebula-one-keys
+  labels:
+    app: opennebula-one-keys
+  annotations:
+    "helm.sh/resource-policy": "keep"
+    "helm.sh/hook": "pre-install"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+apiVersion: v1
+data:
+  one_auth: b25lYWRtaW46aEllMjA2Rm1SYXVianc4TTZNSEoxcUlMQ0dTNW1hc2YK
+  one_key: SjRjTVk4elJUY2NDYXN1Y3c0eHFuQ3BIY1NwS3J1VUUK
+  oneflow_auth: c2VydmVyYWRtaW46ZlQyeTB2UkV5V29GUVNtblh0b3FGamdHSzF6ZW5qMzIK
+  occi_auth: c2VydmVyYWRtaW46ZlQyeTB2UkV5V29GUVNtblh0b3FGamdHSzF6ZW5qMzIK
+  ec2_auth: c2VydmVyYWRtaW46ZlQyeTB2UkV5V29GUVNtblh0b3FGamdHSzF6ZW5qMzIK
+  onegate_auth: c2VydmVyYWRtaW46ZlQyeTB2UkV5V29GUVNtblh0b3FGamdHSzF6ZW5qMzIK
+  sunstone_auth: c2VydmVyYWRtaW46ZlQyeTB2UkV5V29GUVNtblh0b3FGamdHSzF6ZW5qMzIK
+---
+# Source: opennebula/templates/oned-secret.yaml
+kind: Secret
+metadata:
+  name: opennebula-ssh-keys
+  labels:
+    app: opennebula-ssh-keys
+  annotations:
+    "helm.sh/resource-policy": "keep"
+    "helm.sh/hook": "pre-install"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+apiVersion: v1
+data:
+  config: SG9zdCAqCkxvZ0xldmVsIEVSUk9SClN0cmljdEhvc3RLZXlDaGVja2luZyBubwpVc2VyS25vd25Ib3N0c0ZpbGUgL2Rldi9udWxsCkdTU0FQSUF1dGhlbnRpY2F0aW9uIG5vClVzZXIgb25lYWRtaW4K
+  id_rsa: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlKS0FJQkFBS0NBZ0VBNW54dVpXZUhKOWtHS1BuSTRueFRnaFhCMWZQbXhZWWZkM1lDSzFGV0s5dkFXdzdpCm83MGlRSUJEM3h3NnpHZThtS0taeWcvTjF4VHRXVWNXTmdrKzE5WlpOcklMY2JHK3NMTTZCYkVrRHJhajNEWG0KTS9Jbm1EVjEvVVNlU3l0N3Y1KzdYZlZjeDkzOXFESGNLWElKb1NlN242WU1KTHkxaWhrYzg4SExZZ28wTXpVawp0TFptNlJKKzhlTVVwbzd4cHZ3T0NaZGQ1c3JuRnBacW9ob0p2cW43a2F5VWE1YTRVdUROSXJSdzNzTTlWSFlnCkJSVkNIdTlsZWxjdUhXangvbkdSTU5kejhyYWxRYmxPZ1cycjU1TnB1bHdzNytQVVcxOW5sS0UwWUxad2dueFoKSmhrMzRxdjZObEFkMHI5WXJiczIzekRYeVVQUkt0RXBCbkF2ZkxMRXRlOU5QTjVlRmMxVm5mdHllUU54V2tvUgp3dVQwNkFBc0UvN3lsYTc4TGhFY2hiQzgyQTRyZ0lESDkrUkU5VFBBMnVMSVRkWVhqSFhNMmJVTWNyZXN5dG54CitIQm1SczVpV1J2MjR4Z3RvNjVPV09WazRDSEd0V0dBNFh2VERqRUc3T3o3WUpMVlc1WFpVTXJVYlhqZm5NY3IKSE40dUs2VVpPNDNOTnNvZGY4aVNOSkQyTVJ1M1FmMG40QVpiT2FEQ3U3cExwbWRUblZNbTIybjZKZFdsd2lOSwpqZkMvdDVEN0tOY24vNjArNFdCUUxhVlhkMHpCNlZDUXA2QWp3TnQxVVcyQ2MxOUUxWHE2UUMrdytnb1NWcU1XCmN6QmVTUnpnMFhmZ3d6WDhRME1CZTk4L3A1ejFiZ0U2R0xZZVpwZGNIUUFwNEFMb1dlS1BFbit4NzE4Q0F3RUEKQVFLQ0FnRUE0TldjOHpwc2M0aVhJNzJXSXFsWTVOcklmU2N4aEpsemRKc2ZQcFpYVXUxSTFRck9OeCsybStrRApURTlEWkVZRmlYZUVRY0hzNzlTd081akdwK3VZNi85aWc2Sm0yMytpSHNpVzN4cVBxL0txSVpSS2ZYM0k5Z2VnCmszRXVZUEdJQThPVGlQSmlrVzJSbFZNZUN5ZjlFTUdybXU3bGhhaTRCb0M4NTJPeVBHN3J3TkFrZ0V3MlUwSUIKcDMvMmt3dDUyNFNoUk9YdGFjZWdhVDVOd3RkWGpqQlBBU215bHNrdUFWcmRnTzgzODNYTkMrazNEdjVQdzlHUAowaW5kQ0Q5cFlPWHoxZ3MyUmh1NVZVV291VVQ4bmlnRXlSQkZuYlZIWCtMUExnT2JEb1NwZUFCSkRvc25JdXpVClpjcjliS25QblptMHl6L2dINnNTRFl4L1VwSjVIbmRtbkJScnJuZnQyQ3lPRWMvQ1ZOakFGM3N1Y09taXRaK0IKSDR6aUJ5czlJNkZnalZ2bmZaVWV3K3gyUEdDUHNVUjNqbUlsVm1iWG1NUUtDN0plUDNtTzdzYlBXM3owMnVyawo4cXB1dmxrRjFBd2xrbDJnVEhnSDZMVHRnUDdxRTBIdU0yVmtBcFBvL09HQnZNU1hLNzNrbktCdkpOUEg0a2lJCktlNGloY2JQakRuZ3ZvQ0xHbHJqaklseG56Z1JrNmtySitKMEVHSEtZR1Z6dW9LTGtwUTAxa1d2R1g1ZFZLQmEKOHV3ckU1WFJnNldWeG44cGtlUlhuMFNna1BFRTQ0QkdyOFlLc001MDVaZWh4SkE1cjk2ejNsdGZab3hJVnp6TgpqR1FWRDFJTkQySytTS3dyZUxhOVdpYjFWdlVzbmduSVBkVDFwM3c4RXVPQjQrZ1A4NEVDZ2dFQkFPOW1PYVZTCjRTRW5oNWZRWXZyYThSMlowK09rY2haTFlYc0tFQXZGSHZaLzdYYS9TWmZkUmpXcHZmbWR0UDJjTmpIL3FlTVYKb29tbHhPNTRvSm15UEFGMEFQN3dRZng5NHVldzhoT093ZGdhdUxQT1BnZWd6a0dnMXIwQXFxc0U3bU53VENZKwp1elAreUxQQ1lvUkpqVG1FUFVXUVpZc0VuUkxGc3Bua3J6d0dhdDB2ci9qMURJbm9yREV4OXNkT2tsSlZ1TTZOCmExM1FYV1NtRHVGakRYd2IyOGJsbEtOdHFSK21lY0ZOTnlpKzV2UEFMd1pIaEs1amFoSEJOWnBNVG95T1ZNTjUKOFdHUmxrMk45S1AxQ2dTYlV3dU56d0o2SzExb1lEOG5IcHhnbS9mV2gxTG93V2VXbEIveUlpeFU5eWVNMkpMRApvWnRYN0VHQm9pcFBIYUVDZ2dFQkFQWjMrcjVBQmVNRFlRM1lGR0ovbVNjQllzZXhsd2NjQll2UEp3OXZKc0dRCjZWWmtvOUVZYlFzRVNFODFEY1NJbDNWK2MzVHFUY1dIWllqdmZXMkw2S0NPZHdHREpCMk9Vd0R3TDFXYkJiMjcKQ3A4SXJTQWRwYjF2dTBYRnV2K2d5MEVzU0V3VHZjb2I5MnhUaUMyM0wrWDZUZ2owREh4K0lSRHZYQXZraXFBRQpONGtmR1VOaXI1b0dPM2hPOTBOS2QxcmNNMmhQd1NMcjVEVkFnMGE5NnNYVjRJVTd6ZGxCR1JCR095TlpjVnJMClBSbkJGSGsyYndER1V2enFPR3pzU281YTNaSSt6OURIdmJKY2U2ZU1MRWNXOS8rUGZUZkpUZ2MxdFdDcXc5eWQKcEZUSGxiMGFyWWVXa28yQTVjeEExVUl1djlCQTZjUzNRQTJOVXpTejdQOENnZ0VBWW5wcnRpMU12TVcxQ21kSApnQ2UyVGRYc2l0VW50VElYREhVTU9ydEF6R2U5ZUQ2aCtGMm10d1ozUm9wd1hHNzVBRUpLVVVhaUVQdG04aTRlCjZucWVJbjdrdGZxQk9tdFNmcnFVS2lWc2FnZzcrSU1ia3ltOER0VXA0Sis0bFJjM05TS0p3S1hIZmxFTm9KeVMKeUJZMWlQWnorZnkzT0tPU05abXJxWkNmNFJKR3ZXd1RlRmJkYkpHUTI3L1E0eFhZTFJSa0xGdVNVZ29Ya1FLYQpWbTdYcWprUGhGY0dlTi93VlR1M0ZDUStUMzJRSmE3bDZUQmNUUnhLRXJtbTRpMEhsdHdwMUN1Q2R2OWJrOVdVClVDbkprREdRek16dDNmZ0JoTEFkLzN5SkpBeTl2QXE4cWdkakg4aWFjRFc3aHY4QW1IMWd6YWE2QU52L0xNYzEKdlMvRVlRS0NBUUFaTGFLUTR1dDNDSFpXdXJkQ1pMU1psbnVuMk0yTDdXSG5xVzdkRmNiSXlXdjg1bVVSekVQLwpkeDJIOGV5SklrY091cTlDeDFqUWtBZGdXTTdnYlFXRHVXb1EzbnZIQlM0WGozSFdkZks5TWlsZ203dEw1NXR4CjRjTW8ybzFDNWdNOWtpK0VqaE82WE9jR3l2WERiYzVYMlIwMXJ2RERtd0wzdnV3UlR2U1dhamZlS3k0aWd5ZGIKUGIyL2labWE1eldRTTZTUXlHejdpMHVSNFJoSUZzaXdFeXhQa0E5MFhVRVpONE45RmZzTmdtdW9nTi85amdFQwovRCtvRktsVS8wS1NqbGZLUTk1by9xNnpWTjFRL1hIY2hVMHFiMWNrWnMwdzBWekpGa2pSOWN5KzJIREVrOEFjCmROWmQzRWdkZUpZUW44UDZtMWNHUUk0cmxEOW14K2F6QW9JQkFCK1RGTXg4N2J5N3hXMjYzYkZqMDFWQWdQa2wKVS95aFdFV014ZGNJVGlCUzNyMzd4N25SUW1PdzNMbUUrazV4eEcxOGtwbW5wdk9iaE0yOXZzd1F5Z1g1K29pZQpyejJ2cWk0TFNXZkFubUczTTFib2VnNUdES0wyVk1Sd3htczdSajZpdHRpSFVlRU9icXFtSHlvUzBDQ2wrazdpCmwrSTFHWTNCQXdpR2VqOWtDOTBYS3A3NlVxZ3VuZUkzZERUbjhpRmMvWitQZ05qNWN3Y1dKZjd0cnJpUFNsOFAKRHpBOVJxNnZzV3ZqMFNReEM3eStJTTB2NUthR3I1OE01RGk0c1VDRU45U2MybkdNRmlMYzFJVG9PT2hTbmZpRQo2eDhUdU1KLzJ5cXRGRGFWTTJldi8wTHlzK1Zjemg4WWFDTjVQM24xMWZoOWd6QUZ0Q2FXQTdUcVBrOD0KLS0tLS1FTkQgUlNBIFBSSVZBVEUgS0VZLS0tLS0K
+---
+# Source: opennebula/templates/oned-secret.yaml
+kind: Secret
+metadata:
+  name: opennebula-db-keys
+  labels:
+    app: opennebula-db-keys
+  annotations:
+    "helm.sh/resource-policy": "keep"
+    "helm.sh/hook": "pre-install"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+apiVersion: v1
+data:
+  mysqlPassword: UFBpcUJYZzZ4dm9vMGVMdTdFU2NkaWZzcVdQT0x6QTI=
+  mysqlRootPassword: eHFQTEVFajlMb1A1Mmszekw2TXBjd1VibXEwUXFUOVk=

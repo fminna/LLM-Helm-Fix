@@ -1,0 +1,179 @@
+---
+# Source: search/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-search
+  labels:
+    helm.sh/chart: search-1.1.1
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: search/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-search
+  labels:
+    helm.sh/chart: search-1.1.1
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: search
+      protocol: TCP
+      name: search
+  selector:
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+---
+# Source: search/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-search
+  labels:
+    helm.sh/chart: search-1.1.1
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: search
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: search
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-search
+      securityContext:
+        {}
+      containers:
+        - name: search
+          securityContext:
+            {}
+          image: "ghcr.io/formancehq/search:v0.1.0"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: OPEN_SEARCH_SCHEME
+            value: "http"
+          - name: OPEN_SEARCH_SERVICE
+            value: "opensearch:9200"
+          - name: ES_INDICES
+            value: "formance"
+          ports:
+            - name: search
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /_healthcheck
+              port: search
+          readinessProbe:
+            httpGet:
+              path: /_healthcheck
+              port: search
+          resources:
+            {}
+---
+# Source: search/templates/ingester_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "release-name-search-ingester"
+  labels:
+    helm.sh/chart: search-1.1.1
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1 # DO NOT change this value, benthos does not tolerate scaling
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: search
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: search
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-search
+      securityContext:
+        {}
+      containers:
+      - name: "release-name-search-ingester"
+        image: "ghcr.io/formancehq/search-ingester:v0.1.0"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KAFKA_TOPIC
+          value: "ledger,payments"
+        - name: KAFKA_ADDRESS
+          value: "kafka:9092"
+        - name: KAFKA_VERSION
+          value: "3.2.0"
+        - name: KAFKA_CONSUMER_GROUP
+          value: "search-ingester"
+        - name: OPENSEARCH_URL
+          value: "http://opensearch:9200"
+        - name: OPENSEARCH_INDEX
+          value: "formance"
+        - name: OPENSEARCH_TLS_ENABLED
+          value: "true"
+        - name: OPENSEARCH_TLS_SKIP_CERT_VERIFY
+          value: "true"
+        - name: OPENSEARCH_BASIC_AUTH_ENABLED
+          value: "true"
+        livenessProbe:
+          httpGet:
+            path: /_healthcheck
+            port: search
+        readinessProbe:
+          httpGet:
+            path: /_healthcheck
+            port: search
+        resources:
+            {}
+      initContainers:
+      - name: wait-for-search
+        image: bitnami/kubectl
+        args:
+          - wait
+          - "deployment/release-name-search"
+          - --for=condition=ready
+          - --timeout=120s
+---
+# Source: search/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-search-test-connection"
+  labels:
+    helm.sh/chart: search-1.1.1
+    app.kubernetes.io/name: search
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-search:80']
+  restartPolicy: Never

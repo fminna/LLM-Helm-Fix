@@ -1,0 +1,189 @@
+---
+# Source: pgbouncer/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    helm.sh/chart: pgbouncer-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+      app.kubernetes.io/instance: release-name
+---
+# Source: pgbouncer/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    helm.sh/chart: pgbouncer-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  pgbouncer.ini: |
+    [databases]
+    * = auth_user=pgbouncer dbname=pgbouncer 
+    [pgbouncer]
+    admin_users = pgbouncer
+    auth_file = /etc/pgbouncer/users.txt
+    auth_type = md5
+    default_pool_size = 100
+    ignore_startup_parameters = extra_float_digits
+    listen_addr = 0.0.0.0
+    listen_port = 5432
+    max_client_conn = 1500
+    pool_mode = session
+    server_idle_timeout = 600
+    server_reset_query = DISCARD ALL
+    stats_users = pgbouncer
+  users.txt: |
+    "pgbouncer" "pgbouncer"
+---
+# Source: pgbouncer/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    helm.sh/chart: pgbouncer-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: pgbouncer
+    - port: 9127
+      targetPort: 9127
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: pgbouncer
+    app.kubernetes.io/instance: release-name
+---
+# Source: pgbouncer/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    helm.sh/chart: pgbouncer-0.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/config: eff8da09772eb6dc0bbece26f06a533adf3d16b5f698a4374fdc9f483130e439
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9127"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/name: pgbouncer
+        helm.sh/chart: pgbouncer-0.2.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/affinity: pgbouncer
+    spec:
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-pgbouncer
+      containers:
+        - name: pgbouncer
+          image: "quay.io/evl.ms/pgbouncer:1.16.1"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          command:
+            - /usr/bin/pgbouncer
+          args:
+            - -upgbouncer
+            - /etc/pgbouncer/pgbouncer.ini
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+        - name: pgbouncer-exporter
+          image: "quay.io/evl.ms/pgbouncer-exporter:0.4.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9127
+          command:
+            - /pgbouncer_exporter
+          args:
+            - --pgBouncer.connectionString=postgres://pgbouncer:pgbouncer@127.0.0.1:5432/pgbouncer?sslmode=disable
+            - --web.listen-address=0.0.0.0:9127
+          livenessProbe:
+            httpGet:
+              port: 9127
+              path: /metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              port: 9127
+              path: /metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/affinity: pgbouncer
+          maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/affinity: pgbouncer
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway

@@ -1,0 +1,329 @@
+---
+# Source: barman/templates/secret-pgpass.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-barman-pgpass-secret
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+type: Opaque
+stringData:
+  .pgpass: |
+    postgresql:5432:*:postgres:postgres
+    postgresql:5432:*:barman:barman
+---
+# Source: barman/templates/configmap-barman-backups.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-barman-backups-config
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+data:
+  pg.conf: |
+      [pg]
+      active = true
+      description = "PostgreSQL Database (Streaming-Only)"
+      conninfo = host=postgresql user=postgres dbname=postgres
+      streaming_conninfo = host=postgresql user=barman
+      backup_method = postgres
+      streaming_archiver = on
+      slot_name = barman
+      last_backup_maximum_age = 1 day
+      retention_policy = RECOVERY WINDOW of 1 MONTH
+---
+# Source: barman/templates/configmap-barman-cron.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-barman-cron-config
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+data:
+  barman: |
+      * * * * * barman /usr/local/bin/barman cron
+      0 4 * * * barman /usr/local/bin/barman backup pg
+      # required by cron
+---
+# Source: barman/templates/configmap-barman.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-barman-global-config
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+data:
+  barman.conf: |
+      ; Commented lines show the default values
+      [barman]
+      ; archiver = off
+      backup_method = postgres
+      ; backup_directory = %(barman_home)s/%(name)s
+
+      backup_options = concurrent_backup
+
+      ; This must be set to the BARMAN_DATA_DIR environment variable
+      barman_home = /var/lib/barman
+
+      barman_user = barman
+      post_backup_retry_script = 
+      pre_recovery_retry_script = 
+
+      ; barman_lock_directory = %(barman_home)s
+      compression = gzip
+      configuration_files_directory = /etc/barman/barman.d
+      last_backup_maximum_age = 1 day
+      minimum_redundancy = 1
+      ;network_compression = true
+      retention_policy = RECOVERY WINDOW of 1 MONTH
+      ; retention_policy_mode = auto
+      ;reuse_backup = link
+      streaming_archiver = on
+      ; wal_retention_policy = main
+
+      ; use empty log_file for stderr output
+      log_file = ""
+      log_level = INFO
+---
+# Source: barman/templates/configmap-entrypoint.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-barman-entrypoint
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+
+    echo "Setting ownership/permissions on ${BARMAN_DATA_DIR} and ${BARMAN_LOG_DIR}"
+
+    install -d -m 0700 -o barman -g barman ${BARMAN_DATA_DIR}
+    install -d -m 0755 -o barman -g barman ${BARMAN_LOG_DIR}
+
+    chown -R barman:barman /var/lib/barman/recover
+
+    echo "Checking/Creating replication slot"
+    barman replication-status pg --minimal --target=wal-streamer | grep barman || barman receive-wal --create-slot pg
+    barman replication-status pg --minimal --target=wal-streamer | grep barman || barman receive-wal --reset pg
+    if [[ -f /home/barman/.ssh/id_rsa ]]; then
+        echo "Setting up Barman private key"
+        chmod 700 ~barman/.ssh
+        chown barman:barman -R ~barman/.ssh
+        chmod 600 ~barman/.ssh/id_rsa
+    fi
+
+    echo "Initializing done"
+
+    # run barman exporter every hour
+    exec /usr/local/bin/barman-exporter -l ${BARMAN_EXPORTER_LISTEN_ADDRESS}:${BARMAN_EXPORTER_LISTEN_PORT} -c ${BARMAN_EXPORTER_CACHE_TIME} &
+    echo "Started Barman exporter on ${BARMAN_EXPORTER_LISTEN_ADDRESS}:${BARMAN_EXPORTER_LISTEN_PORT}"
+
+    exec "$@"
+---
+# Source: barman/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-barman-config
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+data:
+  BARMAN_BACKUP_SCHEDULE: "0 4 * * *"
+---
+# Source: barman/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-barman-data
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+spec:
+  accessModes:
+  - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "20Gi"
+---
+# Source: barman/templates/prometheus/service-barman-exporter.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: barman-exporter
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9780
+      targetPort: 9780
+      protocol: TCP
+      name: prom-exporter
+  selector:
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+---
+# Source: barman/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-barman
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: barman
+      app.kubernetes.io/instance: release-name
+  strategy:
+    type: "RollingUpdate"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: barman-0.10.0
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/part-of: barman
+        app.kubernetes.io/version: "v2.19"
+        app.kubernetes.io/name: barman
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: barman
+          image: "ubcctlt/barman:v2.19"
+          imagePullPolicy: Always
+          # workaround for https://github.com/ubc/barman-docker/pull/4
+          command: ["tini", "--", "/entrypoint.sh"]
+          args: ["cron", "-L", "4", "-f"]
+          ports:
+            - name: prom-exporter
+              containerPort: 9780
+              protocol: TCP
+          
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - "HOME=/home/barman && cp /.pgpass $HOME/ && chown barman:barman $HOME/.pgpass && chmod 600 $HOME/.pgpass"
+          envFrom:
+            - configMapRef:
+                name: release-name-barman-config
+          volumeMounts:
+            - mountPath: /var/lib/barman
+              name: data
+              subPath: data
+            - mountPath: /var/lib/barman/recover
+              name: recover
+              subPath: recover
+            - mountPath: /etc/barman/barman.d
+              name: barman-backups-config
+            - mountPath: /etc/barman.conf
+              name: barman-global-config
+              subPath: barman.conf
+            - mountPath: /.pgpass
+              name: barman-pgpass-secret
+              subPath: .pgpass
+            - mountPath: /etc/cron.d/barman
+              name: barman-cron-config
+              subPath: barman
+            - mountPath: /entrypoint.sh
+              name: barman-entrypoint
+              subPath: entrypoint.sh
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-barman-data
+        - name: recover
+          emptyDir: {}
+        - name: barman-backups-config
+          configMap:
+            name: release-name-barman-backups-config
+        - name: barman-global-config
+          configMap:
+            name: release-name-barman-global-config
+        - name: barman-pgpass-secret
+          secret:
+            secretName: release-name-barman-pgpass-secret
+            defaultMode: 0600
+        - name: barman-cron-config
+          configMap:
+            name: release-name-barman-cron-config
+        - name: barman-entrypoint
+          configMap:
+            name: release-name-barman-entrypoint
+            defaultMode: 0775
+---
+# Source: barman/templates/prometheus/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-barman
+  labels:
+    helm.sh/chart: barman-0.10.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: barman
+    app.kubernetes.io/version: "v2.19"
+    app.kubernetes.io/name: barman
+    app.kubernetes.io/instance: release-name
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: barman
+      app.kubernetes.io/instance: release-name
+  endpoints:
+    - targetPort: 9780
+      interval: 30s
+      path: "/metrics"

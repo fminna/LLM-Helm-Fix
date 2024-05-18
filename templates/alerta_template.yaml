@@ -1,0 +1,287 @@
+---
+# Source: alerta/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.9.9
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  postgresql-password: "Y2hhbmdlbWU="
+---
+# Source: alerta/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-alerta
+  labels:
+    app: release-name-alerta
+    chart: "alerta-0.2.3"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  
+  alerta-admin-password: "TmJ0WHRYYnRsUQ=="
+---
+# Source: alerta/templates/configmap.yaml
+apiVersion: v1
+data:
+  alertad.conf: |
+    DATABASE_URL = "postgresql://alerta:changeme@release-name-postgresql:5432/monitoring"
+kind: ConfigMap
+metadata:
+  name: release-name-alerta
+  labels:
+    app: alerta
+    chart: alerta-0.2.3
+    release: release-name
+    heritage: Helm
+---
+# Source: alerta/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app: postgresql
+    chart: postgresql-8.9.9
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+---
+# Source: alerta/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.9.9
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+    role: master
+---
+# Source: alerta/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-alerta
+  labels:
+    app: alerta
+    chart: alerta-0.2.3
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: alerta
+    release: release-name
+---
+# Source: alerta/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-alerta
+  labels:
+    app: alerta
+    chart: alerta-0.2.3
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alerta
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: alerta
+        release: release-name
+      annotations:
+        checksum/config: fa1bdd2f7e5652315dc48a1cac082e15af43b53a3ec00aed0bd8f97e8358c7ad
+        checksum/secrets: 0084cc1f22246b8076722552364671c53852704b4afe85c93f53862228330c5e
+    spec:
+      containers:
+        - name: alerta
+          image: "alerta/alerta-web:8.5.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-alerta
+                  key: alerta-admin-password
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            exec:
+              command:
+                - alerta
+                - status
+            failureThreshold: 30
+            periodSeconds: 1
+          livenessProbe:
+            exec:
+              command:
+                - alerta
+                - status
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: [ "/bin/bash","-c","/bin/sleep 1; kill -QUIT 1" ]
+          volumeMounts:
+            - name: alerta-config
+              mountPath: /app/alertad.conf
+              subPath: alertad.conf
+          resources:
+            {}
+      volumes:
+        - name: alerta-config
+          configMap:
+            name: release-name-alerta
+---
+# Source: alerta/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.9.9
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: postgresql
+      release: "release-name"
+      role: master
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app: postgresql
+        chart: postgresql-8.9.9
+        release: "release-name"
+        heritage: "Helm"
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.8.0-debian-10-r4
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "alerta"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "monitoring"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "alerta" -d "monitoring" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "alerta" -d "monitoring" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"

@@ -1,0 +1,195 @@
+---
+# Source: webdav/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: httpd-conf
+data:
+  httpd.conf: |-
+    Listen 80
+    
+    LoadModule mpm_event_module modules/mod_mpm_event.so
+    LoadModule alias_module modules/mod_alias.so
+    LoadModule authn_core_module modules/mod_authn_core.so
+    LoadModule authn_file_module modules/mod_authn_file.so
+    LoadModule authz_core_module modules/mod_authz_core.so
+    LoadModule authz_user_module modules/mod_authz_user.so
+    LoadModule dav_module modules/mod_dav.so
+    LoadModule dav_fs_module modules/mod_dav_fs.so
+    
+    LoadModule unixd_module modules/mod_unixd.so
+    User www-data
+    Group www-data
+    
+    ErrorLog /proc/self/fd/2
+    LogLevel warn
+    Redirect gone /favicon.ico
+    RedirectMatch gone ^/apple-touch-icon
+    
+    LoadModule log_config_module modules/mod_log_config.so
+    LogFormat "%h %l %u %t \"%r\" %>s %b" common
+    CustomLog /proc/self/fd/1 common
+    
+    LoadModule mime_module modules/mod_mime.so
+    TypesConfig conf/mime.types
+    
+    LoadModule autoindex_module modules/mod_autoindex.so
+    Include conf/extra/httpd-autoindex.conf
+    
+    ServerRoot "/usr/local/apache2"
+    ServerName my-domain.com
+    ServerAdmin webmaster@localhost
+    
+    DocumentRoot "/usr/local/apache2/webdav"
+    <Directory "/usr/local/apache2/webdav">
+        Require all denied
+    </Directory>
+    
+    <Directory />
+        Options FollowSymLinks
+        AllowOverride none
+    </Directory>
+    
+    DavLockDB "/usr/local/apache2/var/DavLock"
+    
+    AddDefaultCharset UTF-8
+    IndexOptions Charset=UTF-8 NameWidth=*
+    
+    LoadModule auth_basic_module modules/mod_auth_basic.so
+    
+    # This lets certain DAV methods work behind an SSL reverse proxy.
+    LoadModule headers_module modules/mod_headers.so
+    RequestHeader edit Destination ^https http early
+    
+    # These disable redirects on non-GET requests for directories that
+    # don't include the trailing slash (for misbehaving clients).
+    LoadModule setenvif_module modules/mod_setenvif.so
+    BrowserMatch "Microsoft Data Access Internet Publishing Provider" redirect-carefully
+    BrowserMatch "MS FrontPage" redirect-carefully
+    BrowserMatch "^WebDrive" redirect-carefully
+    BrowserMatch "^WebDAVFS/1.[01234]" redirect-carefully
+    BrowserMatch "^gnome-vfs/1.0" redirect-carefully
+    BrowserMatch "^XML Spy" redirect-carefully
+    BrowserMatch "^Dreamweaver-WebDAV-SCM1" redirect-carefully
+    BrowserMatch " Konqueror/4" redirect-carefully
+---
+# Source: webdav/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: htpasswd
+data:
+---
+# Source: webdav/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: webdav
+  labels:
+    helm.sh/chart: webdav-0.0.7
+    app.kubernetes.io/name: webdav
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: webdav
+    app.kubernetes.io/instance: release-name
+---
+# Source: webdav/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webdav
+  labels:
+    helm.sh/chart: webdav-0.0.7
+    app.kubernetes.io/name: webdav
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: webdav
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: f9ee1ee82d26d74e92c373e54b6631eb3bbe8330ddfd9fe81078e723d1321769
+      labels:
+        app.kubernetes.io/name: webdav
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        fsGroup: 33
+      containers:
+        - name: webdav
+          securityContext:
+            capabilities:
+              add:
+              - SYS_ADMIN
+            privileged: true
+          image: "httpd:2.4"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash","-c"]
+          args:
+            - mkdir /usr/local/apache2/{webdav,var};
+              touch /usr/local/apache2/var/DavLock;
+              chown -R www-data:www-data /usr/local/apache2/webdav;
+              chown -R www-data:www-data /usr/local/apache2/var;
+              httpd-foreground
+          volumeMounts:
+            - name: httpd-conf
+              mountPath: /usr/local/apache2/conf/httpd.conf
+              subPath: httpd.conf
+            - name: htpasswd
+              mountPath: /usr/local/apache2/htpasswd.d/generated
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            {}
+      volumes:
+        - name: httpd-conf
+          configMap:
+            name: httpd-conf
+            defaultMode: 0644
+        - name: htpasswd
+          configMap:
+            name: htpasswd
+            defaultMode: 0644
+---
+# Source: webdav/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webdav
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1000m
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: my-domain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webdav
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - my-domain.com
+    secretName: webdav-tls-secret

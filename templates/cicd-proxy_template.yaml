@@ -1,0 +1,252 @@
+---
+# Source: cicd-proxy/templates/serviceaccounts/cicd-proxy.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  creationTimestamp:
+  name: cicd-proxy-release-name
+  namespace: default
+  labels:
+    app: kube-oidc-proxy-release-name
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicd-proxy-release-name
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: cicd-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+---
+# Source: cicd-proxy/templates/configmaps/namespace-holder.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: namespace-holder
+  namespace: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+data:
+  namespace: "default"
+---
+# Source: cicd-proxy/templates/clusterroles/impersonator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: impersonator-default-release-name
+  labels:
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicd-proxy-release-name
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: cicd-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+rules:
+
+- apiGroups:
+  - ""
+  resources:
+  - groups
+  verbs:
+  - impersonate
+  resourceNames:
+  - "system:authenticated"
+  
+
+- apiGroups:
+  - "authentication.k8s.io"
+  resources:
+  - "userextras/scopes"
+  - "userextras/remote-client-ip"
+  - "tokenreviews"
+  # to support end user impersonation
+  - "userextras/originaluser.jetstack.io-user"
+  - "userextras/originaluser.jetstack.io-groups"
+  - "userextras/originaluser.jetstack.io-extra"
+  verbs:
+  - "create"
+  - "impersonate"
+- apiGroups: 
+  - "authorization.k8s.io"
+  resources:
+  - "subjectaccessreviews"
+  verbs:
+  - "create"
+---
+# Source: cicd-proxy/templates/clusterrolebindings/impersonator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: impersonator-default-release-name
+  labels:
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicd-proxy-release-name
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: cicd-proxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: impersonator-default-release-name
+subjects:
+- kind: ServiceAccount
+  name: cicd-proxy-release-name
+  namespace: default
+---
+# Source: cicd-proxy/templates/services/kube-oidc-proxy.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    app: kube-oidc-proxy-release-name
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicd-proxy-release-name
+    app.kubernetes.io/component: kube-oidc-proxy
+    app.kubernetes.io/part-of: cicd-proxy
+  name: kube-oidc-proxy-release-name
+  namespace: default
+  
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 8443
+    name: https-kube-oidc-proxy
+  - port: 80
+    protocol: TCP
+    targetPort: 8443
+    name: http-8080-oidc-proxy
+  selector:
+    app: kube-oidc-proxy-release-name
+  type: "ClusterIP"
+---
+# Source: cicd-proxy/templates/deployments/kube-oidc-proxy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: kube-oidc-proxy-release-name
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicd-proxy-release-name
+    app.kubernetes.io/component: kube-oidc-proxy
+    app.kubernetes.io/part-of: cicd-proxy
+  name: kube-oidc-proxy-release-name
+  namespace: default
+  
+  annotations:
+    argocd.argoproj.io/sync-wave: "40"
+  
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-oidc-proxy-release-name
+  template:
+    metadata:
+      labels:
+        app: kube-oidc-proxy-release-name
+        app.kubernetes.io/name: cicd-proxy
+        app.kubernetes.io/instance: cicd-proxy-release-name
+        app.kubernetes.io/component: kube-oidc-proxy
+        
+    spec:
+      serviceAccountName: cicd-proxy-release-name
+      containers:
+      - image: docker.io/tremolosecurity/kube-oidc-proxy:latest
+        ports:
+        - containerPort: 8443
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        name: kube-oidc-proxy-release-name
+        command: ["kube-oidc-proxy"]
+        args:
+          - "--secure-port=8443"
+          - "--tls-cert-file=/etc/oidc/tls/crt.pem"
+          - "--tls-private-key-file=/etc/oidc/tls/key.pem"
+          - "--oidc-client-id="
+          - "--oidc-issuer-url=https://"
+          - "--oidc-username-claim=sub"
+          
+          
+          - "--oidc-ca-file=/etc/ssl/certs/ca-certificates.crt"
+          
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "all"
+        volumeMounts:
+          
+          - name: kube-oidc-proxy-tls
+            mountPath: /etc/oidc/tls
+            readOnly: true
+          
+        
+      volumes:
+        
+        
+        - name: kube-oidc-proxy-tls
+          secret:
+            secretName: kube-oidc-proxy-tls
+            items:
+            - key: tls.crt
+              path: crt.pem
+            - key: tls.key
+              path: key.pem
+      
+      
+      nodeSelector: {}
+      
+
+      
+      automountServiceAccountToken: true
+      
+      securityContext:
+        fsGroup: 10001
+        supplementalGroups: [10001]
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+---
+# Source: cicd-proxy/templates/ingress/nginx.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+    nginx.ingress.kubernetes.io/backend-protocol: https
+    nginx.ingress.kubernetes.io/secure-backends: 'true'
+    nginx.org/ssl-services: kube-oidc-proxy-release-name
+    kubernetes.io/ingress.class: nginx
+    
+  name: cicdproxy-release-name
+  namespace: default
+  labels:
+    app.kubernetes.io/name: cicd-proxy
+    app.kubernetes.io/instance: cicdproxy-release-name
+    app.kubernetes.io/component: ingress-nginx
+    app.kubernetes.io/part-of: cicd-proxy
+spec:
+  rules:
+  
+  - host: 
+    http:
+      paths:
+      - backend:
+          service:
+            name: kube-oidc-proxy-release-name
+            port:
+              number: 443
+        path: "/"
+        pathType: Prefix
+  tls:
+  - hosts:
+    - 
+    secretName: cicd-proxy-tls-certificate

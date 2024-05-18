@@ -1,0 +1,153 @@
+---
+# Source: bucket-backup-restore/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-bucket-backup-restore
+  labels:
+    helm.sh/chart: bucket-backup-restore-0.1.0
+    app.kubernetes.io/name: bucket-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: bucket-backup-restore/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-bucket-backup-restore
+  namespace: default
+  labels:
+    helm.sh/chart: bucket-backup-restore-0.1.0
+    app.kubernetes.io/name: bucket-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  aws_access_key_id: "IiI="
+  aws_secret_access_key: "IiI="
+  rclone: |
+---
+# Source: bucket-backup-restore/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "release-name"
+  labels:
+    helm.sh/chart: bucket-backup-restore-0.1.0
+    app.kubernetes.io/name: bucket-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 11 * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: "Forbid"
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 43200 # 12 hour
+      template:
+        metadata:
+          annotations:
+            checksum/secret: d4226f00c87ff13b586307db2f6114e4d05da65dc402f07be52b167a4ecae6e6
+        spec:
+          serviceAccountName: release-name-bucket-backup-restore
+          restartPolicy: Never
+          containers:
+          - name: bucket-backup-restore
+            image: "abohatyrenko/bucket-backup-restore:"
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-bucket-backup-restore
+                    key: aws_access_key_id
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-bucket-backup-restore
+                    key: aws_secret_access_key
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+            command:
+            - /bin/bash
+            - -c
+            - --
+            args:
+            - /bin/echo 'choose script' && ls -lah /opt/ &&  /bin/sleep 15
+            volumeMounts:
+              - name: rclone-config
+                mountPath: /root/.config/rclone
+                readOnly: true
+          volumes:
+            - name: rclone-config
+              secret:
+                secretName: release-name-bucket-backup-restore
+                # 420 => 0644 permissions
+                defaultMode: 420
+                items:
+                  - key: rclone
+                    path: rclone.conf
+---
+# Source: bucket-backup-restore/templates/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-notification-install"
+  labels:
+    helm.sh/chart: bucket-backup-restore-0.1.0
+    app.kubernetes.io/name: bucket-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install, post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation, hook-succeeded
+spec:
+  activeDeadlineSeconds: 60
+  template:
+    metadata:
+      annotations:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: slack-notification
+        image: curlimages/curl
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: ['curl -X POST --data-urlencode "payload={\"channel\": \"\", \"text\": \" release-name  deployed to default \"}" ']
+---
+# Source: bucket-backup-restore/templates/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-notification-rollback"
+  labels:
+    helm.sh/chart: bucket-backup-restore-0.1.0
+    app.kubernetes.io/name: bucket-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-rollback
+    "helm.sh/hook-delete-policy": before-hook-creation, hook-succeeded
+spec:
+  activeDeadlineSeconds: 60
+  template:
+    metadata:
+      annotations:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: slack-notification
+        image: curlimages/curl
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: ['curl -X POST --data-urlencode "payload={\"channel\": \"\", \"text\": \" release-name  rollback default \"}" ']

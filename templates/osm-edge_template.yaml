@@ -1,0 +1,881 @@
+---
+# Source: osm-edge/templates/osm-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+---
+# Source: osm-edge/templates/preset-mesh-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: preset-mesh-config
+  namespace: default
+data:
+  preset-mesh-config.json: |
+    {
+      "clusterSet": {
+        "properties": []
+      },
+      "sidecar": {
+        "enablePrivilegedInitContainer": false,
+        "logLevel": "error",
+        "maxDataPlaneConnections": 0,
+        "configResyncInterval": "90s",
+        "sidecarTimeout": 60,
+        "sidecarClass": "pipy",
+        "sidecarImage": "",
+        "sidecarDrivers": [{"proxyServerPort":6060,"sidecarImage":"flomesh/pipy:0.90.3-38","sidecarName":"pipy"},{"proxyServerPort":15128,"sidecarImage":"envoyproxy/envoy:v1.19.3","sidecarName":"envoy","sidecarWindowsImage":"envoyproxy/envoy-windows:latest"}],
+        "localProxyMode": "Localhost",
+        "localDNSProxy": {"enable":false}
+      },
+      "traffic": {
+        "interceptionMode": "iptables",
+        "enableEgress": true,
+        "enablePermissiveTrafficPolicyMode": true,
+        "http1PerRequestLoadBalancing": false,
+        "http2PerRequestLoadBalancing": true,
+        "outboundPortExclusionList": [],
+        "inboundPortExclusionList": [],
+        "outboundIPRangeExclusionList": [],
+        "outboundIPRangeInclusionList": [],
+        "networkInterfaceExclusionList": []
+      },
+      "observability": {
+        "enableDebugServer": false,
+        "osmLogLevel": "info",
+        "tracing": {
+          "enable": false
+        },
+        "remoteLogging": {
+          "enable": false
+        }
+      },
+      "certificate": {
+        "serviceCertValidityDuration": "24h",
+        "certKeyBitSize": 2048
+      },
+      "repoServer": {
+        "ipaddr": "127.0.0.1",
+        "codebase": ""
+      },
+      "featureFlags": {
+        "enableWASMStats": false,
+        "enableEgressPolicy": true,
+        "enableSnapshotCacheMode": false,
+        "enableAsyncProxyServiceMapping": false,
+        "enableIngressBackendPolicy": true,
+        "enableAccessControlPolicy": false,
+        "enableAccessCertPolicy": false,
+        "enableSidecarActiveHealthChecks": false,
+        "enableRetryPolicy": false,
+        "enablePluginPolicy": false
+      },
+      "pluginChains": {"inbound-http":[{"plugin":"modules/inbound-tls-termination","priority":180},{"plugin":"modules/inbound-http-routing","priority":170},{"plugin":"modules/inbound-metrics-http","priority":160},{"plugin":"modules/inbound-tracing-http","priority":150},{"plugin":"modules/inbound-logging-http","priority":140},{"plugin":"modules/inbound-throttle-service","priority":130},{"plugin":"modules/inbound-throttle-route","priority":120},{"plugin":"modules/inbound-http-load-balancing","priority":110},{"plugin":"modules/inbound-http-default","priority":100}],"inbound-tcp":[{"disable":false,"plugin":"modules/inbound-tls-termination","priority":130},{"disable":false,"plugin":"modules/inbound-tcp-routing","priority":120},{"disable":false,"plugin":"modules/inbound-tcp-load-balancing","priority":110},{"disable":false,"plugin":"modules/inbound-tcp-default","priority":100}],"outbound-http":[{"plugin":"modules/outbound-http-routing","priority":160},{"plugin":"modules/outbound-metrics-http","priority":150},{"plugin":"modules/outbound-tracing-http","priority":140},{"plugin":"modules/outbound-logging-http","priority":130},{"plugin":"modules/outbound-circuit-breaker","priority":120},{"plugin":"modules/outbound-http-load-balancing","priority":110},{"plugin":"modules/outbound-http-default","priority":100}],"outbound-tcp":[{"plugin":"modules/outbound-tcp-routing","priority":120},{"plugin":"modules/outbound-tcp-load-balancing","priority":110},{"plugin":"modules/outbound-tcp-default","priority":100}]}
+    }
+---
+# Source: osm-edge/templates/osm-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints", "namespaces", "pods", "services", "secrets", "configmaps", "serviceaccounts"]
+    verbs: ["list", "get", "watch"]
+
+  # Port forwarding is needed for the OSM pod to be able to connect
+  # to participating Envoys and fetch their configuration.
+  # This is used by the OSM debugging system.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/portforward"]
+    verbs: ["get", "list", "create"]
+
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["config.openservicemesh.io"]
+    resources: ["meshconfigs", "meshrootcertificates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["config.openservicemesh.io"]
+    resources: ["meshrootcertificates/status"]
+    verbs: ["update"]
+  - apiGroups: ["split.smi-spec.io"]
+    resources: ["trafficsplits"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["access.smi-spec.io"]
+    resources: ["traffictargets"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["specs.smi-spec.io"]
+    resources: ["httproutegroups", "tcproutes"]
+    verbs: ["list", "get", "watch"]
+
+  # OSM's custom policy API
+  - apiGroups: ["policy.openservicemesh.io"]
+    resources: ["egresses", "egressgateways", "ingressbackends", "accesscontrols", "accesscerts", "retries", "upstreamtrafficsettings"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["policy.openservicemesh.io"]
+    resources: ["ingressbackends/status", "accesscontrols/status", "accesscerts/status", "upstreamtrafficsettings/status"]
+    verbs: ["update"]
+
+  # FSM's custom resource API
+  - apiGroups: ["flomesh.io"]
+    resources: ["serviceexports", "serviceimports", "globaltrafficpolicies"]
+    verbs: ["list", "get", "watch"]
+
+  # OSM Edge's custom plugin API
+  - apiGroups: ["plugin.flomesh.io"]
+    resources: ["plugins", "pluginchains", "pluginconfigs"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: ["plugin.flomesh.io"]
+    resources: ["plugins/status", "pluginchains/status", "pluginconfigs/status"]
+    verbs: ["update"]
+
+  # Used for interacting with cert-manager CertificateRequest resources.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests"]
+    verbs: ["list", "get", "watch", "create", "delete"]
+---
+# Source: osm-edge/templates/osm-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+subjects:
+  - kind: ServiceAccount
+    name: release-name
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: osm-edge/templates/osm-bootstrap-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: osm-bootstrap
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-bootstrap
+spec:
+  ports:
+    - name: crdconversion
+      port: 9443
+    - name: health
+      port: 9091
+  selector:
+    app: osm-bootstrap
+---
+# Source: osm-edge/templates/osm-injector-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: osm-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-injector
+spec:
+  ports:
+    - name: sidecar-inject
+      port: 9090
+  selector:
+    app: osm-injector
+---
+# Source: osm-edge/templates/osm-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: osm-controller
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-controller
+spec:
+  ports:
+    - name: pipy-admin-port
+      port: 6060
+      targetPort: 6060
+    - name: debug-port
+      port: 9092
+      targetPort: 9092
+    - name: healthz
+      port: 9091
+      targetPort: 9091
+  selector:
+    app: osm-controller
+---
+# Source: osm-edge/templates/osm-validator-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: osm-validator
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-controller
+spec:
+  ports:
+    - name: validator
+      port: 9093
+      targetPort: 9093
+  selector:
+    app: osm-controller
+---
+# Source: osm-edge/templates/osm-bootstrap-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osm-bootstrap
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-bootstrap
+    meshName: osm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osm-bootstrap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openservicemesh.io
+        app.kubernetes.io/instance: osm
+        app.kubernetes.io/version: 1.3.9
+        app: osm-bootstrap
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9091'
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - osm-bootstrap
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      priorityClassName: system-node-critical
+      serviceAccountName: release-name
+      securityContext:
+          runAsUser: 1000
+          runAsGroup: 3000
+          fsGroup: 2000
+          supplementalGroups: [5555]
+      containers:
+        - name: osm-bootstrap
+          image: "flomesh/osm-edge-bootstrap:1.3.9"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: "crdconversion"
+              containerPort: 9443
+            - name: "metrics"
+              containerPort: 9091
+          command: ['/osm-bootstrap']
+          args: [
+            "--verbosity", "info",
+            "--osm-namespace", "default",
+            "--osm-version", "1.3.9",
+            "--ca-bundle-secret-name", "osm-ca-bundle",
+            "--certificate-manager", "tresor",
+            "--trust-domain", "cluster.local",
+            "--enable-mesh-root-certificate=false",
+            
+            "--cert-manager-issuer-name", "osm-ca",
+            "--cert-manager-issuer-kind", "Issuer",
+            "--cert-manager-issuer-group", "cert-manager.io",
+            "--enable-reconciler=false",
+          ]
+          resources:
+            limits:
+              cpu: "0.5"
+              memory: "128M"
+            requests:
+              cpu: "0.3"
+              memory: "128M"
+          readinessProbe:
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: 9091
+          livenessProbe:
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: 9091
+          env:
+            # The BOOTSTRAP_POD_NAME env variable sets pod name dynamically, used by osm-bootstrap to register events
+            - name: BOOTSTRAP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+---
+# Source: osm-edge/templates/osm-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osm-controller
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-controller
+    meshName: osm
+    enforceSingleMesh: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osm-controller
+      codebase: ""
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openservicemesh.io
+        app.kubernetes.io/instance: osm
+        app.kubernetes.io/version: 1.3.9
+        app: osm-controller
+        codebase: ""
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9091'
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - osm-controller
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      priorityClassName: system-node-critical
+      serviceAccountName: release-name
+      securityContext:
+          runAsUser: 1000
+          runAsGroup: 3000
+          fsGroup: 2000
+          supplementalGroups: [5555]
+      initContainers:
+        - name: init-osm-controller
+          image: curlimages/curl
+          command: ["curl", "http://osm-bootstrap.default.svc.cluster.local:9091/healthz", "--connect-timeout", "2", "--retry", "50", "--retry-connrefused", "--retry-delay", "5"]
+      containers:
+        - name: osm-pipy-repo
+          image: flomesh/pipy-repo:0.90.3-38
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: "pipy-admin-port"
+              containerPort: 6060
+          command: ['pipy']
+          args: [
+              "--admin-port=6060",
+          ]
+          readinessProbe:
+            initialDelaySeconds: 1
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /
+              port: 6060
+          livenessProbe:
+            initialDelaySeconds: 1
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /
+              port: 6060
+        - name: osm-controller
+          image: "flomesh/osm-edge-controller:1.3.9"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: "admin-port"
+              containerPort: 15000
+            - name: "metrics"
+              containerPort: 9091
+          command: ['/osm-controller']
+          args: [
+            "--verbosity", "info",
+            "--osm-namespace", "default",
+            "--osm-version", "1.3.9",
+            "--osm-service-account", "release-name",
+            "--mesh-name", "osm",
+            "--validator-webhook-config", "osm-validator-mesh-osm",
+            "--ca-bundle-secret-name", "osm-ca-bundle",
+            "--certificate-manager", "tresor",
+            "--trust-domain", "cluster.local",
+            "--enable-mesh-root-certificate=false",
+            
+            "--cert-manager-issuer-name", "osm-ca",
+            "--cert-manager-issuer-kind", "Issuer",
+            "--cert-manager-issuer-group", "cert-manager.io",
+            "--enable-reconciler=false",
+            "--validate-traffic-target=true",
+          ]
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: "1G"
+            requests:
+              cpu: "0.5"
+              memory: "128M"
+          readinessProbe:
+            initialDelaySeconds: 1
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /health/ready
+              port: 9091
+          livenessProbe:
+            initialDelaySeconds: 1
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /health/alive
+              port: 9091
+          env:
+            # The CONTROLLER_POD_NAME env variable sets pod name dynamically, used by osm-controller to register events
+            - name: CONTROLLER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OSM_DEFAULT_SIDECAR_CLASS
+              value: "pipy"
+---
+# Source: osm-edge/templates/osm-injector-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osm-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+    app: osm-injector
+    meshName: osm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osm-injector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openservicemesh.io
+        app.kubernetes.io/instance: osm
+        app.kubernetes.io/version: 1.3.9
+        app: osm-injector
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9091'
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - osm-injector
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      priorityClassName: system-node-critical
+      serviceAccountName: release-name
+      securityContext:
+          runAsUser: 1000
+          runAsGroup: 3000
+          fsGroup: 2000
+          supplementalGroups: [5555]
+      initContainers:
+        - name: init-osm-injector
+          image: curlimages/curl
+          command: ["curl", "http://osm-bootstrap.default.svc.cluster.local:9091/healthz", "--connect-timeout", "2", "--retry", "50", "--retry-connrefused", "--retry-delay", "5"]
+      containers:
+        - name: osm-injector
+          image: "flomesh/osm-edge-injector:1.3.9"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: "sidecar-inject"
+              containerPort: 9090
+            - name: "metrics"
+              containerPort: 9091
+          command: ['/osm-injector']
+          args: [
+            "--verbosity", "info",
+            "--osm-namespace", "default",
+            "--osm-version", "1.3.9",
+            "--mesh-name", "osm",
+            "--webhook-config-name", "osm-webhook-osm",
+            "--webhook-timeout", "20",
+            "--ca-bundle-secret-name", "osm-ca-bundle",
+            "--certificate-manager", "tresor",
+            "--trust-domain", "cluster.local",
+            "--enable-mesh-root-certificate=false",
+            
+            "--cert-manager-issuer-name", "osm-ca",
+            "--cert-manager-issuer-kind", "Issuer",
+            "--cert-manager-issuer-group", "cert-manager.io",
+            "--enable-reconciler=false",
+            "--osm-container-pull-policy=IfNotPresent",
+          ]
+          resources:
+            limits:
+              cpu: "0.5"
+              memory: "64M"
+            requests:
+              cpu: "0.3"
+              memory: "64M"
+          readinessProbe:
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: 9091
+          livenessProbe:
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: 9091
+          env:
+            - name: CONTROLLER_SVC_NAME
+              value: osm-controller
+            # The INJECTOR_POD_NAME env variable sets pod name dynamically, used by osm-injector to register events
+            - name: INJECTOR_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OSM_DEFAULT_SIDECAR_CLASS
+              value: "pipy"
+            - name: OSM_DEFAULT_SIDECAR_IMAGE
+              value: ""
+            - name: OSM_DEFAULT_SIDECAR_WINDOWS_IMAGE
+              value: ""
+            - name: OSM_DEFAULT_INIT_CONTAINER_IMAGE
+              value: 'flomesh/osm-edge-sidecar-init:1.3.9'
+            - name: OSM_DEFAULT_HEALTHCHECK_CONTAINER_IMAGE
+              value: 'flomesh/osm-edge-healthcheck:1.3.9'
+---
+# Source: osm-edge/templates/cleanup-hook.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-cleanup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: post-delete
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+# Source: osm-edge/templates/preinstall-hook.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-preinstall
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+# Source: osm-edge/templates/cleanup-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-cleanup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: post-delete
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["config.openservicemesh.io"]
+    resources: ["meshconfigs"]
+    verbs: ["delete"]
+  - apiGroups: [ "" ]
+    resources: [ "secrets"]
+    verbs: ["delete"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "create", "delete", "update", "patch"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+# Source: osm-edge/templates/preinstall-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-preinstall
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list"]
+---
+# Source: osm-edge/templates/cleanup-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-cleanup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: post-delete
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: release-name-cleanup
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-cleanup
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: osm-edge/templates/preinstall-hook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-preinstall
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: release-name-preinstall
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-preinstall
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: osm-edge/templates/cleanup-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-cleanup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: post-delete
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: release-name-cleanup
+      labels:
+        app.kubernetes.io/name: openservicemesh.io
+        app.kubernetes.io/instance: osm
+        app.kubernetes.io/version: 1.3.9
+    spec:
+      serviceAccountName: release-name-cleanup
+      restartPolicy: Never
+      containers:
+        # NOTE: The Helm post-delete hook's garbage-collector should always match the deletion logic in the osm cli command `osm uninstall cluster-wide-resources`.
+        - name: garbage-collector
+          image: "flomesh/osm-edge-crds:1.3.9"
+          imagePullPolicy: IfNotPresent
+          # NOTE: any changes to resources being cleaned up should be updated in the lists/commands in the uninstall guide (https://github.com/openservicemesh/osm-docs/blob/main/content/docs/guides/uninstall.md#uninstall-osm-control-plane-and-remove-user-provided-resources) and the uninstall troubleshooting guide (https://github.com/openservicemesh/osm-docs/blob/main/content/docs/guides/troubleshooting/uninstall.md)
+          command:
+            - sh
+            - -c
+            - >
+             kubectl replace -f /osm-crds;
+             kubectl delete --ignore-not-found meshconfig -n 'default' osm-mesh-config;
+             kubectl delete --ignore-not-found secret -n 'default' osm-ca-bundle;
+             kubectl delete --ignore-not-found meshrootcertificate -n 'default' osm-mesh-root-certificate;
+             kubectl delete mutatingwebhookconfiguration -l app.kubernetes.io/name=openservicemesh.io,app.kubernetes.io/instance=osm,app.kubernetes.io/version=1.3.9,app=osm-injector --ignore-not-found;
+             kubectl delete validatingwebhookconfiguration -l app.kubernetes.io/name=openservicemesh.io,app.kubernetes.io/instance=osm,app.kubernetes.io/version=1.3.9,app=osm-controller --ignore-not-found;
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+---
+# Source: osm-edge/templates/preinstall-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-preinstall
+  namespace: default
+  labels:
+    app.kubernetes.io/name: openservicemesh.io
+    app.kubernetes.io/instance: osm
+    app.kubernetes.io/version: 1.3.9
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      name: release-name-preinstall
+      labels:
+        app.kubernetes.io/name: openservicemesh.io
+        app.kubernetes.io/instance: osm
+        app.kubernetes.io/version: 1.3.9
+    spec:
+      serviceAccountName: release-name-preinstall
+      restartPolicy: Never
+      containers:
+        - name: preinstall
+          image: "flomesh/osm-edge-preinstall:1.3.9"
+          imagePullPolicy: IfNotPresent
+          command: ['/osm-preinstall']
+          args:
+            - --verbosity=info
+            - --enforce-single-mesh=true
+            - --namespace=default
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64

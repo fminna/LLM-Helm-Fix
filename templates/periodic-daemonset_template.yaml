@@ -1,0 +1,229 @@
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-periodic-daemonset-controller
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-periodic-daemonset-job
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: periodic-daemonset/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-periodic-daemonset
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  job.yaml: |-
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: release-name-periodic-daemonset-<<NODE_NAME>>
+      labels:
+        app.kubernetes.io/name: periodic-daemonset
+        helm.sh/chart: periodic-daemonset-2.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/node-name: <<NODE_NAME>>
+        app.kubernetes.io/component: job
+    spec:
+      ttlSecondsAfterFinished: 60
+      template:
+        metadata:
+          name: release-name-periodic-daemonset-<<NODE_NAME>>
+          labels:
+            app.kubernetes.io/name: periodic-daemonset
+            helm.sh/chart: periodic-daemonset-2.0.0
+            app.kubernetes.io/instance: release-name
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/node-name: <<NODE_NAME>>
+            app.kubernetes.io/component: job
+        spec:
+          serviceAccountName: release-name-periodic-daemonset-job
+          restartPolicy: Never
+          nodeName: <<NODE_NAME>>
+          tolerations:
+          - operator: "Exists"
+          containers:
+          - args:
+            - echo "Hello world"
+            command:
+            - /bin/sh
+            - -c
+            image: alpine:latest
+            imagePullPolicy: Always
+            name: hello-world
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-periodic-daemonset-job
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: release-name-periodic-daemonset-job
+  namespace: default
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-periodic-daemonset-controller
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: ["batch"]
+  resources: ["job"]
+  verbs: ["create","delete","list","get"]
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-periodic-daemonset-controller
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-periodic-daemonset-controller
+subjects:
+- kind: ServiceAccount
+  name: release-name-periodic-daemonset-controller
+  namespace: default
+
+###############################################################################
+# Controller                                                                  #
+###############################################################################
+---
+# Source: periodic-daemonset/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-periodic-daemonset
+  labels:
+    app.kubernetes.io/name: periodic-daemonset
+    helm.sh/chart: periodic-daemonset-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  concurrencyPolicy: Forbid
+  schedule: "*/3 * * * *"
+  jobTemplate:
+    metadata:
+      name: release-name-periodic-daemonset-controller
+      labels:
+        app.kubernetes.io/name: periodic-daemonset
+        helm.sh/chart: periodic-daemonset-2.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: controller
+    spec:
+      ttlSecondsAfterFinished: 60
+      template:
+        metadata:
+          name: release-name-periodic-daemonset-controller
+          labels:
+            app.kubernetes.io/name: periodic-daemonset
+            helm.sh/chart: periodic-daemonset-2.0.0
+            app.kubernetes.io/instance: release-name
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/component: controller
+        spec:
+          serviceAccountName: release-name-periodic-daemonset-controller
+          restartPolicy: Never
+          volumes:
+            - name: jobspec
+              configMap:
+                name: release-name-periodic-daemonset
+                optional: false
+          containers:
+            - name: controller
+              image: bitnami/kubectl:latest
+              imagePullPolicy: Always
+              volumeMounts:
+                - name: jobspec
+                  mountPath: /etc/periodic-daemonset-data
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |-
+                  
+                  NODE_COUNT=0
+                  for node in $(kubectl get node -o jsonpath='{ range .items[*] }{.metadata.name }{" "}{ end }')
+                  do
+                    printf "Scheduling JOB on node %s\n" "$node"
+                    sed -e "s/<<NODE_NAME>>/$node/g" < /etc/periodic-daemonset-data/job.yaml
+                    sed -e "s/<<NODE_NAME>>/$node/g" < /etc/periodic-daemonset-data/job.yaml | kubectl apply -f -
+                    NODE_COUNT=$(( NODE_COUNT + 1 ))
+                  done
+                  
+                  TIMEOUT=600
+                  while true
+                  do
+                    COMPLETIONS=0
+                    for job in $(kubectl -n default get jobs --selector="app.kubernetes.io/name=periodic-daemonset,app.kubernetes.io/instance=release-name,app.kubernetes.io/component=job" -o jsonpath='{ range .items[*] }{.metadata.name }{" "}{ end }')
+                    do
+                      printf "Job instance %s\n" "$job"
+                      if [ -z "$(kubectl -n default get job $job -o jsonpath='{.status.completionTime}')" ]
+                      then
+                        printf "NOT FINISHED\n"
+                      else
+                        COMPLETIONS=$(( COMPLETIONS + 1 ))
+                      fi
+                    done
+                  
+                    TIMEOUT=$(( TIMEOUT - 1 ))
+                    if [ $COMPLETIONS -eq $NODE_COUNT ]
+                    then
+                      printf "Jobs terminated\n"
+                      break
+                    fi
+                    if [ $TIMEOUT -eq 0 ]
+                    then
+                      printf "timed out!\n"
+                      exit 1
+                    fi
+                  done
+                  
+                  printf "Cleaning up...\n"
+                  kubectl -n default delete jobs,pods --selector="app.kubernetes.io/name=periodic-daemonset,app.kubernetes.io/instance=release-name,app.kubernetes.io/component=job"
+---
+# Source: periodic-daemonset/templates/rbac.yaml
+###############################################################################
+# Controller                                                                  #
+###############################################################################

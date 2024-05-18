@@ -1,0 +1,807 @@
+---
+# Source: saleor-helm/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.8.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+type: Opaque
+data:
+  postgresql-password: "cHJpdmFjeS1kaXNhcnJheS1tb3Aw"
+---
+# Source: saleor-helm/charts/redis/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-redis
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  redis-password: "dzY3MzZpdS0xMzQ2NzI2aHoxMi01NzgtMmgyMjh1MzU3NmpoMjQ2NTgtNDU2aA=="
+---
+# Source: saleor-helm/templates/saleor_secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-saleor-helm
+type: Opaque
+data:
+  EMAIL_URL: "c210cDovL3Rlc3RAdHJpZWJ3b3JrLmNvbTpYWFhYWFhYWEBzbXRwLm1haWxndW4ub3JnOjQ2NS8/c3NsPVRydWU="
+  SECRET_KEY: "c2VmYjY4LTIxMzNyLTI0NTc3di10Z25xZXRiLXFlNXpi"
+  
+  DATABASE_URL: "cG9zdGdyZXNxbDovL3VzZXI6cGFzc3dvcmRAaG9zdG5hbWU6NTMzL3NhbGVvcg=="
+  
+  REDIS_URL: "cmVkaXM6Ly86dzY3MzZpdS0xMzQ2NzI2aHoxMi01NzgtMmgyMjh1MzU3NmpoMjQ2NTgtNDU2aEBzYWxlb3ItcmVkaXMtbWFzdGVyOjYzNzkvMA=="
+  CELERY_BROKER_URL: "cmVkaXM6Ly86dzY3MzZpdS0xMzQ2NzI2aHoxMi01NzgtMmgyMjh1MzU3NmpoMjQ2NTgtNDU2aEBzYWxlb3ItcmVkaXMtbWFzdGVyOjYzNzkvMQ=="
+  MAX_CHECKOUT_LINE_QUANTITY: "MTAw"
+  AWS_S3_ENDPOINT_URL: "aHR0cHM6Ly9zMy5leGFtcGxlLmNvbS8="
+  AWS_ACCESS_KEY_ID: "MTIzNDU2ZmV0cmc="
+  AWS_SECRET_ACCESS_KEY: "MTIzNDU2NzY4OXE="
+  AWS_STORAGE_BUCKET_NAME: "c3RhdGlj"
+  AWS_MEDIA_BUCKET_NAME: "c3RhdGlj"
+  AWS_QUERYSTRING_AUTH: "VHJ1ZQ=="
+  AWS_QUERYSTRING_EXPIRE: "NDMyMDAw"
+  ELASTIC_APM_SERVICE_NAME: "c2FsZW9yLXNlcnZpY2Vz"
+  ELASTIC_APM_SECRET_TOKEN: ""
+  ELASTIC_APM_SERVER_URL: ""
+  ELASTIC_APM_ENVIRONMENT: "ZGV2"
+  ELASTIC_APM_ENABLED: "RmFsc2U="
+  ELASTIC_APM_SERVER_TIMEOUT: "MTBz"
+  ELASTIC_APM_DISABLE_METRICS: "Ki5jcHUuKiwqLm1lbW9yeS4q"
+  ELASTIC_APM_METRICS_INTERVAL: "MHM="
+  ELASTIC_APM_LOG_LEVEL: "Y3JpdGljYWw="
+  JWT_TTL_REFRESH: "MzY1IGRheXM=" 
+  JWT_TTL_ACCESS: "MyBkYXlz"
+---
+# Source: saleor-helm/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    heritage: Helm
+    release: release-name
+data:
+  redis.conf: |-
+    # User-supplied configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+  master.conf: |-
+    dir /data
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+  replica.conf: |-
+    dir /data
+    slave-read-only yes
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+---
+# Source: saleor-helm/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    heritage: Helm
+    release: release-name
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+    no_auth_warning=$([[ "$(redis-cli --version)" =~ (redis-cli 5.*) ]] && echo --no-auth-warning)
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -a $REDIS_PASSWORD $no_auth_warning \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+    no_auth_warning=$([[ "$(redis-cli --version)" =~ (redis-cli 5.*) ]] && echo --no-auth-warning)
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -a $REDIS_PASSWORD $no_auth_warning \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+    no_auth_warning=$([[ "$(redis-cli --version)" =~ (redis-cli 5.*) ]] && echo --no-auth-warning)
+     response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -a $REDIS_MASTER_PASSWORD $no_auth_warning \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+    no_auth_warning=$([[ "$(redis-cli --version)" =~ (redis-cli 5.*) ]] && echo --no-auth-warning)
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -a $REDIS_MASTER_PASSWORD $no_auth_warning \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: saleor-helm/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.8.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  namespace: default
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: saleor-helm/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.8.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: saleor-helm/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app: redis
+    release: release-name
+---
+# Source: saleor-helm/charts/redis/templates/redis-master-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app: redis
+    release: release-name
+    role: master
+---
+# Source: saleor-helm/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-saleor-helm
+  labels:
+    helm.sh/chart: saleor-helm-0.1.25
+    app.kubernetes.io/name: saleor-helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: saleor-helm
+    app.kubernetes.io/instance: release-name
+---
+# Source: saleor-helm/templates/celery_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "release-name-saleor-helm-celery"
+  labels:
+    helm.sh/chart: saleor-helm-0.1.25
+    app.kubernetes.io/name: saleor-helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "celery-worker"
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: "celery-worker"
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: github
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: saleor-helm
+          securityContext:
+            runAsUser: 999
+          image: "registry.gitlab.com/trieb.work/saleor:3.0.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DEFAULT_CURRENCY
+              value: "EUR"
+            - name: DEFAULT_COUNTRY
+              value: "DE"
+            - name: DEBUG
+              value: "False"
+            - name: ALLOWED_HOSTS
+              value: test-api.example.com
+            - name: ALLOWED_CLIENT_HOSTS
+              value: test-api.example.com
+          envFrom:
+          - secretRef:
+              name: release-name-saleor-helm
+          args:
+            - celery 
+            - --app=saleor 
+            - --app=saleor.celeryconf:app 
+            - worker
+            - --loglevel=INFO
+          livenessProbe:
+            exec:
+            # We run a celery inspect command that fails for example when redis is not available
+            # This command is unfortunately "costly", so that we run it just every 40 seconds
+              command:
+              - /bin/sh
+              - -c
+              - timeout 10 celery -b $CELERY_BROKER_URL inspect ping -d celery@$HOSTNAME
+            failureThreshold: 1
+            initialDelaySeconds: 40
+            periodSeconds: 40
+            successThreshold: 1
+            timeoutSeconds: 10  
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - timeout 10 celery -b $CELERY_BROKER_URL inspect ping -d celery@$HOSTNAME
+            failureThreshold: 1
+            initialDelaySeconds: 40
+            periodSeconds: 40
+            successThreshold: 1
+            timeoutSeconds: 10  
+          resources:
+            limits:
+              cpu: 280m
+              memory: 500Mi
+            requests:
+              cpu: 80m
+              memory: 400Mi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+---
+# Source: saleor-helm/templates/saleor_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-saleor-helm
+  labels:
+    helm.sh/chart: saleor-helm-0.1.25
+    app.kubernetes.io/name: saleor-helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: saleor-helm
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saleor-helm
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: github
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: saleor-helm
+          securityContext:
+            {}
+          image: "registry.gitlab.com/trieb.work/saleor:3.0.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DEFAULT_CURRENCY
+              value: "EUR"
+            - name: DEFAULT_COUNTRY
+              value: "DE"
+            - name: DEBUG
+              value: "False"
+            - name: ALLOWED_HOSTS
+              value: test-api.example.com
+            - name: ALLOWED_CLIENT_HOSTS
+              value: test-api.example.com
+            - name: SENTRY_DSN
+              value: 
+            - name: KEEP_ALIVE
+              value: "20"  
+          envFrom:
+          - secretRef:
+              name: release-name-saleor-helm
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              httpHeaders:
+              - name: Host
+                value: kube-probe
+              path: /health/
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 8
+            successThreshold: 1
+            timeoutSeconds: 3
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              httpHeaders:
+              - name: Host
+                value: kube-probe
+              path: /health/
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 8
+            successThreshold: 1
+            timeoutSeconds: 3
+          resources:
+            limits:
+              memory: 600Mi
+            requests:
+              cpu: 300m
+              memory: 400Mi
+          volumeMounts:
+          - mountPath: /cache
+            name: cache-volume
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      volumes:
+      - name: cache-volume
+        emptyDir: {
+          medium: "Memory"
+        }
+---
+# Source: saleor-helm/templates/saleor_hpa.yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  annotations:
+    field.cattle.io/displayName: saleor-api-autoscaler
+  labels:
+  name: saleor-api-autoscaler
+spec:
+  maxReplicas: 3
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 80
+        type: Utilization
+    type: Resource
+  minReplicas: 2
+  scaleTargetRef:
+    apiVersion: apps/v1beta2
+    kind: Deployment
+    name: saleor-api
+---
+# Source: saleor-helm/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.8.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+  namespace: default
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.8.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+        app.kubernetes.io/component: primary
+    spec:      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      automountServiceAccountToken: false
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.12.0-debian-10-r44
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            limits:
+              memory: 300Mi
+            requests:
+              cpu: 200m
+              memory: 200Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "saleor"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -d "dbname=saleor" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -d "dbname=saleor" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"
+---
+# Source: saleor-helm/charts/redis/templates/redis-master-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: default
+  labels:
+    app: redis
+    chart: redis-10.6.13
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: redis
+      release: release-name
+      role: master
+  serviceName: release-name-redis-headless
+  template:
+    metadata:
+      labels:
+        app: redis
+        chart: redis-10.6.13
+        release: release-name
+        role: master
+      annotations:
+        checksum/health: a18bcb000847fb4f1400037f5fb8c57f4e72df33e32c599ff8eddea38bb337b0
+        checksum/configmap: 53ad91df4c235ac8f2b0ed93074d361df363b0be809f1bbae6d79296fc9f9033
+        checksum/secret: 1cdbdd8db083e6a28f7de8e392384d23d59d2ea282a855d6c940f7919d4e5d72
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: default
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:6.0.1-debian-10-r1
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - /bin/bash
+            - -c
+            - |
+              if [[ -n $REDIS_PASSWORD_FILE ]]; then
+                password_aux=`cat ${REDIS_PASSWORD_FILE}`
+                export REDIS_PASSWORD=$password_aux
+              fi
+              if [[ ! -f /opt/bitnami/redis/etc/master.conf ]];then
+                cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+              fi
+              if [[ ! -f /opt/bitnami/redis/etc/redis.conf ]];then
+                cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+              fi
+              ARGS=("--port" "${REDIS_PORT}")
+              ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+              ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+              ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+              ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+              /run.sh ${ARGS[@]}
+          env:
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 5
+          resources:
+            limits:
+              cpu: 80m
+              memory: 80Mi
+            requests:
+              cpu: 30m
+              memory: 70Mi
+          volumeMounts:
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+              subPath: 
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+      volumes:
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis
+        - name: "redis-data"
+          emptyDir: {}
+        - name: redis-tmp-conf
+          emptyDir: {}
+  updateStrategy:
+    type: RollingUpdate
+---
+# Source: saleor-helm/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-saleor-helm-test-connection"
+  labels:
+    helm.sh/chart: saleor-helm-0.1.25
+    app.kubernetes.io/name: saleor-helm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-saleor-helm:8000']
+  restartPolicy: Never

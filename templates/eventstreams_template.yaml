@@ -1,0 +1,211 @@
+---
+# Source: eventstreams/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: eventstreams-release-name
+  labels:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: eventstreams
+      chart: eventstreams-0.7.6
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8092
+          protocol: TCP
+        - port: 9102
+          protocol: TCP
+---
+# Source: eventstreams/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eventstreams-release-name-secret-config
+  labels:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: eventstreams/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eventstreams-release-name-config
+  labels:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |- 
+    # service-runner EventStreams app config.yaml.
+    
+    # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 0
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 750
+    
+    # Logger info
+    logging:
+      level:  info
+      streams:
+        - type: stdout
+          named_levels: true
+    # Statsd metrics reporter
+    metrics:
+      - type: prometheus
+        port: 9102
+    
+    services:
+      - name: eventstreams
+        module: app.js
+        conf:
+          port: 8092
+          cors: '*'
+          csp: "default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src *; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'"
+          spec: ./spec.yaml
+          user_agent: eventstreams-release-name
+    
+          # eventstreams app settings
+          kafka:
+            metadata.broker.list: kafka.default.svc.cluster.local:31092
+            ssl.ca.location: /etc/eventstreams/puppetca.crt.pem
+            ssl.cipher.suites: ECDHE-ECDSA-AES256-GCM-SHA384
+            ssl.curves.list: P-256
+            ssl.sigalgs.list: ECDSA+SHA256
+            statistics.interval.ms: 5000
+          schema_base_uris:
+          - http://localhost:6023/repositories/primary/jsonschema
+          - http://localhost:6023/repositories/secondary/jsonschema
+          schema_latest_version: latest
+  # All Kafka Broker and client certificates use the Puppet CA.
+  # This is also used to allow NodeJS to talk to internal envoy TLS endpoints
+  # like schema.discovery.wmnet:443
+  puppetca.crt.pem: |-
+    snakeoil
+---
+# Source: eventstreams/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: eventstreams-release-name
+  labels:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    routed_via: release-name
+  ports:
+    - name: eventstreams-http
+      targetPort: 8092
+      port: 8092
+      nodePort: 30892
+    # If testing monitoring export the service-runner prometheus metrics listen port
+    - name:  prometheus-eventstreams
+      targetPort: 9102
+      port: 9102
+      nodePort: 31102
+---
+# Source: eventstreams/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eventstreams-release-name
+  labels:
+    app: eventstreams
+    chart: eventstreams-0.7.6
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: eventstreams
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: eventstreams
+        chart: eventstreams-0.7.6
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: ae96ccceea4dbd2aad51b6b84d7e25524451db38d553cf7005cd84e582fc4dd9
+        checksum/secrets: 96d9e3a159a46768fbc44fc006952a494d6470014e4bafb390c2f5b9c264570e
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:
+        # The main application container
+        - name: eventstreams
+          image: "docker-registry.wikimedia.org/wikimedia/mediawiki-services-eventstreams:latest"
+          imagePullPolicy: IfNotPresent
+          command:
+            - nodejs
+          args:
+            - /srv/service/server.js
+            - -c
+            - /etc/eventstreams/config.yaml
+          ports:
+            - containerPort: 8092
+          livenessProbe:
+            tcpSocket:
+              port: 8092
+          readinessProbe:
+            httpGet:
+              path: /_info
+              port: 8092
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: eventstreams
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 500Mi
+            limits:
+              cpu: 1000m
+              memory: 1000Mi
+          volumeMounts:
+            - name: eventstreams-config-volume
+              mountPath: /etc/eventstreams        
+      volumes:
+        - name: eventstreams-config-volume
+          configMap:
+            name: eventstreams-release-name-config
+---
+# Source: eventstreams/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'eventstreams-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+    - name: 'eventstreams-service-checker'
+      image: "docker-registry.wikimedia.org/service-checker"
+      imagePullPolicy: IfNotPresent
+      args: ["-t", "5", '$(EVENTSTREAMS_RELEASE_NAME_SERVICE_HOST)', 'http://eventstreams-release-name:8092']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

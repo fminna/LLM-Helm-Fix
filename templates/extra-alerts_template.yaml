@@ -1,0 +1,168 @@
+---
+# Source: extra-alerts/templates/kubernetesApps/kubernetes-apps.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: release-name-extra-alerts-kubernetes-apps
+  namespace: default
+  labels:
+    app: extra-alerts
+    helm.sh/chart: extra-alerts-0.6.1
+    app.kubernetes.io/name: extra-alerts
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "58.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  groups:
+  - name: kubernetes-apps
+    rules:
+    - alert: KubePodCrashLooping
+      annotations:
+        description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is in waiting state (reason: "CrashLoopBackOff").'
+        runbook_url: alert-name-kubepodcrashlooping
+        summary: Pod is crash looping.
+      expr: max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", job="kube-state-metrics", namespace=~".*"}[5m]) >= 1
+      for: 5m
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+    - alert: KubePodCrashLoopingLong
+      annotations:
+        description: 'Pod: {{ $labels.pod }}, namespace: {{ $labels.namespace }}, container:  {{ $labels.container }} restarted {{ $value }} times in the last hour (at least once every 15 minutes).'
+        runbook_url: alert-name-kubepodcrashlooping
+        summary: Pod is crash looping.
+      expr: |-
+        round(increase(kube_pod_container_status_restarts_total{job="kube-state-metrics", namespace=~".*"}[60m])) > 0 
+          and 
+        round(increase(kube_pod_container_status_restarts_total{job="kube-state-metrics", namespace=~".*"}[15m])) > 0
+      for: 60m
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+    - alert: KubeContainerWaiting
+      annotations:
+        description: pod/{{ $labels.pod }} in namespace {{ $labels.namespace }} on container {{ $labels.container}} has been in waiting state for longer than 5 minutes.
+        runbook_url: alert-name-kubecontainerwaiting
+        summary: Pod container waiting longer than 5 minutes
+      expr: sum by (namespace, pod, container, cluster) (kube_pod_container_status_waiting_reason{job="kube-state-metrics", namespace=~".*"}) > 0
+      for: 5m
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+    - alert: KubeContainerWaiting
+      annotations:
+        description: pod/{{ $labels.pod }} in namespace {{ $labels.namespace }} on container {{ $labels.container}} has been in waiting state for longer than 1 hour.
+        runbook_url: alert-name-kubecontainerwaiting
+        summary: Pod container waiting longer than 1 hour
+      expr: sum by (namespace, pod, container, cluster) (kube_pod_container_status_waiting_reason{job="kube-state-metrics", namespace=~".*"}) > 0
+      for: 1h
+      labels:
+        severity: critical
+        responsible: ops
+        type: incluster
+    - alert: OOMKilled
+      annotations:
+        description: "Container ({{ $labels.container }}) OOMKilled ({{ $labels.namespace }}/{{ $labels.pod }})"
+        summary: Container was OOMKilled.
+      expr: |-
+        sum by (pod, container, reason, namespace) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~".*"}) 
+          * on (pod,container) 
+        group_left sum by (pod, container) (changes(kube_pod_container_status_restarts_total{}[1m])) > 0
+      for: 0s
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+    - alert: PodMemoryUsageLimit
+      annotations:
+        description: 'Pod: {{ $labels.pod }}, namespace: {{ $labels.namespace }} memory usage {{ printf "%.2f" $value }}% more than 85% of its limit for 1h'
+        summary: Pod uses more than 85% of its memory limit.
+      expr: |-
+        sum(label_replace(container_memory_working_set_bytes{container!="", namespace!="kube-system"}, "pod", "$1", "pod", "(.*)")) by (pod, namespace)
+          /
+        sum(kube_pod_container_resource_limits{resource="memory", namespace!="kube-system"}) by (pod,namespace) * 100 > 85
+      for: 60m
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+    - alert: PodMemoryUsageLimit
+      annotations:
+        description: 'Pod: {{ $labels.pod }}, namespace: {{ $labels.namespace }} memory usage {{ printf "%.2f" $value }}% more than 95% of its limit for 5m'
+        summary: Pod uses more than 95% of its memory limit.
+      expr: |-
+        sum(label_replace(container_memory_working_set_bytes{container!="", namespace!="kube-system"}, "pod", "$1", "pod", "(.*)")) by (pod, namespace)
+          /
+        sum(kube_pod_container_resource_limits{resource="memory", namespace!="kube-system"}) by (pod,namespace) * 100 > 95
+      for: 5m
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster
+---
+# Source: extra-alerts/templates/kubernetesStorage/kubernetes-storage.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: release-name-extra-alerts-kubernetes-storage
+  namespace: default
+  labels:
+    app: extra-alerts
+    helm.sh/chart: extra-alerts-0.6.1
+    app.kubernetes.io/name: extra-alerts
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "58.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  groups:
+  - name: kubernetes-storage
+    rules:
+    - alert: KubePersistentVolumeFillingUp
+      annotations:
+        description: The PersistentVolume claimed by {{ $labels.persistentvolumeclaim }} in Namespace {{ $labels.namespace }} is only {{ $value | humanizePercentage }} free.
+        runbook_url: alert-name-kubepersistentvolumefillingup
+        summary: PersistentVolume is filling up.
+      expr: |-
+        (
+          kubelet_volume_stats_available_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"}
+            /
+          kubelet_volume_stats_capacity_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"}
+        ) < 0.03
+        and
+        kubelet_volume_stats_used_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"} > 0
+        unless on (cluster, namespace, persistentvolumeclaim)
+        kube_persistentvolumeclaim_access_mode{ access_mode="ReadOnlyMany"} == 1
+        unless on (cluster, namespace, persistentvolumeclaim)
+        kube_persistentvolumeclaim_labels{label_excluded_from_alerts="true"} == 1
+      for: 1m
+      labels:
+        severity: critical
+        responsible: ops
+        type: incluster
+    - alert: KubePersistentVolumeFillingUp
+      annotations:
+        description: Based on recent sampling, the PersistentVolume claimed by {{ $labels.persistentvolumeclaim }} in Namespace {{ $labels.namespace }} is expected to fill up within four days. Currently {{ $value | humanizePercentage }} is available.
+        runbook_url: alert-name-kubepersistentvolumefillingup
+        summary: PersistentVolume is filling up.
+      expr: |-
+        (
+          kubelet_volume_stats_available_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"}
+            /
+          kubelet_volume_stats_capacity_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"}
+        ) < 0.25
+        and
+        kubelet_volume_stats_used_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"} > 0
+        and
+        predict_linear(kubelet_volume_stats_available_bytes{job="kubelet", namespace=~".*", metrics_path="/metrics"}[6h], 4 * 24 * 3600) < 0
+        unless on (cluster, namespace, persistentvolumeclaim)
+        kube_persistentvolumeclaim_access_mode{ access_mode="ReadOnlyMany"} == 1
+        unless on (cluster, namespace, persistentvolumeclaim)
+        kube_persistentvolumeclaim_labels{label_excluded_from_alerts="true"} == 1
+      for: 1h
+      labels:
+        severity: warning
+        responsible: ops
+        type: incluster

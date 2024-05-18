@@ -1,0 +1,608 @@
+---
+# Source: prometheus-monitoring-stack/templates/alertmanager.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config-conf
+  labels:
+    name: alertmanager-config-conf
+data:
+  alertmanager.yml: |
+    global:
+      # The smarthost and SMTP sender used for mail notifications.
+      smtp_smarthost: 'localhost:25'
+      smtp_from: 'alertmanager@example.org'
+      smtp_auth_username: 'alertmanager'
+      smtp_auth_password: 'password'
+    
+    # The directory from which notification templates are read.
+    templates:
+    - '/etc/alertmanager/template/*.tmpl'
+    
+    # The root route on which each incoming alert enters.
+    route:
+      # The labels by which incoming alerts are grouped together. For example,
+      # multiple alerts coming in for cluster=A and alertname=LatencyHigh would
+      # be batched into a single group.
+      #
+      # To aggregate by all possible labels use '...' as the sole label name.
+      # This effectively disables aggregation entirely, passing through all
+      # alerts as-is. This is unlikely to be what you want, unless you have
+      # a very low alert volume or your upstream notification system performs
+      # its own grouping. Example: group_by: [...]
+      group_by: ['alertname', 'cluster', 'service']
+    
+      # When a new group of alerts is created by an incoming alert, wait at
+      # least 'group_wait' to send the initial notification.
+      # This way ensures that you get multiple alerts for the same group that start
+      # firing shortly after another are batched together on the first
+      # notification.
+      group_wait: 30s
+    
+      # When the first notification was sent, wait 'group_interval' to send a batch
+      # of new alerts that started firing for that group.
+      group_interval: 5m
+    
+      # If an alert has successfully been sent, wait 'repeat_interval' to
+      # resend them.
+      repeat_interval: 3h
+    
+      # A default receiver
+      receiver: team-X-mails
+    
+      # All the above attributes are inherited by all child routes and can
+      # overwritten on each.
+    
+      # The child route trees.
+      routes:
+      # This routes performs a regular expression match on alert labels to
+      # catch alerts that are related to a list of services.
+      - matchers:
+        - service=~"foo1|foo2|baz"
+        receiver: team-X-mails
+        # The service has a sub-route for critical alerts, any alerts
+        # that do not match, i.e. severity != critical, fall-back to the
+        # parent node and are sent to 'team-X-mails'
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: team-X-pager
+      - matchers:
+        - service="files"
+        receiver: team-Y-mails
+    
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: team-Y-pager
+    
+      # This route handles all alerts coming from a database service. If there's
+      # no team to handle it, it defaults to the DB team.
+      - matchers:
+        - service="database"
+        receiver: team-DB-pager
+        # Also group alerts by affected database.
+        group_by: [alertname, cluster, database]
+        routes:
+        - matchers:
+          - owner="team-X"
+          receiver: team-X-pager
+          continue: true
+        - matchers:
+          - owner="team-Y"
+          receiver: team-Y-pager
+    
+    
+    # Inhibition rules allow to mute a set of alerts given that another alert is
+    # firing.
+    # We use this to mute any warning-level notifications if the same alert is
+    # already critical.
+    inhibit_rules:
+    - source_matchers: [ severity="critical" ]
+      target_matchers: [ severity="warning" ]
+      # Apply inhibition if the alertname is the same.
+      # CAUTION:
+      #   If all label names listed in `equal` are missing
+      #   from both the source and target alerts,
+      #   the inhibition rule will apply!
+      equal: [ alertname, cluster, service ]
+    
+    
+    receivers:
+    - name: 'team-X-mails'
+      email_configs:
+      - to: 'team-X+alerts@example.org'
+    
+    - name: 'team-X-pager'
+      email_configs:
+      - to: 'team-X+alerts-critical@example.org'
+      pagerduty_configs:
+      - service_key: <team-X-key>
+    
+    - name: 'team-Y-mails'
+      email_configs:
+      - to: 'team-Y+alerts@example.org'
+    
+    - name: 'team-Y-pager'
+      pagerduty_configs:
+      - service_key: <team-Y-key>
+    
+    - name: 'team-DB-pager'
+      pagerduty_configs:
+      - service_key: <team-DB-key>
+---
+# Source: prometheus-monitoring-stack/templates/config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-server-conf
+  labels:
+    name: prometheus-server-conf
+data:
+  prometheus.rules: |
+    groups:
+    - name: devopscube demo alert
+      rules:
+      - alert: High Pod Memory
+        expr: sum(container_memory_usage_bytes) > 1
+        for: 1m
+        labels:
+          severity: slack
+        annotations:
+          summary: High Memory Usage
+    - name: monitoring-dead-man
+      rules:
+      - alert: "Monitoring_dead_man"
+        expr: vector(1)
+        labels:
+          service: deadman
+        annotations:
+          summary: "Monitoring dead man switch should always fire alert"
+          description: "Monitoring dead man switch for probing alert path"
+    
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    rule_files:
+      - /etc/prometheus/prometheus.rules
+    alerting:
+      alertmanagers:
+      - scheme: http
+        static_configs:
+        - targets:
+          - "alertmanager.default.svc:9093"
+    scrape_configs:
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_endpoints_name]
+          regex: 'node-exporter'
+          action: keep
+    
+      - job_name: 'kubernetes-apiservers'
+    
+        kubernetes_sd_configs:
+        - role: endpoints
+        scheme: https
+    
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+    
+      - job_name: 'kubernetes-nodes'
+    
+        scheme: https
+    
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+        kubernetes_sd_configs:
+        - role: node
+    
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics
+    
+      - job_name: 'kubernetes-pods'
+    
+        kubernetes_sd_configs:
+        - role: pod
+    
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: kubernetes_pod_name
+    
+      - job_name: 'kubeauth-metrics'
+        static_configs:
+          - targets: ['kubeauth-metrics.kubeauth-system.svc.cluster.local:9090']
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+      - job_name: 'kubernetes-cadvisor'
+    
+        scheme: https
+    
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    
+        kubernetes_sd_configs:
+        - role: node
+    
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+    
+      - job_name: 'kubernetes-service-endpoints'
+    
+        kubernetes_sd_configs:
+        - role: endpoints
+    
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+---
+# Source: prometheus-monitoring-stack/templates/storageClass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: harddisk-sc
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+# Source: prometheus-monitoring-stack/templates/grafana.yml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: grafana-pv
+spec:
+  storageClassName: harddisk-sc
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  local:
+    path: /mnt
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/os
+          operator: In
+          values:
+          - linux
+---
+# Source: prometheus-monitoring-stack/templates/prometheus-deployment.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: prometheus-pv
+spec:
+  storageClassName: harddisk-sc
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  local:
+    path: /var/local
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/os
+          operator: In
+          values:
+          - linux
+---
+# Source: prometheus-monitoring-stack/templates/grafana.yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-pvc
+spec:
+  storageClassName: harddisk-sc
+  volumeName: grafana-pv
+  resources:
+    requests:
+      storage: 5Gi
+  accessModes:
+  - ReadWriteOnce
+---
+# Source: prometheus-monitoring-stack/templates/prometheus-deployment.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+spec:
+  storageClassName: harddisk-sc
+  volumeName: prometheus-pv
+  resources:
+    requests:
+      storage: 5Gi
+  accessModes:
+  - ReadWriteOnce
+---
+# Source: prometheus-monitoring-stack/templates/clusterRole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+# Source: prometheus-monitoring-stack/templates/clusterRole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: prometheus-monitoring-stack/templates/alertmanager.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+spec:
+  selector:
+    app: alertmanager
+  type: NodePort
+  ports:
+    - port: 9093
+      targetPort: 9093
+      nodePort: 30002
+---
+# Source: prometheus-monitoring-stack/templates/grafana.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  ports:
+    - port: 9090
+      protocol: TCP
+      nodePort: 30000
+      targetPort: http-grafana
+  selector:
+    app: grafana
+  sessionAffinity: None
+  type: NodePort
+---
+# Source: prometheus-monitoring-stack/templates/prometheus-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '9091'
+  
+spec:
+  selector: 
+    app: prometheus-server
+  type: NodePort  
+  ports:
+    - port: 9091
+      targetPort: 9090
+      nodePort: 30001
+---
+# Source: prometheus-monitoring-stack/templates/alertmanager.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:latest
+          args:
+            - "--cluster.advertise-address=0.0.0.0:9093"
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+          ports:
+            - containerPort: 9093
+          volumeMounts:
+            - name: alertmanager-config-volume
+              mountPath: /etc/alertmanager/
+      volumes:
+        - name: alertmanager-config-volume
+          configMap:
+            defaultMode: 420
+            name: alertmanager-config-conf
+---
+# Source: prometheus-monitoring-stack/templates/grafana.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: grafana
+  name: grafana
+spec:
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        fsGroup: 472
+        supplementalGroups:
+          - 0
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              hostPort: 9090
+              name: http-grafana
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /robots.txt
+              port: 3000
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            successThreshold: 1
+            timeoutSeconds: 2
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            tcpSocket:
+              port: 3000
+            timeoutSeconds: 1
+          resources:
+            requests:
+              cpu: 250m
+              memory: 750Mi
+          volumeMounts:
+            - mountPath: /var/lib/grafana
+              name: grafana-pv
+      volumes:
+        - name: grafana-pv
+          persistentVolumeClaim:
+            claimName: grafana-pvc
+---
+# Source: prometheus-monitoring-stack/templates/prometheus-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-server
+  template:
+    metadata:
+      labels:
+        app: prometheus-server
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus/"
+            - "--web.enable-admin-api"
+          ports:
+            - containerPort: 9091
+          volumeMounts:
+            - name: prometheus-config-volume
+              mountPath: /etc/prometheus/
+            - name: prometheus-pv
+              mountPath: /prometheus/
+      volumes:
+        - name: prometheus-config-volume
+          configMap:
+            defaultMode: 420
+            name: prometheus-server-conf
+        - name: prometheus-pv
+          persistentVolumeClaim:
+            claimName: prometheus-pvc

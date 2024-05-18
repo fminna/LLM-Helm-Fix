@@ -1,0 +1,424 @@
+---
+# Source: bria/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.9.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  password: "YnJpYQ=="
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: bria/templates/bria-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-bria
+  labels:
+    app: release-name-bria
+    chart: "bria-0.10.15"
+    release: "release-name"
+type: Opaque
+data:
+  pg-con: 
+  signer-encryption-key:
+---
+# Source: bria/templates/bria-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-bria-config
+data:
+  bria.yml: |-
+    app: 
+      blockchain:
+        network: regtest
+        electrum_url: fulcrum.default.svc.cluster.local
+      fees:
+        mempool_space:
+          url: https://mempool.space
+          number_of_retries: 3
+    db:
+      migrate_on_start: true
+      pool_size: 20
+    tracing:
+      host: localhost
+      port: 4317
+      service_name: bria-dev
+    admin:
+      listen_port: 2743
+    api:
+      listen_port: 2742
+---
+# Source: bria/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.9.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: bria/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.9.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: bria/templates/bria-admin-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-bria-admin
+  labels:
+    app: release-name-bria-admin
+    chart: "bria-0.10.15"
+    release: "release-name"
+  
+spec:
+  type: ClusterIP
+  
+  ports:
+  - port: 2743
+    targetPort: 2743
+    protocol: TCP
+    name: http
+  selector:
+    app: release-name-bria
+---
+# Source: bria/templates/bria-api-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-bria-api
+  labels:
+    app: release-name-bria-api
+    chart: "bria-0.10.15"
+    release: "release-name"
+  
+spec:
+  type: ClusterIP
+  
+  ports:
+  - port: 2742
+    targetPort: 2742
+    protocol: TCP
+    name: http
+  selector:
+    app: release-name-bria
+---
+# Source: bria/templates/bria-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-bria
+  labels:
+    app: release-name-bria
+    chart: "bria-0.10.15"
+    release: "release-name"
+    kube-monkey/identifier: release-name-bria
+    kube-monkey/enabled: enabled
+    kube-monkey/kill-mode: fixed
+    kube-monkey/kill-value: "1"
+    kube-monkey/mtbf: "3"
+spec:
+  selector:
+    matchLabels:
+      app: release-name-bria
+      release: release-name
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: release-name-bria
+        chart: "bria-0.10.15"
+        release: "release-name"
+        kube-monkey/identifier: release-name-bria
+        kube-monkey/enabled: enabled
+      annotations:
+        checksum/config: 1b7f64a338e286408cfc2880670b16b0c2c3f972c78ba7c6a4a391c1c2234ff9
+    spec:
+      
+      initContainers:
+      - name: wait-for-postgresql
+        image: postgres
+        command:
+          - "bash"
+          - "-c"
+          - |
+            while ! pg_isready -d $PG_CON > /dev/null 2>&1
+            do
+              echo "waiting for postgres to come up"
+              sleep 5
+            done
+        env:
+        - name: PG_CON
+          valueFrom:
+            secretKeyRef:
+              name: release-name-bria
+              key: "pg-con"
+      containers:
+      - name: bria
+        image: "us.gcr.io/galoy-org/bria@sha256:a30153267117f0304a38f6928626c9312a489a253f0b8c63d4752d96b82081e1"
+        ports:
+        - name: api
+          containerPort: 2742
+          protocol: TCP
+        - name: admin
+          containerPort: 2743
+          protocol: TCP
+        args:
+        - bria
+        - daemon
+        
+        - run
+        
+
+        volumeMounts:
+        - name: "config"
+          mountPath: "/bria.yml"
+          subPath: "bria.yml"
+        resources:
+          
+          {}
+        env:
+        - name: BRIA_CONFIG
+          value: "/bria.yml"
+        - name: PG_CON
+          valueFrom:
+            secretKeyRef:
+              name: release-name-bria
+              key: "pg-con"
+        - name: SIGNER_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: release-name-bria
+              key: "signer-encryption-key"
+        - name: KUBE_NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        
+        startupProbe:
+          grpc:
+            port: 2742
+        livenessProbe:
+          grpc:
+            port: 2742
+        resources:
+          {}
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-bria-config
+---
+# Source: bria/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.9.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-11.9.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+      annotations:
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      initContainers:
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:14.5.0-debian-11-r21
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "bria"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: password
+            - name: POSTGRES_DB
+              value: "bria"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "bria" -d "dbname=bria" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                
+                - |
+                  exec pg_isready -U "bria" -d "dbname=bria" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"

@@ -1,0 +1,246 @@
+---
+# Source: resource-service/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-aws-secret
+  namespace: default
+type: Opaque
+data:
+  ACCESSKEYID: dGVzdA==
+  SECRETACCESSKEY: dGVzdA==
+---
+# Source: resource-service/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgres-secret
+  namespace: default
+type: Opaque
+data:
+  PGUSER: cG9zdGdyZXM=
+  PGPASSWORD: cG9zdGdyZXM=
+  PGDATABASE: cG9zdGdyZXM=
+  POSTGRES_USER: cG9zdGdyZXM=
+  POSTGRES_PASSWORD: cG9zdGdyZXM=
+  POSTGRES_DB: cG9zdGdyZXM=
+---
+# Source: resource-service/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-rabbitmq-secret
+  namespace: default
+type: Opaque
+data:
+  USERNAME: YWRtaW4=
+  PASSWORD: YWRtaW4=
+---
+# Source: resource-service/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  namespace: default
+  labels:
+    date: 2024-05-15
+    version: 1.5.0
+data:
+  AWS_DESTINATION_HOST: localstack.default
+  AWS_S3_BUCKETNAME: resources
+  DATABASE_DESTINATION_HOST: release-name-postgres.default
+  INFRASTRUCTURE_AUTHORIZATIONSERVER_HOST: authorization-server.default
+  INFRASTRUCTURE_STORAGESERVICE_HOST: storage-service.default
+  SPRING_APPLICATION_NAME: release-name
+  SPRING_RABBITMQ_HOST: rabbitmq.default
+---
+# Source: resource-service/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: release-name-postgres-pv
+spec:
+  storageClassName: manual
+  persistentVolumeReclaimPolicy: Retain
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: "/mnt/data"
+---
+# Source: resource-service/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-postgres-pvc
+  namespace: default
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: release-name-postgres-pv
+---
+# Source: resource-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres
+  namespace: default
+spec:
+  selector:
+    name: release-name-postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: postgres-port
+---
+# Source: resource-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  selector:
+    name: release-name
+  ports:
+    - name: web-port
+      protocol: TCP
+      port: 8080
+      targetPort: service-port
+---
+# Source: resource-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    name: release-name
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: release-name
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 20%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        name: release-name
+    spec:
+      containers:
+      - name: release-name
+        image: maksimkavalenka/microservices-learning.resource-service:latest
+        ports:
+        - name: service-port
+          containerPort: 8080
+        env:
+        - name: AWS_AUTH_ACCESSKEYID
+          valueFrom:
+            secretKeyRef:
+              name: release-name-aws-secret
+              key: ACCESSKEYID
+        - name: AWS_AUTH_SECRETACCESSKEY
+          valueFrom:
+            secretKeyRef:
+              name: release-name-aws-secret
+              key: SECRETACCESSKEY
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-postgres-secret
+              key: POSTGRES_USER
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-postgres-secret
+              key: POSTGRES_PASSWORD
+        - name: SPRING_RABBITMQ_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-rabbitmq-secret
+              key: USERNAME
+        - name: SPRING_RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-rabbitmq-secret
+              key: PASSWORD
+        envFrom:
+        - configMapRef:
+            name: release-name-configmap
+        startupProbe:
+          httpGet:
+            path: /api/actuator/health
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /api/actuator/health
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: service-port
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+# Source: resource-service/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgres
+  namespace: default
+  labels:
+    name: release-name-postgres
+spec:
+  selector:
+    matchLabels:
+      name: release-name-postgres
+  template:
+    metadata:
+      labels:
+        name: release-name-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres
+        ports:
+        - name: postgres-port
+          containerPort: 5432
+        envFrom:
+        - secretRef:
+            name: release-name-postgres-secret
+        startupProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["psql", "-c", "SELECT 1"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: postgres-volume-mount
+            mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-volume-mount
+          persistentVolumeClaim:
+            claimName: release-name-postgres-pvc

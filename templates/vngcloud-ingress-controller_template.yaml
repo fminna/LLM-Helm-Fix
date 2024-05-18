@@ -1,0 +1,94 @@
+---
+# Source: vngcloud-ingress-controller/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vngcloud-ingress-controller
+  namespace: kube-system
+---
+# Source: vngcloud-ingress-controller/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vngcloud-ingress-controller-config
+  namespace: kube-system
+stringData:
+  config: |
+    global:
+      clientID: <PUT_YOUR_CLIENT_ID>
+      clientSecret: <PUT_YOUR_CLIENT_SECRET>
+      identityURL: https://iamapis.vngcloud.vn/accounts-api
+      vserverURL: https://hcm-3.api.vngcloud.vn/vserver
+    metadata:
+      chartVersion: 0.2.2
+    cluster:
+      clusterID: ""
+      clusterName: cluster-1
+---
+# Source: vngcloud-ingress-controller/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vngcloud-ingress-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: vngcloud-ingress-controller
+  namespace: kube-system
+---
+# Source: vngcloud-ingress-controller/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vngcloud-ingress-controller
+  namespace: default
+  labels:
+    k8s-app: vngcloud-ingress-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: vngcloud-ingress-controller
+  serviceName: vngcloud-ingress-controller
+  template:
+    metadata:
+      labels:
+        k8s-app: vngcloud-ingress-controller
+    spec:
+      serviceAccountName: vngcloud-ingress-controller
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: vngcloud-ingress-controller
+          image: "vcr.vngcloud.vn/81-vks-public/vngcloud-ingress-controller:v0.2.0"
+          imagePullPolicy: Always
+          args:
+            - /bin/vngcloud-ingress-controller
+            - -v=5
+            - --config=/etc/config/vngcloud-ingress-controller-config.yaml
+          volumeMounts:
+            - mountPath: /etc/kubernetes
+              name: kubernetes-config
+              readOnly: true
+            - name: ingress-config
+              mountPath: /etc/config
+      hostNetwork: true
+      volumes:
+        - name: kubernetes-config
+          hostPath:
+            path: /etc/kubernetes
+            type: Directory
+        - name: ingress-config
+          secret:
+            secretName: vngcloud-ingress-controller-config
+            items:
+              - key: config
+                path: vngcloud-ingress-controller-config.yaml

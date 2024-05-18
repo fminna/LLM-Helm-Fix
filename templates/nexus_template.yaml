@@ -1,0 +1,259 @@
+---
+# Source: nexus/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-blobs
+  namespace: default
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app: release-name-nexus
+    chart: "nexus-1.2.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+# Source: nexus/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-dbs-data
+  namespace: default
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app: release-name-nexus
+    chart: "nexus-1.2.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+# Source: nexus/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-db-restore
+  namespace: default
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app: release-name-nexus
+    chart: "nexus-1.2.4"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+# Source: nexus/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-nexus"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8081
+      protocol: TCP
+      targetPort: 8081
+    - name: dockersnapshot
+      port: 8082
+      protocol: TCP
+      targetPort: 8082
+    - name: dockerrelease
+      port: 8083
+      protocol: TCP
+      targetPort: 8083
+  selector:
+    app: "release-name-nexus"
+    release: release-name
+---
+# Source: nexus/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-nexus"
+  labels:
+    app: "release-name-nexus"
+    chart: "nexus-1.2.4"
+    heritage: Helm
+    release: release-name
+    app.kubernetes.io/name: nexus
+    helm.sh/chart: nexus-1.2.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.38.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: nexus-statefulset
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "release-name-nexus"
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: "release-name-nexus"
+        release: release-name
+    spec:
+      containers:
+      - env:
+        - name: INSTALL4J_ADD_VM_PARAMS
+          value: -Xms10g -Xmx10g -XX:MaxDirectMemorySize=10g -XX:-MaxFDLimit
+        - name: JAVA_TOOL_OPTIONS
+          value: 
+        - name: NEXUS_CONTEXT
+          value: 
+        image: "sonatype/nexus3:3.38.0"
+        imagePullPolicy: IfNotPresent
+        name: nexus
+        ports:
+        - containerPort: 8081
+          name: http
+          protocol: TCP
+        - containerPort: 8082
+          name: dockersnapshot
+          protocol: TCP
+        - containerPort: 8083
+          name: dockerrelease
+          protocol: TCP
+        resources:
+            requests:
+              cpu: "4"
+        volumeMounts:
+        - mountPath: /nexus-data/blobs
+          name: "release-name-blobs"
+        - mountPath: /nexus-data/db
+          name: "release-name-dbs-data"
+        - mountPath: /nexus-data/restore-from-backup
+          name: "release-name-db-restore"
+      initContainers:
+      - args:
+        - chown
+        - -R
+        - "200"
+        - /data
+        image: busybox
+        name: chmod
+        volumeMounts:
+        - mountPath: /data/blobs
+          name: "release-name-blobs"
+        - mountPath: /data/db
+          name: "release-name-dbs-data"
+        - mountPath: /data/restore
+          name: "release-name-db-restore"
+      volumes:
+      - name: "release-name-blobs"
+        persistentVolumeClaim:
+          claimName: "release-name-blobs"
+      - name: "release-name-dbs-data"
+        persistentVolumeClaim:
+          claimName: "release-name-dbs-data"
+      - name: "release-name-db-restore"
+        persistentVolumeClaim:
+          claimName: "release-name-db-restore"
+---
+# Source: nexus/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app: nexus
+    chart: "nexus-1.2.4"
+    heritage: Helm
+    release: release-name
+  name: "nexus-docker-release"
+  annotations:
+    nginx.ingress.kubernetes.io/client_max_body_size: 5000m
+    nginx.ingress.kubernetes.io/proxy-body-size: 5000m
+spec:
+  rules:
+    - host: nexus-release.company.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "release-name-nexus"
+                port:
+                  number: 8083
+  tls:
+  - hosts:
+    - nexus-release.company.com
+    secretName: nexus-release
+---
+# Source: nexus/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app: nexus
+    chart: "nexus-1.2.4"
+    heritage: Helm
+    release: release-name
+  name: "nexus-docker-snapshot"
+  annotations:
+    nginx.ingress.kubernetes.io/client_max_body_size: 5000m
+    nginx.ingress.kubernetes.io/proxy-body-size: 5000m
+spec:
+  rules:
+    - host: nexus-snapshot.company.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "release-name-nexus"
+                port:
+                  number: 8082
+  tls:
+  - hosts:
+    - nexus-snapshot.company.com
+    secretName: nexus-snapshot
+---
+# Source: nexus/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app: nexus
+    chart: "nexus-1.2.4"
+    heritage: Helm
+    release: release-name
+  name: "release-name-nexus"
+  annotations:
+    nginx.ingress.kubernetes.io/client_max_body_size: 5000m
+    nginx.ingress.kubernetes.io/proxy-body-size: 5000m
+spec:
+  tls:
+    - hosts:
+      - nexus.company.com
+      secretName: nexus
+  rules:
+    - host: "nexus.company.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "release-name-nexus"
+                port:
+                  number: 8081

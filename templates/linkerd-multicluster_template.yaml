@@ -1,0 +1,532 @@
+---
+# Source: linkerd-multicluster/templates/gateway.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: linkerd-gateway
+  namespace: default
+  labels:
+    linkerd.io/extension: multicluster
+---
+# Source: linkerd-multicluster/templates/remote-access-service-mirror-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: linkerd-service-mirror-remote-access-default
+  namespace: default
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+---
+# Source: linkerd-multicluster/templates/remote-access-service-mirror-rbac.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: linkerd-service-mirror-remote-access-default-token
+  namespace: default
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    kubernetes.io/service-account.name: linkerd-service-mirror-remote-access-default
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+type: kubernetes.io/service-account-token
+---
+# Source: linkerd-multicluster/templates/link-crd.yaml
+###
+### Link CRD
+###
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: links.multicluster.linkerd.io
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  group: multicluster.linkerd.io
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              clusterCredentialsSecret:
+                description: Kubernetes secret of target cluster
+                type: string
+              gatewayAddress:
+                description: Gateway address of target cluster
+                type: string
+              gatewayIdentity:
+                description: Gateway Identity FQDN
+                type: string
+              gatewayPort:
+                description: Gateway Port
+                type: string
+              probeSpec:
+                description: Spec for gateway health probe
+                type: object
+                properties:
+                  path:
+                    description: Path of remote gateway health endpoint
+                    type: string
+                  period:
+                    description: Interval in between probe requests
+                    type: string
+                  port:
+                    description: Port of remote gateway health endpoint
+                    type: string
+              selector:
+                description: Kubernetes Label Selector
+                type: object
+                properties:
+                  matchLabels:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  matchExpressions:
+                    description: List of selector requirements
+                    type: array
+                    items:
+                      description: A selector item requires a key and an operator
+                      type: object
+                      required:
+                      - key
+                      - operator
+                      properties:
+                        key:
+                          description: Label key that selector should apply to
+                          type: string
+                        operator:
+                          description: Evaluation of a label in relation to set
+                          type: string
+                          enum: [In, NotIn, Exists, DoesNotExist]
+                        values:
+                          type: array
+                          items:
+                            type: string
+              remoteDiscoverySelector:
+                description: Selector for Services to mirror in remote discovery mode
+                type: object
+                properties:
+                  matchLabels:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  matchExpressions:
+                    description: List of selector requirements
+                    type: array
+                    items:
+                      description: A selector item requires a key and an operator
+                      type: object
+                      required:
+                      - key
+                      - operator
+                      properties:
+                        key:
+                          description: Label key that selector should apply to
+                          type: string
+                        operator:
+                          description: Evaluation of a label in relation to set
+                          type: string
+                          enum: [In, NotIn, Exists, DoesNotExist]
+                        values:
+                          type: array
+                          items:
+                            type: string
+              targetClusterName:
+                description: Name of target cluster to link to
+                type: string
+              targetClusterDomain:
+                description: Domain name of target cluster to link to
+                type: string
+              targetClusterLinkerdNamespace:
+                description: Name of namespace Linkerd control plane is installed in on target cluster
+                type: string
+  scope: Namespaced
+  names:
+    plural: links
+    singular: link
+    kind: Link
+---
+# Source: linkerd-multicluster/templates/remote-access-service-mirror-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: linkerd-service-mirror-remote-access-default
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+rules:
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: [""]
+  resources: ["pods", "endpoints", "services"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: ["policy.linkerd.io"]
+  resources: ["servers"]
+  verbs: ["list", "get", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]
+  resourceNames: ["linkerd-config"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+# Source: linkerd-multicluster/templates/remote-access-service-mirror-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: linkerd-service-mirror-remote-access-default
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: linkerd-service-mirror-remote-access-default
+subjects:
+- kind: ServiceAccount
+  name: linkerd-service-mirror-remote-access-default
+  namespace: default
+---
+# Source: linkerd-multicluster/templates/gateway.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: linkerd-gateway
+  namespace: default
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    mirror.linkerd.io/gateway-identity: linkerd-gateway.default.serviceaccount.identity.linkerd.cluster.local
+    mirror.linkerd.io/probe-period: "3"
+    mirror.linkerd.io/probe-path: /ready
+    mirror.linkerd.io/multicluster-gateway: "true"
+    component: gateway
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  ports:
+  - name: mc-gateway
+    port: 4143
+    protocol: TCP
+  - name: mc-probe
+    port: 4191
+    protocol: TCP
+  selector:
+    app: linkerd-gateway
+  type: LoadBalancer
+---
+# Source: linkerd-multicluster/templates/gateway.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: Linkerd
+    app.kubernetes.io/version: stable-2.14.10
+    component: gateway
+    app: linkerd-gateway
+    linkerd.io/extension: multicluster
+  name: linkerd-gateway
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: linkerd-gateway
+  template:
+    metadata:
+      annotations:
+        linkerd.io/created-by: linkerd/helm stable-2.14.10
+        linkerd.io/inject: enabled
+        config.linkerd.io/proxy-require-identity-inbound-ports: "4143"
+        config.linkerd.io/enable-gateway: "true"
+        config.linkerd.io/default-inbound-policy: all-authenticated
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+      labels:
+        app: linkerd-gateway
+        linkerd.io/extension: multicluster
+    spec:
+      
+      containers:
+        - name: pause
+          image: gcr.io/google_containers/pause:3.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 2103
+            seccompProfile:
+              type: RuntimeDefault
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: linkerd-gateway
+---
+# Source: linkerd-multicluster/templates/gateway-policy.yaml
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  namespace: default
+  name: linkerd-gateway
+  labels:
+    linkerd.io/extension: multicluster
+    app: linkerd-gateway
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: linkerd-gateway
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: any-meshed
+      namespace: default
+    - group: policy.linkerd.io
+      kind: NetworkAuthentication
+      name: source-cluster
+      namespace: default
+---
+# Source: linkerd-multicluster/templates/service-mirror-policy.yaml
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  namespace: default
+  name: service-mirror
+  labels:
+    linkerd.io/extension: multicluster
+    component: linkerd-service-mirror
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: service-mirror
+  requiredAuthenticationRefs:
+    # In order to use `linkerd mc gateways` you need viz' Prometheus instance
+    # to be able to reach the service-mirror. In order to also have a separate
+    # Prometheus scrape the service-mirror an additional AuthorizationPolicy
+    # resource should be created.
+    - kind: ServiceAccount
+      name: prometheus
+      namespace: linkerd-viz
+---
+# Source: linkerd-multicluster/templates/gateway-policy.yaml
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  namespace: default
+  name: any-meshed
+  labels:
+    linkerd.io/extension: multicluster
+    app: linkerd-gateway
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  identities:
+  - '*'
+---
+# Source: linkerd-multicluster/templates/gateway-policy.yaml
+apiVersion: policy.linkerd.io/v1alpha1
+kind: NetworkAuthentication
+metadata:
+  namespace: default
+  name: source-cluster
+  labels:
+    linkerd.io/extension: multicluster
+    app: linkerd-gateway
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  networks:
+    # Change this to the source cluster cidrs pointing to this gateway.
+    # Note that the source IP in some providers (e.g. GKE) will be the local
+    # node's IP and not the source cluster's
+  - cidr: "0.0.0.0/0"
+  - cidr: "::/0"
+---
+# Source: linkerd-multicluster/templates/gateway-policy.yaml
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  namespace: default
+  name: linkerd-gateway
+  labels:
+    linkerd.io/extension: multicluster
+    app: linkerd-gateway
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+spec:
+  podSelector:
+    matchLabels:
+      app: linkerd-gateway
+  port: linkerd-proxy
+---
+# Source: linkerd-multicluster/templates/service-mirror-policy.yaml
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  namespace: default
+  name: service-mirror
+  labels:
+    linkerd.io/extension: multicluster
+    component: linkerd-service-mirror
+spec:
+  podSelector:
+    matchLabels:
+      component: linkerd-service-mirror
+  port: admin-http
+  proxyProtocol: HTTP/1
+---
+# Source: linkerd-multicluster/templates/namespace-metadata-rbac.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  name: namespace-metadata
+  namespace: default
+---
+# Source: linkerd-multicluster/templates/namespace-metadata-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  name: namespace-metadata
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "patch"]
+  resourceNames: ["default"]
+---
+# Source: linkerd-multicluster/templates/namespace-metadata-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  name: namespace-metadata
+  namespace: default
+roleRef:
+  kind: Role
+  name: namespace-metadata
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: namespace-metadata
+  namespace: default
+---
+# Source: linkerd-multicluster/templates/namespace-metadata-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: linkerd
+  labels:
+    linkerd.io/extension: multicluster
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  name: mc-namespace-metadata-linkerd-config
+roleRef:
+  kind: Role
+  name: ext-namespace-metadata-linkerd-config
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: namespace-metadata
+  namespace: default
+---
+# Source: linkerd-multicluster/templates/namespace-metadata.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    linkerd.io/created-by: linkerd/helm stable-2.14.10
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  labels:
+    linkerd.io/extension: multicluster
+    app.kubernetes.io/name: namespace-metadata
+    app.kubernetes.io/part-of: Linkerd
+    app.kubernetes.io/version: stable-2.14.10
+  name: namespace-metadata
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        linkerd.io/created-by: linkerd/helm stable-2.14.10
+        linkerd.io/inject: disabled
+      labels:
+        linkerd.io/extension: multicluster
+        app.kubernetes.io/name: namespace-metadata
+        app.kubernetes.io/part-of: Linkerd
+        app.kubernetes.io/version: stable-2.14.10
+    spec:
+      restartPolicy: Never
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: namespace-metadata
+      containers:
+      - name: namespace-metadata
+        image: cr.l5d.io/linkerd/extension-init:v0.1.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 2103
+          seccompProfile:
+            type: RuntimeDefault
+        args:
+        - --extension
+        - multicluster
+        - --namespace
+        - default
+        - --linkerd-namespace
+        - linkerd

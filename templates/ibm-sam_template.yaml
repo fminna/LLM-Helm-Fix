@@ -1,0 +1,781 @@
+---
+# Source: ibm-sam/charts/isamconfig/templates/dataVolume.yaml
+#
+# This file contains the definitions for the data volume used by this helm
+# chart.  We only create a persistent volume claim if persistence has been
+# enabled and an existing volume claim has not been specified.
+#
+
+kind: PersistentVolumeClaim
+apiVersion: v1
+
+metadata:
+  name: release-name-pvc-cfg
+  labels:
+    app: "isamconfig"
+    chart: "isamconfig" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  ## if present, use the storageClassName from the values.yaml, else use the
+  ## default storageClass setup by the kube Administrator
+  ##
+  ## setting storageClassName to nil means use the default storage class
+  storageClassName: 
+
+  accessModes:
+    - ReadWriteOnce
+
+  resources:
+    requests:
+      storage: "20Gi"
+---
+# Source: ibm-sam/charts/isamconfig/templates/svc.yaml
+#
+# This file contains the definition for the service provides by this helm
+# chart.
+#
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: release-name-isamconfig
+  labels:
+    app: "isamconfig"
+    chart: "isamconfig" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  type: NodePort
+
+  ports:
+   - name: isamconfig-https
+     port: 9443
+
+  selector:
+    app: release-name-isamconfig
+---
+# Source: ibm-sam/charts/isamwrp/templates/adminSvc.yaml
+#
+# This file contains the definition for the service provides by this helm
+# chart.
+#
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: release-name-isamwrp-default-admin
+  labels:
+    app: "isamwrp"
+    chart: "isamwrp" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  type: ClusterIP
+
+  ports:
+   - name: isamwrp-admin-0
+     port: 9443
+
+  selector:
+    app: release-name-isamwrp-default
+---
+# Source: ibm-sam/charts/isamwrp/templates/svc.yaml
+#
+# This file contains the definition for the service provides by this helm
+# chart.
+#
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: release-name-isamwrp-default
+  labels:
+    app: "isamwrp"
+    chart: "isamwrp" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  type: NodePort
+
+  ports:
+   - name: isamwrp-0-https
+     port: 443
+
+  selector:
+    app: release-name-isamwrp-default
+---
+# Source: ibm-sam/charts/isamconfig/templates/deployment.yaml
+#
+# This file contains the main deployment definition used by the helm chart 
+# installation.
+#
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: release-name-isamconfig
+  labels:
+    app: "isamconfig"
+    chart: "isamconfig" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  selector:
+    matchLabels:
+      app: release-name-isamconfig
+      chart: isamconfig
+      release: release-name
+      heritage: Helm
+
+  template:
+    metadata:
+      labels:
+        # XXX: For some reason the 'app' label needs to be the fully qualified
+        #      application name else the helm_test command fails because we
+        #      can't resolve the application name.  This should be revisited
+        #      at some point in the future so that we can make use of the 
+        #      sch.metadata.labels.standard tag.
+        app: release-name-isamconfig
+        chart: isamconfig
+        release: release-name
+        heritage: Helm
+
+      annotations:        
+        productID: "5725-V90"
+        productName: "IBM Security Access Manager"
+        productVersion: "9.0.7.0"
+
+    spec:
+
+      hostNetwork:    false
+      hostPID:        false
+      hostIPC:        false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    6000
+
+      affinity:        
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - release-name-isamconfig
+            topologyKey: "kubernetes.io/hostname"
+
+
+      imagePullSecrets:
+        - name: 
+
+      containers:
+      - name:  release-name-isamconfig
+
+        securityContext:
+          privileged:               false
+          readOnlyRootFilesystem:   false
+          allowPrivilegeEscalation: true
+          runAsNonRoot:             true
+          runAsUser:                6000
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - KILL
+            - NET_BIND_SERVICE
+            - SETFCAP
+            - SETGID
+            - SETUID
+
+        image: "store/ibmcorp/isam:9.0.7.0"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: SNAPSHOT
+          value: ""
+        - name: FIXPACKS
+          value: ""
+        - name: SERVICE
+          value: config
+        - name: ADMIN_PWD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-admin
+              key: adminPassword
+
+        readinessProbe:
+          tcpSocket:
+            port:  9443
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+        livenessProbe:
+          tcpSocket:
+            port: 9443
+          initialDelaySeconds: 120
+          periodSeconds: 20 
+
+        ports:
+        - name: isamconfig
+          containerPort: 9443
+
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+          requests:
+            cpu: 1000m
+            memory: 1Gi
+
+        volumeMounts:
+        - name: release-name-pvc-cfg
+          mountPath: /var/shared
+          subPath: config.shared
+
+      volumes:
+        - name: release-name-pvc-cfg
+          persistentVolumeClaim:
+            claimName: release-name-pvc-cfg
+---
+# Source: ibm-sam/charts/isamwrp/templates/deployment.yaml
+#
+# This file contains the main deployment definition used by the helm chart 
+# installation.
+#
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: release-name-isamwrp-default
+  labels:
+    app: "isamwrp"
+    chart: "isamwrp" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: release-name-isamwrp-default
+      chart: isamwrp
+      release: release-name
+      heritage: Helm
+
+  template:
+    metadata:
+      labels:
+        # XXX: For some reason the 'app' label needs to be the fully qualified
+        #      application name else the helm_test command fails because we
+        #      can't resolve the application name.  This should be revisited
+        #      at some point in the future so that we can make use of the 
+        #      sch.metadata.labels.standard tag.
+        app: release-name-isamwrp-default
+        chart: isamwrp
+        release: release-name
+        heritage: Helm
+
+      annotations:        
+        productID: "5725-V90"
+        productName: "IBM Security Access Manager"
+        productVersion: "9.0.7.0"
+
+    spec:
+
+      hostNetwork:    false
+      hostPID:        false
+      hostIPC:        false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    6000
+
+      affinity:        
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - release-name-isamwrp-default
+            topologyKey: "kubernetes.io/hostname"
+
+      imagePullSecrets:
+        - name: 
+
+      containers:
+      - name:  release-name-isamwrp-default
+
+        securityContext:
+          privileged:               false
+          readOnlyRootFilesystem:   false
+          allowPrivilegeEscalation: true
+          runAsNonRoot:             true
+          runAsUser:                6000
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - KILL
+            - NET_BIND_SERVICE
+            - SETFCAP
+            - SETGID
+            - SETUID
+
+        image: "store/ibmcorp/isam:9.0.7.0"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: SNAPSHOT
+          value: ""
+        - name: FIXPACKS
+          value: ""
+        - name: SERVICE
+          value: webseal
+        - name: INSTANCE
+          value: default
+        - name: ADMIN_PWD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-admin
+              key: adminPassword
+        - name: AUTO_RELOAD_FREQUENCY
+          value: ""
+        - name: CONFIG_SERVICE_URL
+          value: https://release-name-isamconfig:9443/shared_volume
+        - name: CONFIG_SERVICE_USER_NAME
+          value: "admin"
+        - name: CONFIG_SERVICE_USER_PWD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-admin
+              key: adminPassword
+
+        livenessProbe:
+          exec:
+            command:
+            - /sbin/health_check.sh 
+            - livenessProbe
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+        readinessProbe:
+          exec:
+            command:
+            - /sbin/health_check.sh
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+        ports:
+        - name: isamwrp-0-https
+          containerPort: 443
+        - name: isamwrp-admin-0
+          containerPort: 9443
+
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+---
+# Source: ibm-sam/charts/isampostgresql/templates/dataVolume.yaml
+#
+# This file contains the definitions for the data volume used by this helm
+# chart.  We only create a persistent volume claim if persistence has been
+# enabled and an existing volume claim has not been specified.
+#
+---
+# Source: ibm-sam/templates/adminSecretServiceAccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+
+metadata:
+  name: "release-name-isam-secret-generator"
+  labels:
+    app: "isam"
+    chart: "ibm-sam" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "secret-generator"
+
+  annotations:
+    "helm.sh/hook":               pre-install,post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+    "helm.sh/hook-weight":        "0"
+
+imagePullSecrets:
+  - name: sa-default
+---
+# Source: ibm-sam/templates/adminSecretRole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "release-name-isam-secret-generator"
+  labels:
+    app: "isam"
+    chart: "ibm-sam" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "secret-generator"
+
+  annotations:
+    "helm.sh/hook":               pre-install,post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+    "helm.sh/hook-weight":        "0"
+
+rules:
+- apiGroups:
+    - ""
+  resources:
+    - secrets
+  verbs:
+    - get
+    - list
+    - create
+    - delete
+    - patch
+---
+# Source: ibm-sam/templates/adminSecretRoleBinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+
+metadata:
+  name: "release-name-isam-secret-generator"
+  labels:
+    app: "isam"
+    chart: "ibm-sam" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "secret-generator"
+
+  annotations:
+    "helm.sh/hook":               pre-install,post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+    "helm.sh/hook-weight":        "2"
+
+subjects:
+- kind:      ServiceAccount
+  name:      "release-name-isam-secret-generator"
+  namespace: default
+
+roleRef:
+  kind:     Role
+  name:     "release-name-isam-secret-generator"
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: ibm-sam/charts/isamconfig/templates/tests/test-webserver-connection.yaml
+#
+# This file contains the test definition which is used to validate the
+# health of this helm chart.
+#
+
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: "release-name-isamconfig-test"
+
+  annotations:
+    "helm.sh/hook": test-success
+
+  labels:
+    app: "isamconfig"
+    chart: "isamconfig" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  hostNetwork:    false
+  hostPID:        false
+  hostIPC:        false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser:    1
+
+  containers:
+  - name: "release-name-isamconfig-test"
+    image: "centos:7"
+    env:
+    command: ['curl']
+    args: ['-v', '-k', 'https://release-name-isamconfig:9443']
+
+    securityContext:
+      privileged:               false
+      readOnlyRootFilesystem:   true
+      allowPrivilegeEscalation: false
+      runAsNonRoot:             true
+      runAsUser:                1
+      capabilities:
+        drop:
+        - ALL
+
+  restartPolicy: Never
+
+  affinity:    
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: beta.kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+---
+# Source: ibm-sam/charts/isamwrp/templates/tests/test-webserver-connection.yaml
+#
+# This file contains the test definition which is used to validate the
+# health of this helm chart.
+#
+
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: release-name-isamwrp-default-test
+
+  annotations:
+    "helm.sh/hook": test-success
+
+  labels:
+    app: "isamwrp"
+    chart: "isamwrp" 
+    heritage: "Helm"
+    release: "release-name"
+
+spec:
+  hostNetwork:    false
+  hostPID:        false
+  hostIPC:        false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser:    1
+
+  containers:
+  - name: release-name-isamwrp-default-test
+    image: "centos:7"
+    env:
+    # XXX: What test can we run here?  We can only really look and see if the
+    #      image is running.  It won't actually start until we have a 
+    #      configuration snapshot available.
+    command: ['true']
+
+    securityContext:
+      privileged:               false
+      readOnlyRootFilesystem:   true
+      allowPrivilegeEscalation: false
+      runAsNonRoot:             true
+      runAsUser:                1
+      capabilities:
+        drop:
+        - ALL
+
+  restartPolicy: Never
+
+  affinity:    
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: beta.kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+---
+# Source: ibm-sam/templates/adminSecret.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-isam-secret-generator"
+  labels:
+    app: "isam"
+    chart: "ibm-sam" 
+    heritage: "Helm"
+    release: "release-name"
+  annotations:
+    "helm.sh/hook":               pre-install
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight":        "3"
+    
+spec:
+  template:
+    metadata:
+      labels:
+        app: "isam"
+        chart: "ibm-sam" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "secret-generator"
+      annotations:        
+
+    spec:
+      serviceAccountName: "release-name-isam-secret-generator"
+
+      hostNetwork: false
+      hostPID:     false
+      hostIPC:     false
+
+      affinity:        
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+      restartPolicy: Never
+
+      imagePullSecrets:
+        - name: 
+
+      containers:
+      - name: "secret-generator"
+        image: "store/ibmcorp/isam:9.0.7.0"
+        imagePullPolicy: "IfNotPresent"
+
+        securityContext:
+          privileged:               false
+          readOnlyRootFilesystem:   false
+          allowPrivilegeEscalation: false
+          runAsNonRoot:             true
+          runAsUser:                5001
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - KILL
+            - NET_BIND_SERVICE
+            - SETFCAP
+            - SETGID
+            - SETUID
+
+        command:
+          - sh
+          - -c
+          - 'curl -s https://kubernetes.default.svc.cluster.local/api/v1/namespaces/default/secrets --header "Authorization: Bearer `cat /var/run/secrets/kubernetes.io/serviceaccount/token`" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt --request "POST" -H "content-type: application/json" --data-binary "{\"kind\": \"Secret\", \"apiVersion\": \"v1\", \"metadata\": { \"name\": \"release-name-admin\" }, \"data\": { \"adminPassword\": \"`openssl rand -hex 16 | perl -pe chomp | base64`\"}}" && echo Done'
+
+  backoffLimit: 5
+---
+# Source: ibm-sam/templates/deleteAdminSecret.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-isam-secret-generator-delete"
+  labels:
+    app: "isam"
+    chart: "ibm-sam" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "secret-generator-delete"
+  annotations:
+    # This needs to run just before a Helm delete, as the secrets
+    # are created by pre-install hooks and are therefore not automatically
+    # deleted by a `helm delete`.
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+    "helm.sh/hook-weight":        "3"
+
+spec:
+  template:
+    metadata:
+      labels:
+        app: "isam"
+        chart: "ibm-sam" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "secret-generator-delete"
+      annotations:        
+
+    spec:
+      serviceAccountName: "release-name-isam-secret-generator"
+
+      hostNetwork: false
+      hostPID:     false
+      hostIPC:     false
+
+      affinity:        
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+      restartPolicy: Never
+
+      imagePullSecrets:
+        - name: 
+
+      containers: 
+      - name: "secret-generator-delete"
+        image: "store/ibmcorp/isam:9.0.7.0"
+        imagePullPolicy: "IfNotPresent"
+
+        securityContext:
+          privileged:               false
+          readOnlyRootFilesystem:   false
+          allowPrivilegeEscalation: true
+          runAsNonRoot:             true
+          runAsUser:                5001
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - KILL
+            - NET_BIND_SERVICE
+            - SETFCAP
+            - SETGID
+            - SETUID
+
+        command:
+          - sh
+          - -c
+          - 'curl -s https://kubernetes.default.svc.cluster.local/api/v1/namespaces/default/secrets/release-name-admin  --header "Authorization: Bearer `cat /var/run/secrets/kubernetes.io/serviceaccount/token`" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt --request DELETE && echo Done'
+
+  backoffLimit: 5

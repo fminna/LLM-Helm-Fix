@@ -1,0 +1,193 @@
+---
+# Source: novosga/templates/app-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-app-secret
+data:
+  DATABASE_URL : bXlzcWw6Ly9ub3Zvc2dhOk15U1FMX0FwcF9QNHNzdzByZCFAbm92b3NnYS1kYi1zZXJ2aWNlOjMzMDYvbm92b3NnYTI/Y2hhcnNldD11dGY4bWI0JnNlcnZlclZlcnNpb249NS43
+  NOVOSGA_ADMIN_FIRSTNAME : QWRtaW5pc3RyYWRvcg==
+  NOVOSGA_ADMIN_LASTNAME : R2xvYmFs
+  NOVOSGA_ADMIN_PASSWORD : MTIzNDU2
+  NOVOSGA_ADMIN_USERNAME : YWRtaW4=
+---
+# Source: novosga/templates/db-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-db-secret
+data:
+  MYSQL_DATABASE : bm92b3NnYTI=
+  MYSQL_PASSWORD : TXlTUUxfQXBwX1A0c3N3MHJkIQ==
+  MYSQL_ROOT_PASSWORD : TXlTUUxfcjAwdF9QNHNzVzByZCE=
+  MYSQL_USER : bm92b3NnYQ==
+---
+# Source: novosga/templates/app-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-app-configmap
+data:
+  APP_ENV: prod
+  LANGUAGE: pt_BR
+  NOVOSGA_NOPRIORITY_DESCRIPTION: Serviço Normal
+  NOVOSGA_NOPRIORITY_NAME: Normal
+  NOVOSGA_PLACE_NAME: Guiche
+  NOVOSGA_PRIORITY_DESCRIPTION: Serviço prioridade
+  NOVOSGA_PRIORITY_NAME: Prioridade
+  NOVOSGA_UNITY_CODE: U01
+  NOVOSGA_UNITY_NAME: Minha Unidade
+  TZ: America/Sao_Paulo
+---
+# Source: novosga/templates/db-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-db-configmap
+data: 
+  TZ: America/Sao_Paulo
+---
+# Source: novosga/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-slow
+spec:
+  capacity:
+    storage:500Mi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /mnt/data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - kind-worker1
+---
+# Source: novosga/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-slow
+spec:
+  resources:
+    requests:
+      storage: 500Mi
+  volumeMode: Filesystem
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+---
+# Source: novosga/templates/app-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-app-service
+  labels: 
+    app: novosga
+spec:
+  type: NodePort
+  selector: 
+    app: novosga
+  ports:
+    - port: 80
+      nodePort: 30000
+---
+# Source: novosga/templates/db-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-db-service
+  labels: 
+    server: db  
+spec:
+  clusterIP: "None"
+  selector: 
+    server: db
+  ports:
+    - port: 3306
+---
+# Source: novosga/templates/app-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-app-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels: 
+      app: novosga
+  template:
+    metadata:
+      name: app-pod
+      labels: 
+        app: novosga
+    spec:
+      containers:
+        - name: novosga-container
+          image: "novosga/novosga:latest"
+          resources:
+            requests:
+              cpu: "0.3"
+              memory: "256Mi"
+            limits:
+              cpu: "0.5"
+              memory: "512Mi"
+          ports:
+              - containerPort: 80
+              - containerPort: 2020
+          envFrom:
+            - configMapRef:
+                name: app-configmap
+            - secretRef:
+                name: app-secret
+      restartPolicy: Always
+---
+# Source: novosga/templates/db-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-db-statefulset
+spec:
+  replicas: 1
+  selector:
+    matchLabels: 
+      server: db
+  template:
+    metadata:
+      name: db-pod
+      labels: 
+        server: db
+    spec:
+      containers:
+        - name: db-sga-container
+          image: "mysql:5.7"
+          resources:
+            requests:
+              cpu: "0.3"
+              memory: "512Mi"
+            limits:
+              cpu: "0.5"
+              memory: "512Mi"
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - mountPath: /var/lib/mysql
+              name: mysql-vol
+          envFrom:
+            - configMapRef:
+                name: db-configmap
+            - secretRef:
+                name: db-secret
+      restartPolicy: Always
+      volumes:
+        - name: mysql-vol
+          persistentVolumeClaim:
+            claimName: pvc-slow

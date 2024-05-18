@@ -1,0 +1,436 @@
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app: cpx-sidecar-injector
+  name: cpx-sidecar-injector
+  namespace: default
+spec:
+  ingress:
+  - {}
+  podSelector:
+    matchLabels:
+      app: cpx-sidecar-injector
+  policyTypes:
+  - Ingress
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-serviceaccount.yaml
+# Serviceaccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cpx-sidecar-injector-service-account
+  namespace: default
+  labels:
+    app: cpx-sidecar-injector
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-configmap.yaml
+# This configmap stores the sidecar proxy info and arguments needed
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpx-istio-sidecar-injector
+  namespace: default
+  labels:
+    app: cpx-sidecar-injector
+    chart: citrix-cpx-istio-sidecar-injector-1.14.1
+    release: release-name
+    istio: sidecar-injector
+data:
+  config: |-
+    policy: enabled
+    # If user does *NOT* want to inject sidecar on some pods based on label,
+    # then mention such labels in 'neverInjectSelector' entry.
+    # Note: This is valid only when istio's sidecar-injector image is running.
+    neverInjectSelector:
+      - matchExpressions:
+        - {key: citrix.com/no.sidecar, operator: Exists}
+    # Here, if pod has a label citrix.com/no.sidecar, then sidecar won't be injected for that pod.
+    template: |-
+      containers:
+      - name: istio-adaptor
+        image: quay.io/citrix/citrix-xds-adaptor:0.10.3
+        imagePullPolicy: IfNotPresent 
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: APPLICATION_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['app']
+        - name: SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.serviceAccountName
+        - name: CA_ADDR
+          value: istiod.istio-system.svc:15012 #istiod.istio-system.svc:15012
+        - name: TRUST_DOMAIN
+          value: cluster.local #cluster.local
+        - name: CLUSTER_ID 
+          value: Kubernetes #Kubernetes
+        - name: CERT_TTL_IN_HOURS 
+          value: 720
+        - name: JWT_POLICY
+          value: "third-party-jwt" # third-party-jwt if Kubernetes cluster supports third-party tokens
+        - name: NS_USER
+          value: nsroot
+        - name: NS_PASSWORD
+          value: nsroot
+        - name: ENABLE_LABELS_FEATURE
+          value: "false"            
+        - name: DEFAULT_SSL_LISTENER_ON_443
+          value: "TRUE"          
+        - name: LOGLEVEL
+          value: "DEBUG"
+        args:
+        - -ads-server
+        - istiod.istio-system.svc:15012 # istiod.istio-system.svc:15012
+        - -ads-secure-connect=true
+        - -ads-server-SAN
+        - 
+        - -istio-proxy-type
+        - "sidecar"
+        - -citrix-adc
+        - "http://127.0.0.1:10080"
+        - -citrix-adc-password
+        - "/var/deviceinfo/random_id"
+        volumeMounts:
+        - mountPath: /var/deviceinfo
+          name: cpx-pwd
+        - mountPath: /var/run/secrets/tokens
+          name: istio-token
+        - mountPath: /etc/nslogin 
+          name: nslogin
+          readOnly: true
+        - name: certs
+          mountPath: /etc/certs
+        - name: istiod-ca-cert
+          mountPath: /etc/rootcert/
+        - name: podinfo
+          mountPath: /etc/podinfo
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsGroup: 32024
+          runAsUser: 32024 # UID of xds-adaptor container's user
+          runAsNonRoot: true
+      - name: cpx-proxy
+        image: quay.io/citrix/citrix-k8s-cpx-ingress:13.1-30.52
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: "EULA"
+          value: "false"
+        - name: "CPX_SIDECAR_MODE"
+          value: "true"
+        - name: "CPX_DISABLE_PROBE"
+          value: "YES"
+        - name: "MGMT_HTTP_PORT"
+          value: "10080"
+        - name: "MGMT_HTTPS_PORT"
+          value: "10443"
+        - name: "KUBERNETES_TASK_ID"
+          value: ""
+        - name: "NS_CPX_LITE"
+          value: 1
+        - name: "LOGSTREAM_COLLECTOR_IP"
+          value: ""
+        volumeMounts:
+          - mountPath: /cpx/conf/
+            name: cpx-conf
+          - mountPath: /var/deviceinfo
+            name: cpx-pwd
+          - mountPath: /cpx/crash/
+            name: cpx-crash
+      volumes:
+      - name: cpx-conf
+        emptyDir: {}
+      - name: cpx-pwd
+        emptyDir: {}
+      - name: cpx-crash
+        emptyDir: {}
+      - name: nslogin
+        secret:
+          optional: true
+          secretName: nslogin
+      - name: certs
+        emptyDir: {}  
+      - name: istio-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: istio-ca
+              expirationSeconds: 43200
+              path: istio-token
+      - name: istiod-ca-cert
+        configMap:
+          defaultMode: 0777
+          name: istio-ca-root-cert
+      - name: podinfo
+        downwardAPI:
+          items:
+          - path: "labels"
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: "annotations"
+            fieldRef:
+              fieldPath: metadata.annotations
+  values: |-
+    {
+      "global": {
+        "jwtPolicy": "third-party-jwt",
+      },
+      "adcSelector": {
+        "adc": "citrix",
+       }
+    }
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-istioConfigMap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio
+  namespace: default
+  labels:
+    app: cpx-sidecar-injector
+    chart: citrix-cpx-istio-sidecar-injector-1.14.1
+    release: release-name
+    istio: sidecar-injector
+data:
+  mesh: |-
+    # Needed for injection of securityContext in PodSpec during auto-sidecar injection
+    sdsUdsPath: unix:/etc/istio/proxy/SDS
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-serviceaccount.yaml
+# ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cpx-sidecar-injector-istio-system
+  labels:
+    app: cpx-sidecar-injector
+rules:
+- apiGroups: ["*"]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests", "certificatesigningrequests/approval"]
+  verbs: ["get", "list", "create", "watch", "delete", "update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["kubernetes.io/legacy-unknown", "kubernetes.io/kubelet-serving"]
+  verbs: ["get", "list", "create", "watch", "delete", "update", "approve"]
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-serviceaccount.yaml
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cpx-sidecar-injector-admin-role-binding-istio-system
+  labels:
+    app: cpx-sidecar-injector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cpx-sidecar-injector-istio-system
+subjects:
+  - kind: ServiceAccount
+    name: cpx-sidecar-injector-service-account
+    namespace: default
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-deployment-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpx-sidecar-injector
+  namespace: default
+  labels:
+    istio: sidecar-injector
+    app: cpx-sidecar-injector
+spec:
+  ports:
+  - port: 443
+  selector:
+    istio: sidecar-injector
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/cpx-sidecar-injector-deployment-service.yaml
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpx-sidecar-injector
+  namespace: default
+  labels:
+    app: sidecarInjectorWebhook
+    istio: sidecar-injector
+    app: cpx-sidecar-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpx-sidecar-injector
+      istio: sidecar-injector
+  template:
+    metadata:
+      labels:
+        istio: sidecar-injector
+        app: cpx-sidecar-injector
+      annotations:
+        sidecar.istio.io/inject: "false"
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      serviceAccountName: cpx-sidecar-injector-service-account
+      initContainers:
+        - name: sidecar-certs-generator
+          image: quay.io/citrix/cpx-sidecar-injector-certgen:1.2.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - name: certs
+            mountPath: /tmp
+      containers:
+        - name: sidecar-injector-webhook
+          image: quay.io/citrix/cpx-istio-sidecar-injector:1.3.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --caCertFile=/etc/istio/certs/cert.pem
+            - --tlsCertFile=/etc/istio/certs/cert.pem
+            - --tlsKeyFile=/etc/istio/certs/key.pem
+            - --injectConfig=/etc/istio/inject/config
+            - --meshConfig=/etc/istio/config/mesh
+            - --healthCheckInterval=10s
+            - --webhookConfigName=cpx-sidecar-injector
+            - --webhookName=cpx-sidecar-injector.citrix.io
+            - --objectWebhookName=object.cpx-sidecar-injector.citrix.io
+          volumeMounts:
+          - name: config-volume
+            mountPath: /etc/istio/config
+            readOnly: true
+          - name: certs
+            mountPath: /etc/istio/certs
+            readOnly: true
+          - name: inject-config
+            mountPath: /etc/istio/inject
+            readOnly: true
+          livenessProbe:
+            exec:
+              command:
+                - cat
+                - /health
+            failureThreshold: 5
+            initialDelaySeconds: 4
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - cat
+                - /health
+            failureThreshold: 5
+            initialDelaySeconds: 4
+            periodSeconds: 10
+            initialDelaySeconds: 4
+          resources:
+            requests:
+              cpu: 10m
+            
+      volumes:
+      - name: config-volume
+        configMap:
+          name: istio
+      - name: certs
+        emptyDir: {}
+      - name: inject-config
+        configMap:
+          name: cpx-istio-sidecar-injector
+          items:
+          - key: config
+            path: config
+          - key: values
+            path: values
+---
+# Source: citrix-cpx-istio-sidecar-injector/templates/mutatingwebhook.yaml
+# Mutating wehbook is used to perform sidecar injection. 
+# It calls sidecar-injector-service when the label is matched.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: cpx-sidecar-injector
+  namespace: default
+  labels:
+    app: cpx-sidecar-injector
+    chart: citrix-cpx-istio-sidecar-injector-1.14.1
+    release: release-name
+webhooks:
+  - name: cpx-sidecar-injector.citrix.io
+    admissionReviewVersions:
+    - v1
+    clientConfig:
+      service:
+        name: cpx-sidecar-injector
+        namespace: default
+        path: "/inject"
+      caBundle: ""
+    rules:
+      - operations: [ "CREATE" ]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: "*"
+    sideEffects: None
+    failurePolicy: Fail
+    namespaceSelector:
+      matchLabels:
+        cpx-injection: enabled
+  - name: object.cpx-sidecar-injector.citrix.io
+    admissionReviewVersions:
+    - v1
+    clientConfig:
+      service:
+        name: cpx-sidecar-injector
+        namespace: default
+        path: "/inject"
+      caBundle: ""
+    rules:
+      - operations: [ "CREATE" ]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: "*"
+    sideEffects: None
+    failurePolicy: Fail
+    objectSelector:
+      matchLabels:
+        sidecar.citrix.io/inject: "true"

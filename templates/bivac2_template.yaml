@@ -1,0 +1,237 @@
+---
+# Source: bivac2/templates/role.yaml
+apiVersion: v1
+kind: ServiceAccount
+
+metadata:
+  name: release-name
+  labels:
+    app: bivac2
+    chart: bivac2-0.1.1
+    release: release-name
+    heritage: Helm
+---
+# Source: bivac2/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name
+  labels:
+    app: bivac2
+    chart: bivac2-0.1.1
+    release: release-name
+    heritage: Helm
+data:
+  providers-config.toml: |
+    [providers]
+      [providers.mysql]
+      pre_cmd = """
+      mkdir -p $volume/backups && \
+      echo $(if [ -z '$MYSQL_ROOT_PASSWORD' ]; then \
+        mysqldump --all-databases --extended-insert --user=$MYSQL_USER --password=$MYSQL_PASSWORD; else \
+        mysqldump --all-databases --extended-insert --password=$MYSQL_ROOT_PASSWORD; \
+      fi) > $volume/backups/all.sql"""
+      detect_cmd = "[[ -d $volume/mysql ]]"
+      post_cmd = "rm -rf $volume/backups"
+      backup_dir = "backups"
+
+      [providers.postgresql]
+      pre_cmd = "mkdir -p $volume/backups && pg_dumpall --clean -Upostgres > $volume/backups/all.sql"
+      post_cmd = "rm -rf $volume/backups"
+      detect_cmd = "[[ -f $volume/PG_VERSION ]]"
+      backup_dir = "backups"
+
+      [providers.openldap]
+      pre_cmd = "mkdir -p $volume/backups && slapcat > $volume/backups/all.ldif"
+      detect_cmd = "[[ -f $volume/DB_CONFIG ]]"
+      backup_dir = "backups"
+
+      [providers.mongo]
+      pre_cmd = """
+      if [ -z '$MONGO_INITDB_ROOT_USERNAME' ]; then \
+        mongodump -o $volume/backups; else \
+        mongodump -o $volume/backups --username=$MONGO_INITDB_ROOT_USERNAME --password=$MONGO_INITDB_ROOT_PASSWORD; \
+      fi"""
+      post_cmd = "rm -rf $volume/backups"
+      detect_cmd = "[[ -f $volume/mongod.lock ]]"
+      backup_dir = "backups"
+---
+# Source: bivac2/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name
+  labels:
+    app: bivac2
+    chart: bivac2-0.1.1
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups: ['']
+    resources:
+      - pods
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+  - apiGroups: ['']
+    resources:
+      - namespaces
+      - nodes
+      - persistentvolumeclaims
+      - serviceaccounts
+    verbs:
+      - get
+      - list
+  - apiGroups: ['']
+    resources:
+      - pods/exec
+      - pods/log
+    verbs:
+      - create
+      - get
+      - list
+      - post
+---
+# Source: bivac2/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name
+  labels:
+    app: bivac2
+    chart: bivac2-0.1.1
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name
+subjects:
+  - kind: ServiceAccount
+    name: release-name
+    namespace: default
+---
+# Source: bivac2/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: bivac2
+    helm.sh/chart: bivac2-0.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 80
+      targetPort: api
+  selector:
+    app: bivac2
+    release: release-name
+---
+# Source: bivac2/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    app: bivac2
+    chart: bivac2-0.1.1
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: bivac2
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: bivac2
+        release: release-name
+      annotations:
+        alpha.image.policy.openshift.io/resolve-names: '*'
+        prometheus.io/port: '8182'
+        prometheus.io/scrape: 'true'
+    spec:
+      serviceAccountName: release-name
+      containers:
+        - name: manager
+          image: camptocamp/bivac:2.1-dev
+          imagePullPolicy: Always
+          command:
+            - bivac
+            - manager
+          ports:
+            - name: api
+              containerPort: 8182
+          env:
+            - name: BIVAC_ORCHESTRATOR
+              value: kubernetes
+            - name: KUBERNETES_ALL_NAMESPACES
+              value: "true"
+            - name: AWS_ACCESS_KEY_ID
+              value: XXXXXXXXXXXXXXXXXXXX
+            - name: RESTIC_FORGET_ARGS
+              value: XXXXXXXXXXXXXX
+            - name: BIVAC_TARGET_URL
+              value: XXXXXXXXXXXXXXXXXXX
+            - name: AWS_SECRET_ACCESS_KEY
+              value: XXXXXXXXXXXXXXXXXXX
+            - name: RESTIC_PASSWORD
+              value: XXXXXXXXXXX
+            - name: BIVAC_SERVER_PSK
+              value: XXXXXXXXXXXXXXXXXXX
+            - name: BIVAC_LOG_SERVER
+              value: "http://release-name.default.svc:80"
+          livenessProbe:
+            tcpSocket:
+              port: api
+            initialDelaySeconds: 120
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            tcpSocket:
+              port: api
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: bivac-providers-conf
+              mountPath: /etc/bivac
+          resources:
+            {}
+      volumes:
+        - name: bivac-providers-conf
+          configMap:
+            name: release-name
+---
+# Source: bivac2/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name
+  labels:
+    app.kubernetes.io/name: bivac2
+    helm.sh/chart: bivac2-0.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  endpoints:
+    - port: api
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bivac2
+      helm.sh/chart: bivac2-0.1.1
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "2.1"
+      app.kubernetes.io/managed-by: Helm

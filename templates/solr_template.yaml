@@ -1,0 +1,183 @@
+---
+# Source: solr/templates/config-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: solr-env-tpl
+  labels:
+    helm.sh/chart: solr-0.8.0
+    app.kubernetes.io/name: solr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.11.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  conf: |-
+    {{- $clusterName := $.cluster.metadata.name }}
+    {{- $namespace := $.cluster.metadata.namespace }}
+    {{- $solr_zk_from_service_ref := fromJson "{}" }}
+    
+    {{- if index $.component "serviceReferences" }}
+      {{- range $i, $e := $.component.serviceReferences }}
+        {{- if eq $i "solrZookeeper" }}
+          {{- $solr_zk_from_service_ref = $e }}
+          {{- break }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    
+    # Try to get zookeeper from service reference first, if zookeeper service reference is empty, get default zookeeper componentDef in ClusterDefinition
+    {{- $zk_server := "" }}
+    {{- if $solr_zk_from_service_ref }}
+      {{- if and (index $solr_zk_from_service_ref.spec "endpoint")}}
+         {{- $zk_server = printf "%s" $solr_zk_from_service_ref.spec.endpoint.value}}
+      {{- end }}
+    {{- end }}
+    
+    SOLR_ZK_HOSTS: {{ $zk_server }}
+---
+# Source: solr/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: solr
+  labels:
+    helm.sh/chart: solr-0.8.0
+    app.kubernetes.io/name: solr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.11.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: solr
+  connectionCredential:
+    username: ""
+    password: ""
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_http)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_http)"
+  componentDefs:
+    - name: solr
+      workloadType: Stateful
+      characterType: solr
+      statefulSpec:
+        updateStrategy: BestEffortParallel
+      serviceRefDeclarations:
+        - name: solrZookeeper
+          serviceRefDeclarationSpecs:
+            - serviceKind: zookeeper
+              serviceVersion: ^3.7.\d{1,2}$
+      configSpecs:
+        - name: solr-config-env
+          templateRef: solr-env-tpl
+          namespace: default
+          volumeName: solr-config-env
+          constraintRef: solr-env-constraints
+          asEnvFrom:
+            - solr
+      service:
+        ports:
+          - name: http
+            port: 8983
+            targetPort: http
+      podSpec:
+        securityContext:
+          fsGroup: 0
+          runAsGroup: 0
+          runAsNonRoot: true
+          runAsUser: 1001
+        containers:
+          - name: solr
+            env:
+              - name: SOLR_ENABLE_CLOUD_MODE
+                value: "yes"
+              - name: SOLR_CLOUD_BOOTSTRAP
+                value: "yes"
+              - name: SOLR_NUMBER_OF_NODES
+                value: "$(KB_REPLICA_COUNT)"
+              - name: SOLR_PORT_NUMBER
+                value: "8983"
+            ports:
+              - name: http
+                containerPort: 8983
+            livenessProbe:
+              failureThreshold: 6
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 5
+              exec:
+                command:
+                - /bin/bash
+                - -ec
+                - |
+                  curl --silent --connect-timeout 15000 http://localhost:${SOLR_PORT_NUMBER}/api/node/health | grep --quiet  '\"status\":\"OK\"'
+            readinessProbe:
+              failureThreshold: 6
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              successThreshold: 1
+              timeoutSeconds: 5
+              exec:
+                command:
+                - /bin/bash
+                - -ec
+                - |
+                  curl --silent --connect-timeout 15000 http://localhost:${SOLR_PORT_NUMBER}/api/node/health | grep --quiet  '\"status\":\"OK\"'
+            startupProbe:
+              exec:
+                command:
+                - /bin/bash
+                - -ec
+                - |
+                  curl --silent --connect-timeout 15000 http://localhost:${SOLR_PORT_NUMBER}/api/node/health | grep --quiet  '\"status\":\"OK\"'
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
+              privileged: false
+              runAsGroup: 0
+              runAsNonRoot: true
+              runAsUser: 1001
+            volumeMounts:
+              - name: data
+                mountPath: /bitnami/solr
+---
+# Source: solr/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: solr-8.11.2
+  labels:
+    helm.sh/chart: solr-0.8.0
+    app.kubernetes.io/name: solr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.11.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: solr
+  componentVersions:
+    - componentDefRef: solr
+      versionsContext:
+        containers:
+          - name: solr
+            image: bitnami/solr:8.11.2
+            imagePullPolicy: IfNotPresent
+---
+# Source: solr/templates/config-configmap.yaml
+apiVersion: apps.kubeblocks.io/v1beta1
+kind: ConfigConstraint
+metadata:
+  name: solr-env-constraints
+  labels:
+    helm.sh/chart: solr-0.8.0
+    app.kubernetes.io/name: solr
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "8.11.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  parametersSchema:
+    cue: ""
+
+  # mysql configuration file format
+  fileFormatConfig:
+    format: props-plus

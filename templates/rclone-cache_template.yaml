@@ -1,0 +1,142 @@
+---
+# Source: rclone-cache/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-rclone-cache
+  labels:
+    helm.sh/chart: rclone-cache-1.0.5
+    app.kubernetes.io/name: rclone-cache
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: rclone-cache/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-rclone-cache
+  labels:
+    helm.sh/chart: rclone-cache-1.0.5
+    app.kubernetes.io/name: rclone-cache
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-rclone-cache
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rclone-cache
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rclone-cache
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-rclone-cache
+      securityContext:
+        {}
+      volumes:
+        - name: rclone-data
+          hostPath:
+            path: /mnt/rclone-cache-writer       
+        - name: config-data
+          configMap:
+            name: rclone-config-data
+            items:
+              - key: rclone.conf
+                path: rclone.conf
+        - name: config
+          emptyDir: {}                    
+      initContainers:
+        - name: umount-previous-mount
+          image: rclone/rclone
+          command: ["/bin/fusermount", "-u" ,"/data"]   
+          securityContext:
+            capabilities:
+              add:
+              - SYS_ADMIN
+            privileged: true
+          volumeMounts:
+            - mountPath: /data
+              mountPropagation: Bidirectional
+              name: rclone-data                  
+        - name: rclone-cache-config
+          image: "busybox"
+          command:
+            - cp
+          args:
+            - -v
+            - /in/rclone.conf
+            - /out/rclone.conf
+          volumeMounts:
+          - name: config-data
+            mountPath: /in
+          - name: config
+            mountPath: /out    
+      containers:
+        - name: rclone-cache
+          securityContext:
+            capabilities:
+              add:
+              - SYS_ADMIN
+            privileged: true
+          image: "rclone/rclone:latest"
+          imagePullPolicy: Always
+          args: [
+ "mount",
+ "gdrive-writer:","/data",
+ "--config=/config/rclone-cache/rclone-cache.conf",
+ "--log-level=INFO",
+ "--allow-other",
+ "--allow-non-empty",
+ "--umask","002",
+ "--dir-cache-time","100h", 
+ "--poll-interval","15s", 
+ "--cache-dir=/cache", 
+ "--vfs-cache-mode","writes", 
+ "--drive-stop-on-upload-limit"
+ ]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/fusermount", "-u" ,"/data" ]
+          livenessProbe:
+            exec:
+              command:
+                - "rclone" 
+                - "lsd" 
+                - ":"
+            initialDelaySeconds: 20
+            timeoutSeconds: 15
+            periodSeconds: 20
+            successThreshold: 1
+            failureThreshold: 3                    
+          readinessProbe:
+            exec:
+              command:
+                - "rclone" 
+                - "lsd" 
+                - ":"
+            initialDelaySeconds: 20
+            timeoutSeconds: 15
+            periodSeconds: 20
+            successThreshold: 1
+            failureThreshold: 3                    
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 4096Mi
+            requests:
+              cpu: 400m
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /data
+              mountPropagation: Bidirectional
+              name: rclone-data
+            - mountPath: /cache
+              mountPropagation: Bidirectional
+              name: rclone-cache 
+            - mountPath: /config/rclone
+              name: config
+      nodeSelector:
+        kubernetes.io/hostname: rke2-master-3

@@ -1,0 +1,256 @@
+---
+# Source: access-service/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: access-service-serviceaccount
+  namespace: services
+---
+# Source: access-service/templates/config-map.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: access-service-config-map
+  namespace: services
+data:
+  environment.yaml: |-
+    {}
+---
+# Source: access-service/templates/rbac.yaml
+# https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+# Service account the client will use to reset the deployment,
+# by default the pods running inside the cluster can do no such things.
+# allow getting status and patching only the one deployment you want
+# to restart
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: access-service-restart
+  namespace: services
+rules:
+  - apiGroups: ["apps", "extensions"]
+    resources: ["deployments"]
+    resourceNames:
+      - access-service
+    verbs: ["get", "patch", "list", "watch"]
+---
+# Source: access-service/templates/rbac.yaml
+# bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-service-restart
+  namespace: services
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: access-service-restart
+subjects:
+  - kind: ServiceAccount
+    name: access-service-serviceaccount
+    namespace: services
+---
+# Source: access-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: access-service-service
+  namespace: services
+  labels:
+    app: access-service
+spec:
+  ports:
+    - name: http
+      port: 33336
+      protocol: TCP
+      targetPort: 33336
+  selector:
+    app: access-service
+  type: ClusterIP
+---
+# Source: access-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: access-service-gateway-service
+  namespace: services
+  labels:
+    app: access-service
+spec:
+  ports:
+    - name: http
+      port: 22606
+      protocol: TCP
+      targetPort: 22606
+  selector:
+    app: access-service
+  type: ClusterIP
+---
+# Source: access-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: access-service-load-balancer
+  namespace: services
+  labels:
+    app: access-service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 22606
+  selector:
+    app: access-service
+  type: LoadBalancer
+---
+# Source: access-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: access-service
+  namespace: services
+  labels:
+    app: access-service
+spec:
+  replicas: 2
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: access-service
+  template:
+    metadata:
+      labels:
+        app: access-service
+    spec:
+      serviceAccountName: access-service-serviceaccount
+      nodeSelector:
+        role: service
+      terminationGracePeriodSeconds: 360
+      containers:
+      - name: access-service
+        image: harbor-repo-hostname/acccess-service:0.2.0
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-secret-access-key
+        - name: AWS_DEFAULT_REGION
+          valueFrom:
+            secretKeyRef:
+              name: aws-credential-secret
+              key: aws-default-region
+        - name: CLUSTER_ID
+          value: dev
+        - name: USE_KUBE_ENVIRONMENT
+          value: "0"
+        - name: ACCESS_LIBRARY_VERSION
+          value: 0.2.0
+        - name: CLOUD_LIBRARY_VERSION
+          value: 0.2.0
+        - name: NETWORK_LIBRARY_VERSION
+          value: 0.2.0
+        - name: PROTO_LIBRARY_VERSION
+          value: 0.2.0
+        - name: SERVICE_LIBRARY_VERSION
+          value: 0.2.0
+        - name: CLOUD_PROVIDER
+          value: aws
+        ports:
+        - containerPort: 33336
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "0.1"
+            memory: 0.5Gi
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - sleep
+                - "300"
+        startupProbe:
+          exec:
+            command:
+              - cat
+              - /tmp/ready
+          failureThreshold: 50
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - /usr/ikigailabs/liveness/liveness_probe.sh
+          initialDelaySeconds: 500
+          periodSeconds: 45
+          successThreshold: 1
+          failureThreshold: 2
+        volumeMounts:
+          - name: library-environment-file
+            mountPath: /etc/config/library_environment.yaml
+            subPath: library_environment.yaml
+          - name: environment-file
+            mountPath: /etc/config/environment.yaml
+            subPath: environment.yaml
+      - name: access-service-gateway
+        image: harbor-repo-hostname/acccess-gateway:0.2.1
+        ports:
+        - containerPort: 22606
+        args:
+          - "bash"
+          - "launch.sh"
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "0.1"
+            memory: 0.5Gi
+      volumes:
+        - name: library-environment-file
+          configMap:
+            name: library-config-map
+        - name: environment-file
+          configMap:
+            name: access-service-config-map
+---
+# Source: access-service/templates/cron-job.yaml
+# https://stackoverflow.com/questions/52422300/how-to-schedule-pods-restart
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restart-access-service
+  namespace: services
+spec:
+  concurrencyPolicy: Forbid
+  schedule: '20 */6 * * *'
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 10800
+      template:
+        spec:
+          serviceAccountName: access-service-serviceaccount
+          restartPolicy: Never
+          containers:
+            - name: kubectl
+              image: 577436195391.dkr.ecr.us-east-2.amazonaws.com/mirror-images-dev:bitnami-kubectl
+              command:
+                - 'kubectl'
+                - 'rollout'
+                - 'restart'
+                - deployment/access-service

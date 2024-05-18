@@ -1,0 +1,290 @@
+---
+# Source: fluentd-aggregator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-fluentd-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluentd-aggregator-4.6.0
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.15.0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+---
+# Source: fluentd-aggregator/templates/configmap-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fluentd-aggregator-config
+  namespace: default
+  labels:
+    helm.sh/chart: fluentd-aggregator-4.6.0
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.15.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  fluentd.conf: |-
+    <system>
+      log_level info
+      root_dir /fluentd/data
+      workers 1
+    </system>
+
+    <source>
+      @type http
+      @label @FLUENT_PROBE
+      port 9880
+      bind 0.0.0.0
+    </source>
+
+    <source>
+      @type prometheus
+      @label @FLUENT_PROMETHEUS
+      port 24231
+      bind 0.0.0.0
+      metrics_path /metrics
+    </source>
+
+    <source>
+      @type prometheus_monitor
+      <labels>
+        host ${hostname}
+      </labels>
+    </source>
+
+    <source>
+      @type prometheus_output_monitor
+      <labels>
+        host ${hostname}
+      </labels>
+    </source>
+
+    <source>
+      @type forward
+      @id input
+      @label @INPUT
+      port 24224
+      bind 0.0.0.0
+    </source>
+
+    <label @INPUT>
+      <filter **>
+        @type prometheus
+        <metric>
+          name fluentd_input_status_num_records_total
+          desc The total number of incoming records before global filters are applied.
+          type counter
+        </metric>
+      </filter>
+      <match **>
+        @type route
+        <route **>
+          @label @PROMETHEUS
+          copy
+        </route>
+        <route **>
+          @label @DEFAULT
+        </route>
+      </match>
+    </label>
+
+    <label @FLUENT_LOG>
+      <match **>
+        @type stdout
+      </match>
+    </label>
+
+    <label @FLUENT_PROBE>
+      <match **>
+        @type null
+      </match>
+    </label>
+
+    <label @FLUENT_PROMETHEUS>
+      <match **>
+        @type null
+      </match>
+    </label>
+
+    <label @PROMETHEUS>
+      <match **>
+        @type prometheus
+        <metric>
+          name fluentd_output_status_num_records_total
+          desc The total number of outgoing records after global filters are applied.
+          type counter
+        </metric>
+      </match>
+    </label>
+
+    <label @DEFAULT>
+      <match **>
+        @type stdout
+      </match>
+    </label>
+---
+# Source: fluentd-aggregator/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fluentd-aggregator-headless
+  namespace: default
+  labels:
+    helm.sh/chart: fluentd-aggregator-4.6.0
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.15.0"
+    app.kubernetes.io/managed-by: Helm
+    prometheus.io/service-monitor: "false"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: 9880
+      targetPort: http
+      protocol: TCP
+    - name: http-metrics
+      port: 24231
+      targetPort: http-metrics
+      protocol: TCP
+    - name: http-forward
+      port: 24224
+      targetPort: http-forward
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+---
+# Source: fluentd-aggregator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fluentd-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluentd-aggregator-4.6.0
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9880
+      targetPort: http
+      protocol: TCP
+    - name: http-metrics
+      port: 24231
+      targetPort: http-metrics
+      protocol: TCP
+    - name: http-forward
+      port: 24224
+      targetPort: http-forward
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+---
+# Source: fluentd-aggregator/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-fluentd-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluentd-aggregator-4.6.0
+    app.kubernetes.io/name: fluentd-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-fluentd-aggregator-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluentd-aggregator
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluentd-aggregator
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: fc21936bdc083e0dd49d1e52bc20e42435ba7fd38d05a1991b5301e08f0585c7
+    spec:
+      serviceAccountName: release-name-fluentd-aggregator
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: aggregator
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          image: ghcr.io/stevehipwell/fluentd-aggregator:2.15.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TMPDIR
+              value: /tmp/fluentd
+            - name: FLUENTD_CONF
+              value: fluentd.conf
+          ports:
+            - name: http
+              containerPort: 9880
+              protocol: TCP
+            - name: http-metrics
+              containerPort: 24231
+              protocol: TCP
+            - name: http-forward
+              containerPort: 24224
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 12
+            httpGet:
+              path: /fluent.live?json=%7B%22ping%22%3A+%22pong%22%7D
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /fluent.ready?json=%7B%22ping%22%3A+%22pong%22%7D
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            successThreshold: 1
+            timeoutSeconds: 2
+          volumeMounts:
+            - name: config
+              mountPath: /fluentd/etc
+              readOnly: true
+            - name: data
+              mountPath: /fluentd/data
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-fluentd-aggregator-config
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

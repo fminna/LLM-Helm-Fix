@@ -1,0 +1,193 @@
+---
+# Source: kitcaddy/templates/netpol.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: release-name-kitcaddy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kitcaddy
+      app.kubernetes.io/instance: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80 #KitCaddy default
+          protocol: TCP
+---
+# Source: kitcaddy/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kitcaddy-config
+  namespace: default
+data:
+
+  config.json: |
+    {
+      "logging": {
+        "logs": {
+          "default": {
+            "level": "INFO"
+          }
+        }
+      },
+      "admin": {
+        "disabled": true
+      },
+      "apps": {
+        "tls": {
+        },
+        "http": {
+          "servers": {
+          }
+        }
+      }
+    }
+---
+# Source: kitcaddy/templates/kitcaddy-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kitcaddy
+  namespace: default
+  labels:
+    helm.sh/chart: kitcaddy-1.3.19
+    app: release-name
+    app.kubernetes.io/name: kitcaddy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.3.19"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: proxy-port
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kitcaddy
+    app.kubernetes.io/instance: release-name
+---
+# Source: kitcaddy/templates/kitcaddy-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-kitcaddy
+  namespace: default
+  labels:
+    helm.sh/chart: kitcaddy-1.3.19
+    app: release-name
+    app.kubernetes.io/name: kitcaddy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.3.19"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kitcaddy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 9b8a26fbcd1ca3e48c1a5799d7d75f8bfccc585163dcf36bfd592fb01a1c6219
+      labels:
+        app.kubernetes.io/name: kitcaddy
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      securityContext:
+        {}
+      containers:
+        - name: kitcaddy
+          securityContext:
+            runAsUser: 11000
+            runAsGroup: 11000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - -config
+            - /config/config.json
+          env: []
+          image: "kvalitetsit/kitcaddy:1.3.19"
+          ports:
+            - containerPort: 80
+              name: proxy-port
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          volumeMounts:
+            - mountPath: /config
+              name: caddy-config
+        - name: release-name-kitcaddy
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          image: "nginx:1.3.19"
+          imagePullPolicy: IfNotPresent
+          env: []
+          ports:
+            - name: container-port
+              containerPort: 8080          
+
+          resources:
+            {}
+
+      volumes:
+        - configMap:
+            name: release-name-kitcaddy-config
+          name: caddy-config
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kitcaddy
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+---
+# Source: kitcaddy/templates/kitcaddy-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-kitcaddy
+  namespace: default
+  labels:
+    helm.sh/chart: kitcaddy-1.3.19
+    app: release-name
+    app.kubernetes.io/name: kitcaddy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.3.19"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: "chart-example.local"
+      http:
+        paths:

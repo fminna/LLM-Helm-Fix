@@ -1,0 +1,224 @@
+---
+# Source: nats/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: "nats"
+    chart: "nats-2.5.1"
+    heritage: "Helm"
+    release: "release-name"
+  name: release-name-nats
+data:
+  gnatsd.conf: |-
+    listen: 0.0.0.0:4222
+    http: 0.0.0.0:8222
+
+    # Authorization for client connections
+    authorization {
+      user: nats_client
+      password: qrvzVL29JL
+      timeout:  1
+    }
+
+    # Logging options
+    debug: false
+    trace: false
+    logtime: false
+
+    # Pid file
+    pid_file: "/tmp/gnatsd.pid"
+
+    # Some system overides
+
+
+    # Clustering definition
+    cluster {
+      listen: 0.0.0.0:6222
+
+      # Authorization for cluster connections
+      authorization {
+        user: nats_cluster
+        password: JpLEPWS6Ll
+        timeout:  1
+      }
+
+      # Routes are actively solicited and connected to from this server.
+      # Other servers can connect to us if they supply the correct credentials
+      # in their routes definitions from above
+      routes = [
+        nats://nats_cluster:JpLEPWS6Ll@release-name-nats-cluster:6222
+      ]
+    }
+---
+# Source: nats/templates/client-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nats-client
+  labels:
+    app: "nats"
+    chart: "nats-2.5.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4222
+      targetPort: client
+      name: client
+  selector:
+    app: "nats"
+    release: "release-name"
+---
+# Source: nats/templates/cluster-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nats-cluster
+  labels:
+    app: "nats"
+    chart: "nats-2.5.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6222
+      targetPort: cluster
+      name: cluster
+  selector:
+    app: "nats"
+    release: "release-name"
+---
+# Source: nats/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nats-headless
+  labels:
+    app: nats
+    chart: nats-2.5.1
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: client
+    port: 4222
+    targetPort: client
+  - name: cluster
+    port: 6222
+    targetPort: cluster
+  selector:
+    app: nats
+    release: "release-name"
+---
+# Source: nats/templates/monitoring-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nats-monitoring
+  labels:
+    app: "nats"
+    chart: "nats-2.5.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8222
+      targetPort: monitoring
+      name: monitoring
+  selector:
+    app: "nats"
+    release: "release-name"
+---
+# Source: nats/templates/statefulset.yaml
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: release-name-nats
+  labels:
+    app: "nats"
+    chart: "nats-2.5.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-nats-headless
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: "nats"
+      release: "release-name"
+  template:
+    metadata:
+      labels:
+        app: "nats"
+        chart: "nats-2.5.1"
+        release: "release-name"
+    spec:      
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: "nats"
+                  release: "release-name"
+      containers:
+      - name: nats
+        image: docker.io/bitnami/nats:1.4.1
+        imagePullPolicy: Always
+        command:
+        - gnatsd
+        args:
+        - -c
+        - /opt/bitnami/nats/gnatsd.conf
+        # to ensure nats could run with non-root user, we put the configuration
+        # file under `/opt/bitnami/nats/gnatsd.conf`, please check the link below
+        # for the implementation inside Dockerfile:
+        # - https://github.com/bitnami/bitnami-docker-nats/blob/master/1/debian-9/Dockerfile#L12
+        ports:
+        - name: client
+          containerPort: 4222
+        - name: cluster
+          containerPort: 6222
+        - name: monitoring
+          containerPort: 8222
+        livenessProbe:
+          httpGet:
+            path: /
+            port: monitoring
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /
+            port: monitoring
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        resources:
+          {}
+        volumeMounts:
+          - name: config
+            mountPath: /opt/bitnami/nats/gnatsd.conf
+            subPath: gnatsd.conf
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-nats

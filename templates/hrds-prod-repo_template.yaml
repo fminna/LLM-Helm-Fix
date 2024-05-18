@@ -1,0 +1,225 @@
+---
+# Source: hrds-prod-repo/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hrds-prod-repo
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7144
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 7145
+      targetPort: actuator
+      protocol: TCP
+      name: actuator
+  selector:
+    choerodon.io/release: "release-name"
+---
+# Source: hrds-prod-repo/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+    choerodon.io/logs-parser: "spring-boot"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/actuator/prometheus"
+      labels:
+        choerodon.io/version: 0.23.2
+        choerodon.io/service: "hrds-prod-repo"
+        choerodon.io/metrics-port: "7145"
+        choerodon.io/release: "release-name"
+    spec:
+      initContainers:
+      - name: skywalking-agent
+        image: registry.cn-shanghai.aliyuncs.com/c7n/skywalking-agent:6.5.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - cp -rfp /skywalking/agent/* /agent
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+      containers:
+      - name: release-name
+        image: registry.cn-shanghai.aliyuncs.com/c7n/hrds-prod-repo:0.23.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: "DES_ENCRYPT_DES_IV"
+          value: "HH123456"
+        - name: "DES_ENCRYPT_DES_KEY"
+          value: "uhNT5moFYsw1xYEQTaSkpUSXJLa7VcerZiXYOwiRo1kLRIkX4kw2UPlIt5cbHtXxIsJbeipgX5HerWoGeCpG"
+        - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+          value: "http://register-server:8080"
+        - name: "HARBOR_BASE_URL"
+          value: "https://registry.com"
+        - name: "HARBOR_INIT_CUSTOM_REPO_PASSWORD"
+          value: "123456"
+        - name: "HARBOR_INIT_CUSTOM_REPO_URL"
+          value: "jdbc:mysql://localhost:3306/devops_service?useUnicode=true&characterEncoding=utf-8&useSSL=false"
+        - name: "HARBOR_INIT_CUSTOM_REPO_USERNAME"
+          value: "choerodon"
+        - name: "HARBOR_INIT_DEFAULT_REPO_PASSWORD"
+          value: "123456"
+        - name: "HARBOR_INIT_DEFAULT_REPO_URL"
+          value: "jdbc:mysql://localhost:3306/hzero_platform?useUnicode=true&characterEncoding=utf-8&useSSL=false"
+        - name: "HARBOR_INIT_DEFAULT_REPO_USERNAME"
+          value: "choerodon"
+        - name: "HARBOR_PASSWORD"
+          value: "admin"
+        - name: "HARBOR_USER_NAME"
+          value: "admin"
+        - name: "MANAGEMENT_SERVER_PORT"
+          value: "7145"
+        - name: "NEXUS_DEFAULT_ANONYMOUS_ROLE"
+          value: "test"
+        - name: "NEXUS_DEFAULT_ANONYMOUS_USER"
+          value: "test"
+        - name: "NEXUS_DEFAULT_BASE_URL"
+          value: "https://localhost"
+        - name: "NEXUS_DEFAULT_ENABLE_ANONYMOUS_FLAG"
+          value: "0"
+        - name: "NEXUS_DEFAULT_PASSWORD"
+          value: "admin"
+        - name: "NEXUS_DEFAULT_USER_NAME"
+          value: "admin"
+        - name: "SERVER_PORT"
+          value: "7144"
+        - name: "SPRING_CLOUD_CONFIG_ENABLED"
+          value: "false"
+        - name: "SPRING_CLOUD_CONFIG_URI"
+          value: "http://register-server:8000"
+        - name: "SPRING_DATASOURCE_PASSWORD"
+          value: "123456"
+        - name: "SPRING_DATASOURCE_URL"
+          value: "jdbc:mysql://localhost:3306/hrds_prod_repo?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+        - name: "SPRING_DATASOURCE_USERNAME"
+          value: "choerodon"
+        - name: "SPRING_REDIS_DATABASE"
+          value: "0"
+        - name: "SPRING_REDIS_HOST"
+          value: "localhost"
+        - name: "SPRING_REDIS_PORT"
+          value: "6379"
+        ports:
+        - name: http
+          containerPort: 7144
+          protocol: TCP
+        - name: actuator
+          containerPort: 7145
+          protocol: TCP
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            memory: 2Gi
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+        livenessProbe:
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 7144
+              && curl -s --fail localhost:7145/actuator/health
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 7144
+              && curl -s --fail localhost:7145/actuator/health
+      volumes:
+      - name: skywalking-agent
+        emptyDir: {}
+---
+# Source: hrds-prod-repo/templates/pre-config-db.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-db
+  annotations:
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      name: release-name-init-db
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rfp /var/choerodon/* /tools
+        image: registry.cn-shanghai.aliyuncs.com/c7n/dbtool:0.7.1
+        imagePullPolicy: IfNotPresent
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-db
+        image: registry.cn-shanghai.aliyuncs.com/c7n/hrds-prod-repo:0.23.2
+        command:
+        - /bin/sh
+        - -c
+        - >
+          java -Ddata.init=true
+          -Ddata.update.exclusion=
+          -Dspring.datasource.url="jdbc:mysql://localhost:3306/?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+          -Dspring.datasource.username=choerodon
+          -Dspring.datasource.password=123456
+          -Dspring.datasource.driver-class-name=com.mysql.jdbc.Driver
+          -Dinstaller.datasources.platform.url="jdbc:mysql://localhost:3307/?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+          -Dinstaller.datasources.platform.username=username
+          -Dinstaller.datasources.platform.password=password
+          -Dinstaller.datasources.platform.driver-class-name=com.mysql.jdbc.Driver
+          -Dinstaller.jarPath=/choerodon/hrds-prod-repo.jar
+          -Dlogging.level.root=info
+          -Dinstaller.mapping=script/db/service-mapping.xml
+          -jar /var/choerodon/choerodon-tool-liquibase.jar;
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar

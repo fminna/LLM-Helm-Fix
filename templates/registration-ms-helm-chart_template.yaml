@@ -1,0 +1,228 @@
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-postgres-config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registration-ms-postgres-config-map
+  namespace: notes-project
+data:
+  POSTGRES_USER: registration_system_user
+  POSTGRES_PASSWORD: 1q2w3e
+  POSTGRES_DB: registration_system
+  pg_hba.conf: |
+    local all all trust
+    host all all 127.0.0.1/32 trust
+    host all all ::1/128 trust
+    local replication all trust
+    host replication all 127.0.0.1/32 trust
+    host replication all ::1/128 trust
+    host all all all trust
+  postgresql.conf: |
+    hba_file = '/etc/postgresql/pg_hba.conf'
+    listen_addresses = '*'
+    max_connections = 100
+    shared_buffers = 128MB
+    dynamic_shared_memory_type = posix
+    max_wal_size = 1GB
+    min_wal_size = 80MB
+    log_timezone = 'Etc/UTC'
+    datestyle = 'iso, mdy'
+    timezone = 'Etc/UTC'
+    lc_messages = 'en_US.utf8'
+    lc_monetary = 'en_US.utf8'
+    lc_numeric = 'en_US.utf8'
+    lc_time = 'en_US.utf8'
+    default_text_search_config = 'pg_catalog.english'
+---
+# Source: registration-ms-helm-chart/templates/registration-system-ms-config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registration-system-ms-config-map
+  namespace: notes-project
+data:
+  CONFIG_SERVER_URL: config-server-service
+  CONFIG_SERVER_PORT: "80"
+  VAULT_HOST: vault-service
+  VAULT_PORT: "80"
+  VAULT_URL: http://vault-service:80
+  DB_URL: registration-ms-postgres-service
+  DB_PORT: "80"
+  DB_NAME: registration_system
+  DB_USER: registration_system_user
+  DB_KAFKA_HOST: kafka-broker-host
+  MAX_ACCESS_TOKEN_VALIDITY: "10000"
+  MIN_ACCESS_TOKEN_VALIDITY: "10"
+  MAX_REFRESH_TOKEN_VALIDITY: "10000"
+  MIN_REFRESH_TOKEN_VALIDITY: "10"
+  ALLOW_ORIGIN: "*"
+  VAULT_TOKEN: hvs.ARRLQzfDs19E29KPABXcn39b
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-postgres-persistent-volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: registration-ms-postgres-persistent-volume
+  namespace: notes-project
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/registration-ms-postgres
+  storageClassName: standard
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-postgres-persistent-volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registration-ms-postgres-persistent-volume-claim
+  namespace: notes-project
+spec:
+  volumeName: registration-ms-postgres-persistent-volume
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-postgres-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: registration-ms-postgres-service
+  namespace: notes-project
+  labels:
+    app: registration-ms-postgres-service
+spec:
+  selector:
+    app: registration-ms-postgres-deployment
+  ports:
+    - port: 80
+      targetPort: 5432
+      protocol: TCP
+      name: registration-ms-postgres-service-port
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: registration-ms-service
+  namespace: notes-project
+  labels:
+    app: registration-ms-service
+spec:
+  selector:
+    app: registration-ms-deployment
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: registration-ms-service-port
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registration-ms-deployment
+  namespace: notes-project
+  labels:
+    app: registration-ms-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registration-ms-deployment
+  template:
+    metadata:
+      labels:
+        app: registration-ms-deployment
+    spec:
+      containers:
+        - name: registration-ms-deployment
+          image: vlebediantsev/registration-ms-final
+          ports:
+            - containerPort: 8080
+            - containerPort: 5005
+          envFrom:
+            - configMapRef:
+                name: registration-system-ms-config-map
+---
+# Source: registration-ms-helm-chart/templates/registration-ms-postgres-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registration-ms-postgres-deployment
+  namespace: notes-project
+  labels:
+    app: registration-ms-postgres-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registration-ms-postgres-deployment
+  template:
+    metadata:
+      labels:
+        app: registration-ms-postgres-deployment
+    spec:
+      containers:
+        - name: registration-ms-postgres-deployment
+          image: library/postgres
+          args: ['-c', 'config_file=/etc/postgresql/postgresql.conf']
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: registration-ms-postgres-config-map
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              readOnly: false
+            - name: pghba
+              mountPath: /etc/postgresql/pg_hba.conf
+              readOnly: false
+              subPath: pg_hba.conf
+            - name: config
+              mountPath: /etc/postgresql/postgresql.conf
+              readOnly: false
+              subPath: postgresql.conf
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registration-ms-postgres-persistent-volume-claim
+        - name: pghba
+          configMap:
+            name: registration-ms-postgres-config-map
+            items:
+              - key: pg_hba.conf
+                path: pg_hba.conf
+        - name: config
+          configMap:
+            name: registration-ms-postgres-config-map
+            items:
+              - key: postgresql.conf
+                path: postgresql.conf
+---
+# Source: registration-ms-helm-chart/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-registration-ms-helm-chart-test-connection"
+  labels:
+    helm.sh/chart: registration-ms-helm-chart-0.1.0
+    app.kubernetes.io/name: registration-ms-helm-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-registration-ms-helm-chart:80']
+  restartPolicy: Never

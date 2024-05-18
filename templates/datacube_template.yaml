@@ -1,0 +1,147 @@
+---
+# Source: datacube/templates/wms-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: datacube
+    chart: datacube-0.18.2
+    release: release-name
+    heritage: Helm
+  name: release-name-datacube
+  annotations:
+    null
+spec:
+  type: NodePort
+  ports:
+  - name: "80"
+    port: 80
+    targetPort: 8000
+  selector:
+    app: datacube
+    release: release-name
+---
+# Source: datacube/templates/wms-deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: "release-name-datacube-dev"
+  labels:
+    app: datacube
+    chart: datacube-0.18.2
+    release: release-name
+    heritage: Helm
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: "25%"
+      maxUnavailable: "25%"
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: datacube
+        release: release-name
+      annotations:
+        iam.amazonaws.com/role: kubernetes-wms
+    spec:
+      # Turning single-request-reopen option on would fix issue where in two requests from the same port are
+      # not handled correctly it will close the socket and open a new one before sending the second request.
+      dnsConfig:
+        options:
+        - name: single-request-reopen
+      initContainers:
+      containers:
+      - name: wms
+        env:
+        - name: DB_HOSTNAME
+          value: "localhost"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: "datacube"
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-datacube
+              key: postgres-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-datacube
+              key: postgres-password
+        - name: VIRTUAL_HOST
+          value: localhost,127.0.0.
+        - name: PROFILER_FILE_PATH
+          value: /opt/profiling/
+        - name: PROFILER
+          value: "1"
+        image: "opendatacube/wms:latest"
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2048Mi
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - curl --silent 'http://localhost:8000/?service=WMS&request=GetCapabilities&version=1.3.0'
+              | grep -q -F '<Layer queryable="1">'
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        args: [ "gunicorn",  "-b",  "0.0.0.0:8000",  "-w",  "4",  "--keep-alive",  "50",  "--timeout",  "120",  "datacube_wms.wsgi", ]
+        terminationGracePeriodSeconds: 60
+        volumeMounts:
+        - mountPath: /opt/profiling/
+          name: profiling-volume
+      restartPolicy: Always
+      volumes:
+      - name: profiling-volume
+        emptyDir: {}
+status: {}
+---
+# Source: datacube/templates/autoscaling.yaml
+apiVersion: autoscaling/v2beta1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-datacube
+  labels:
+    app: datacube
+    chart: datacube-0.18.2
+    release: release-name
+    heritage: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: "release-name-datacube-dev"
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        targetAverageUtilization: 10
+---
+# Source: datacube/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-datacube
+  labels:
+    app: release-name-datacube
+    chart: "datacube-0.18.2"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+type: Opaque
+data:
+  postgres-username: "cmVsZWFzZS1uYW1l"
+  postgres-password: "Rkg5YWxJb1oxNw=="

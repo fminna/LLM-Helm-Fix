@@ -1,0 +1,207 @@
+---
+# Source: easegress/templates/ServiceAccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  namespace: default
+---
+# Source: easegress/templates/ConfigMap.yaml
+apiVersion: v1
+data:
+  eg-primary.yaml: |
+    cluster-name: easegress
+    cluster-role: primary
+    cluster:
+      listen-client-urls:
+      - http://0.0.0.0:2379
+      listen-peer-urls:
+      - http://0.0.0.0:2380
+      initial-cluster:
+      - release-name-0: http://release-name-0.easegress-hs.default:2380
+    api-addr: 0.0.0.0:2381
+    data-dir: /opt/easegress/data
+    wal-dir: ""
+    cpu-profile-file: ""
+    memory-profile-file: ""
+    log-dir: /opt/easegress/log
+    debug: false
+  eg-secondary.yaml: |
+    cluster-name: easegress
+    cluster-role: secondary
+    cluster:
+      primary-listen-peer-urls:
+      - http://release-name-0.easegress-hs.default:2380
+    api-addr: 0.0.0.0:2381
+    data-dir: /opt/easegress/data
+    wal-dir: ""
+    cpu-profile-file: ""
+    memory-profile-file: ""
+    log-dir: /opt/easegress/log
+    debug: false
+kind: ConfigMap
+metadata:
+  name: release-name
+  namespace: default
+---
+# Source: easegress/templates/ClusterRole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["services", "endpoints", "secrets"]
+    verbs: ["get", "watch", "list"]
+---
+# Source: easegress/templates/ClusterRoleBinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name
+subjects:
+  - kind: ServiceAccount
+    name: release-name
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: easegress/templates/Service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: easegress-hs
+  namespace: default
+spec:
+  clusterIP: None
+  ports:
+  - name: admin-port
+    port: 2381
+    protocol: TCP
+    targetPort: 2381
+  - name: peer-port
+    port: 2380
+    protocol: TCP
+    targetPort: 2380
+  - name: client-port
+    port: 2379
+    protocol: TCP
+    targetPort: 2379
+  selector:
+    app: release-name
+  type: ClusterIP
+---
+# Source: easegress/templates/Service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: easegress-public
+  namespace: default
+spec:
+  ports:
+  - name: admin-port
+    port: 2381
+    protocol: TCP
+    targetPort: 2381
+    nodePort: 31255
+  selector:
+    app: release-name
+  type: NodePort
+---
+# Source: easegress/templates/Service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  selector:
+    app: release-name
+  ports:
+    - name: web
+      protocol: TCP
+      port: 8080
+      nodePort: 30780
+  type: NodePort
+---
+# Source: easegress/templates/StatefulSet.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    name: release-name
+  name: release-name
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name
+  serviceName: easegress-hs
+  template:
+    metadata:
+      labels:
+        app: release-name
+    spec:
+      serviceAccountName: release-name
+      containers:
+      - args:
+        - -c
+        - |-
+          echo name: $EG_NAME > /opt/eg-config/config.yaml &&
+          cat /opt/eg-config/eg-primary.yaml >> /opt/eg-config/config.yaml && 
+          /opt/easegress/bin/easegress-server \
+            -f /opt/eg-config/config.yaml \
+            --advertise-client-urls http://$(EG_NAME).easegress-hs.default:2379 \
+            --initial-advertise-peer-urls http://$(EG_NAME).easegress-hs.default:2380
+        command:
+        - /bin/sh
+        env:
+        - name: EG_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        image: megaease/easegress:latest
+        imagePullPolicy: IfNotPresent
+        name: easegress
+        ports:
+        - containerPort: 2381
+          name: admin-port
+          protocol: TCP
+        - containerPort: 2380
+          name: peer-port
+          protocol: TCP
+        - containerPort: 2379
+          name: client-port
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 1200m
+            memory: 2Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - mountPath: /opt/eg-config/eg-primary.yaml
+          name: release-name
+          subPath: eg-primary.yaml
+        - mountPath: /opt/easegress/data
+          name:  easegress-data-volume 
+        - mountPath: /opt/easegress/log
+          name:  easegress-data-volume 
+      restartPolicy: Always
+      volumes:
+      - emptyDir: {}
+        name: easegress-data-volume
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: eg-primary.yaml
+            path: eg-primary.yaml
+          name: release-name
+        name: release-name
+  updateStrategy:
+    type: RollingUpdate

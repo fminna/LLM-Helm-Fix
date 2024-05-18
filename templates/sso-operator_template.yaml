@@ -1,0 +1,255 @@
+---
+# Source: sso-operator/templates/sa.yaml
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: release-name-sso-operator
+  labels:
+    chart: "sso-operator-1.2.50"
+---
+# Source: sso-operator/templates/sso-crd.yaml
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: ssos.jenkins.io
+spec:
+  additionalPrinterColumns:
+  - JSONPath: .metadata.creationTimestamp
+    description: |-
+      CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.
+
+      Populated by the system. Read-only. Null for lists. More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
+    name: Age
+    type: date
+  group: jenkins.io
+  names:
+    kind: SSO
+    listKind: SSOList
+    plural: ssos
+    shortNames:
+    - sso
+    singular: sso
+  scope: Namespaced
+  version: v1
+  versions:
+  - name: v1
+    served: true
+    storage: true
+---
+# Source: sso-operator/templates/role.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-sso-operator
+  labels:
+    chart: "sso-operator-1.2.50"
+rules:
+- apiGroups:
+  - jenkins.io
+  resources:
+  - "*"
+  verbs:
+  - "*"
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - "*"
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  - update
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  - services
+  - pods
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - watch
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts 
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - extensions
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - watch
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - ""
+  - "route.openshift.io"
+  resources:
+  - routes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  - update
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - clusterrolebindings 
+  verbs:
+  - get
+  - list
+  - update
+---
+# Source: sso-operator/templates/rolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-sso-operator
+  labels:
+    chart: "sso-operator-1.2.50"
+subjects:
+- kind: ServiceAccount
+  name: release-name-sso-operator
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-sso-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: sso-operator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: sso-operator
+  labels:
+    chart: "sso-operator-1.2.50"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: release-name-sso-operator
+---
+# Source: sso-operator/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-sso-operator
+  labels:
+    draft: draft-app
+    chart: "sso-operator-1.2.50"
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        draft: draft-app
+        app: release-name-sso-operator
+    spec:
+      serviceAccountName: release-name-sso-operator
+      containers:
+      - name: sso-operator
+        image: "gcr.io/jenkinsxio/sso-operator:1.2.50"
+        imagePullPolicy: Always
+        command: ["/sso-operator"]
+        args:
+        - "--dex-grpc-host-port=dex.sso:5000"
+        - "--dex-grpc-client-crt=/etc/dex/tls/tls.crt"
+        - "--dex-grpc-client-key=/etc/dex/tls/tls.key"
+        - "--dex-grpc-client-ca=/etc/dex/tls/ca.crt"
+        - "--cluster-role-name=release-name-sso-operator"
+        env:
+          - name: OPERATOR_NAMESPACE
+            value: default
+          - name: WATCH_NAMESPACE
+            value: 
+        volumeMounts:
+          - name: dex-grpc-client-cert
+            mountPath: /etc/dex/tls
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+            limits:
+              cpu: 100m
+              memory: 256Mi
+            requests:
+              cpu: 80m
+              memory: 128Mi
+      volumes:
+      - name: dex-grpc-client-cert
+        secret:
+          defaultMode: 420
+          secretName: dex-grpc-client-cert
+
+      terminationGracePeriodSeconds: 10
+---
+# Source: sso-operator/templates/cert-grpc-client.yaml
+apiVersion: cert-manager.io/v1alpha2
+kind: Certificate
+metadata:
+  name: release-name-sso-operator-grpc-client-cert
+  labels:
+    app: release-name-sso-operator
+    chart: "sso-operator-1.2.50"
+spec:
+  secretName: dex-grpc-client-cert
+  issuerRef:
+    name: dex-grpc-cert-issuer
+    kind: Issuer
+  commonName: dex-grpc-client
+  dnsName:
+  - dex.sso

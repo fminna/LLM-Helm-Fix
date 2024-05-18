@@ -1,0 +1,167 @@
+---
+# Source: questdb/templates/configMap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quest
+  labels:
+    helm.sh/chart: questdb-0.33.0
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  server.conf: |
+    metrics.enabled = true
+    shared.worker.count = 2
+---
+# Source: questdb/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: quest
+  labels:
+    helm.sh/chart: questdb-0.33.0
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9003
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    
+  selector:
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+---
+# Source: questdb/templates/svcHeadless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: quest-headless
+  labels:
+    helm.sh/chart: questdb-0.33.0
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 8812
+      targetPort: postgresql
+      protocol: TCP
+      name: postgresql
+---
+# Source: questdb/templates/statefulSet.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: quest
+  labels:
+    helm.sh/chart: questdb-0.33.0
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # Not horizontally scalable yet, so pinning to 1
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: questdb
+      app.kubernetes.io/instance: release-name
+  serviceName: "quest-headless"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: questdb
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: questdb
+          securityContext:
+            {}
+          image: "questdb/questdb:7.2.1"
+          imagePullPolicy: IfNotPresent
+          env:
+          volumeMounts:
+          - name: quest
+            mountPath: /var/lib/questdb/db
+          - name: server-config
+            mountPath: /var/lib/questdb/conf/server.conf
+            subPath: server.conf
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+            - name: postgresql
+              containerPort: 8812
+              protocol: TCP
+            - name: influxdb
+              containerPort: 9009
+              protocol: TCP
+            - name: metrics
+              containerPort: 9003
+              protocol: TCP
+          # QuestDB doesn't really expose an endpoint that works well for
+          # these probes. Hopefully soon?
+          # livenessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: http
+          # readinessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: http
+          resources:
+            {}
+      volumes:
+        - name: server-config
+          configMap:
+            name: quest
+  volumeClaimTemplates:
+    - metadata:
+        name: quest
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "50Gi"
+---
+# Source: questdb/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "quest-test-connection"
+  labels:
+    helm.sh/chart: questdb-0.33.0
+    app.kubernetes.io/name: questdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl:7.71.0
+      command: ['curl']
+      args: ['-G', 'quest:9000', '--data-urlencode', 'query="SHOW TABLES;"']
+  restartPolicy: Never

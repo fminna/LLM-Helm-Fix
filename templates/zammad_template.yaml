@@ -1,0 +1,1003 @@
+---
+# Source: zammad/charts/elasticsearch/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: "zammad-master-pdb"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: "zammad-master"
+---
+# Source: zammad/charts/memcached/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: release-name-memcached
+  namespace: default
+  labels:
+    app.kubernetes.io/name: memcached
+    helm.sh/chart: memcached-5.12.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: zammad/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.4.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+type: Opaque
+data:
+  postgresql-postgres-password: "MTdFdUNSRVMwWg=="
+  postgresql-password: "emFtbWFk"
+---
+# Source: zammad/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-zammad-postgresql-pass
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgresql-pass: "emFtbWFk"
+---
+# Source: zammad/templates/configmap-init.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zammad-init
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+
+  elasticsearch-init: |-
+    #!/bin/bash
+    set -e
+    bundle exec rails r 'Setting.set("es_url", "http://zammad-master:9200")'
+    ELASTICSEARCH_USER=${ELASTICSEARCH_USER:-}
+    if [ -n "${ELASTICSEARCH_USER}" ] && [ -n "${ELASTICSEARCH_PASSWORD}" ]; then
+        bundle exec rails r "Setting.set(\"es_user\", \"${ELASTICSEARCH_USER}\")"
+        bundle exec rails r "Setting.set(\"es_password\", \"${ELASTICSEARCH_PASSWORD}\")"
+    fi
+    bundle exec rake searchindex:rebuild
+    
+    echo "elasticsearch init complete :)"
+
+  postgresql-init: |-
+    #!/bin/bash
+    set -e
+    sed -e "s#.*adapter:.*#  adapter: postgresql#g" -e "s#.*database:.*#  database: zammad_production#g" -e "s#.*username:.*#  username: zammad#g" -e "s#.*password:.*#  password: ${POSTGRESQL_PASS}\\n  host: release-name-postgresql\\n  port: 5432#g" < contrib/packager.io/database.yml.pkgr > config/database.yml
+    if ! (bundle exec rails r 'puts User.any?' 2> /dev/null | grep -q true); then
+        bundle exec rake db:migrate
+        bundle exec rake db:seed
+    else
+        bundle exec rake db:migrate
+    fi
+    echo "postgresql init complete :)"
+  zammad-init: |-
+    #!/bin/bash
+    set -e
+    rsync -a --no-perms --no-owner --omit-dir-times --delete --exclude 'config/database.yml' --exclude 'public/assets/images/*' --exclude 'storage/fs/*' "${ZAMMAD_TMP_DIR}/" "${ZAMMAD_DIR}"
+    rsync -a --no-perms --no-owner --omit-dir-times "${ZAMMAD_TMP_DIR}"/public/assets/images/ "${ZAMMAD_DIR}"/public/assets/images
+    sed -i -e "s/.*config.cache_store.*file_store.*cache_file_store.*/    config.cache_store = :dalli_store, 'release-name-memcached:11211'\\n    config.session_store = :dalli_store, 'release-name-memcached:11211'/" config/application.rb
+    sed -i -e "s#config.action_dispatch.trusted_proxies =.*#config.action_dispatch.trusted_proxies = ['127.0.0.1', '::1']#" config/environments/production.rb
+    if [ -n "${AUTOWIZARD_JSON}" ]; then
+        echo "${AUTOWIZARD_JSON}" | base64 -d > auto_wizard.json
+    fi
+    echo "zammad init complete :)"
+---
+# Source: zammad/templates/configmap-nginx.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zammad-nginx
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config: |-
+    #
+    # kubernetes nginx config for zammad
+    #
+
+    server_tokens off;
+
+    upstream zammad-railsserver {
+        server localhost:3000;
+    }
+
+    upstream zammad-websocket {
+        server localhost:6042;
+    }
+
+    server {
+        listen 8080;
+
+        server_name _;
+
+        root /opt/zammad/public;
+
+        access_log /dev/stdout;
+        error_log  /dev/stderr;
+
+        client_max_body_size 50M;
+
+        location ~ ^/(assets/|robots.txt|humans.txt|favicon.ico) {
+            expires max;
+        }
+
+        location /ws {
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "Upgrade";
+            proxy_set_header CLIENT_IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_read_timeout 86400;
+            proxy_pass http://zammad-websocket;
+        }
+
+        location / {
+            proxy_set_header Host $http_host;
+            proxy_set_header CLIENT_IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_read_timeout 180;
+            proxy_pass http://zammad-railsserver;
+
+            gzip on;
+            gzip_types text/plain text/xml text/css image/svg+xml application/javascript application/x-javascript application/json application/xml;
+            gzip_proxied any;
+        }
+    }
+---
+# Source: zammad/charts/elasticsearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: zammad-master
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "zammad-master"
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  selector:
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "zammad-master"
+  ports:
+  - name: http
+    protocol: TCP
+    port: 9200
+  - name: transport
+    protocol: TCP
+    port: 9300
+---
+# Source: zammad/charts/elasticsearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: zammad-master-headless
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "zammad-master"
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None # This is needed for statefulset hostnames like elasticsearch-0 to resolve
+  # Create endpoints also if the related pod isn't ready
+  publishNotReadyAddresses: true
+  selector:
+    app: "zammad-master"
+  ports:
+  - name: http
+    port: 9200
+  - name: transport
+    port: 9300
+---
+# Source: zammad/charts/memcached/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-memcached
+  namespace: default
+  labels:
+    app.kubernetes.io/name: memcached
+    helm.sh/chart: memcached-5.12.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: memcache
+      port: 11211
+      targetPort: memcache
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/instance: release-name
+---
+# Source: zammad/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.4.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  namespace: default
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: zammad/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.4.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: zammad/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zammad
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+---
+# Source: zammad/charts/memcached/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-memcached
+  namespace: default
+  labels:
+    app.kubernetes.io/name: memcached
+    helm.sh/chart: memcached-5.12.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memcached
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memcached
+        helm.sh/chart: memcached-5.12.2
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: memcached
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      serviceAccountName: release-name-memcached
+      containers:
+        - name: memcached
+          image: docker.io/bitnami/memcached:1.6.9-debian-10-r169
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - /run.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+          ports:
+            - name: memcache
+              containerPort: 11211
+          livenessProbe:
+            tcpSocket:
+              port: memcache
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            tcpSocket:
+              port: memcache
+            initialDelaySeconds: 5
+            timeoutSeconds: 3
+            periodSeconds: 5
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: zammad/charts/elasticsearch/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zammad-master
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "zammad-master"
+  annotations:
+    esMajorVersion: "7"
+spec:
+  serviceName: zammad-master-headless
+  selector:
+    matchLabels:
+      app: "zammad-master"
+  replicas: 1
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - metadata:
+      name: zammad-master
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+  template:
+    metadata:
+      name: "zammad-master"
+      labels:
+        release: "release-name"
+        chart: "elasticsearch"
+        app: "zammad-master"
+      annotations:
+        
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - "zammad-master"
+            topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 120
+      volumes:
+      enableServiceLinks: true
+      initContainers:
+      - name: configure-sysctl
+        securityContext:
+          runAsUser: 0
+          privileged: true
+        image: "zammad/zammad-docker-compose:zammad-elasticsearch-4.1.0-31"
+        imagePullPolicy: "IfNotPresent"
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        resources:
+          {}
+
+      containers:
+      - name: "elasticsearch"
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+          runAsUser: 1000
+        image: "zammad/zammad-docker-compose:zammad-elasticsearch-4.1.0-31"
+        imagePullPolicy: "IfNotPresent"
+        readinessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - |
+                #!/usr/bin/env bash -e
+                # If the node is starting up wait for the cluster to be ready (request params: "timeout=1s" )
+                # Once it has started only check that the node itself is responding
+                START_FILE=/tmp/.es_start_file
+
+                # Disable nss cache to avoid filling dentry cache when calling curl
+                # This is required with Elasticsearch Docker using nss < 3.52
+                export NSS_SDB_USE_CACHE=no
+
+                http () {
+                  local path="${1}"
+                  local args="${2}"
+                  set -- -XGET -s
+
+                  if [ "$args" != "" ]; then
+                    set -- "$@" $args
+                  fi
+
+                  if [ -n "${ELASTIC_USERNAME}" ] && [ -n "${ELASTIC_PASSWORD}" ]; then
+                    set -- "$@" -u "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}"
+                  fi
+
+                  curl --output /dev/null -k "$@" "http://127.0.0.1:9200${path}"
+                }
+
+                if [ -f "${START_FILE}" ]; then
+                  echo 'Elasticsearch is already running, lets check the node is healthy'
+                  HTTP_CODE=$(http "/" "-w %{http_code}")
+                  RC=$?
+                  if [[ ${RC} -ne 0 ]]; then
+                    echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with RC ${RC}"
+                    exit ${RC}
+                  fi
+                  # ready if HTTP code 200, 503 is tolerable if ES version is 6.x
+                  if [[ ${HTTP_CODE} == "200" ]]; then
+                    exit 0
+                  elif [[ ${HTTP_CODE} == "503" && "7" == "6" ]]; then
+                    exit 0
+                  else
+                    echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with HTTP code ${HTTP_CODE}"
+                    exit 1
+                  fi
+
+                else
+                  echo 'Waiting for elasticsearch cluster to become ready (request params: "timeout=1s" )'
+                  if http "/_cluster/health?timeout=1s" "--fail" ; then
+                    touch ${START_FILE}
+                    exit 0
+                  else
+                    echo 'Cluster is not yet ready (request params: "timeout=1s" )'
+                    exit 1
+                  fi
+                fi
+          failureThreshold: 3
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 3
+          timeoutSeconds: 5
+        ports:
+        - name: http
+          containerPort: 9200
+        - name: transport
+          containerPort: 9300
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+        env:
+          - name: node.name
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: cluster.initial_master_nodes
+            value: "zammad-master-0,"
+          - name: discovery.seed_hosts
+            value: "zammad-master-headless"
+          - name: cluster.name
+            value: "zammad"
+          - name: network.host
+            value: "0.0.0.0"
+          - name: ES_JAVA_OPTS
+            value: "-Xmx1g -Xms1g"
+          - name: node.data
+            value: "true"
+          - name: node.ingest
+            value: "true"
+          - name: node.master
+            value: "true"
+          - name: node.remote_cluster_client
+            value: "true"
+        volumeMounts:
+          - name: "zammad-master"
+            mountPath: /usr/share/elasticsearch/data
+---
+# Source: zammad/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.4.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+  namespace: default
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.4.9
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+        app.kubernetes.io/component: primary
+    spec:      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.12.0-debian-10-r20
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-postgres-password
+            - name: POSTGRES_USER
+              value: "zammad"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "zammad_production"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "zammad" -d "dbname=zammad_production" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "zammad" -d "dbname=zammad_production" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: zammad/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zammad
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: zammad
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zammad
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: zammad-4.0.5
+        app.kubernetes.io/name: zammad
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "4.1.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      initContainers:
+      - name: zammad-init
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        env:
+          
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: release-name-zammad
+          mountPath: /opt/zammad
+        - name: release-name-zammad-init
+          mountPath: /docker-entrypoint.sh
+          readOnly: true
+          subPath: zammad-init
+      - name: postgresql-init
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          - name: "POSTGRESQL_PASS"
+            valueFrom:
+              secretKeyRef:
+                name: release-name-zammad-postgresql-pass
+                key: postgresql-pass
+        volumeMounts:
+        - name: release-name-zammad
+          mountPath: /opt/zammad
+        - name: release-name-zammad-init
+          mountPath: /docker-entrypoint.sh
+          readOnly: true
+          subPath: postgresql-init
+      
+      - name: elasticsearch-init
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          
+        volumeMounts:
+        - name: release-name-zammad
+          mountPath: /opt/zammad
+        - name: release-name-zammad-init
+          mountPath: /docker-entrypoint.sh
+          readOnly: true
+          subPath: elasticsearch-init
+      
+      containers:
+      - name: zammad-nginx
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        command:
+          - /usr/sbin/nginx
+          - -g
+          - 'daemon off;'
+        env:
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: release-name-zammad
+          mountPath: /opt/zammad
+        - name: release-name-zammad-nginx
+          mountPath: /etc/nginx/sites-enabled
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          {}
+      - name: zammad-railsserver
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+          - "bundle"
+          - "exec"
+          - "rails"
+          - "server"
+          - "puma"
+          - "-b"
+          - "[::]"
+          - "-p"
+          - "3000"
+          - "-e"
+          - "production"
+        env:
+        ports:
+        - name: railsserver
+          containerPort: 3000
+        volumeMounts:
+         - name: release-name-zammad
+           mountPath: /opt/zammad
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          {}
+      - name: zammad-scheduler
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+          - "bundle"
+          - "exec"
+          - "script/scheduler.rb"
+          - "run"
+        env:
+        volumeMounts:
+         - name: release-name-zammad
+           mountPath: /opt/zammad
+        resources:
+          {}
+      - name: zammad-websocket
+        image: zammad/zammad-docker-compose:zammad-4.1.0-31
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+          - "bundle"
+          - "exec"
+          - "script/websocket-server.rb"
+          - "-b"
+          - "0.0.0.0"
+          - "-p"
+          - "6042"
+          - "start"
+        env:
+        ports:
+        - name: websocket
+          containerPort: 6042
+        volumeMounts:
+        - name: release-name-zammad
+          mountPath: /opt/zammad
+        readinessProbe:
+          tcpSocket:
+            port: 6042
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 6042
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          {}
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumes:
+      - name: release-name-zammad-nginx
+        configMap:
+          name: release-name-zammad-nginx
+      - name: release-name-zammad-init
+        configMap:
+          name: release-name-zammad-init
+          defaultMode: 0755
+  volumeClaimTemplates:
+  - metadata:
+      name: release-name-zammad
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "15Gi"
+---
+# Source: zammad/charts/elasticsearch/templates/test/test-elasticsearch-health.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-rklsj-test"
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  securityContext:
+    fsGroup: 1000
+    runAsUser: 1000
+  containers:
+  - name: "release-name-ftmxz-test"
+    image: "zammad/zammad-docker-compose:zammad-elasticsearch-4.1.0-31"
+    imagePullPolicy: "IfNotPresent"
+    command:
+      - "sh"
+      - "-c"
+      - |
+        #!/usr/bin/env bash -e
+        curl -XGET --fail 'zammad-master:9200/_cluster/health?timeout=1s'
+  restartPolicy: Never
+---
+# Source: zammad/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-zammad-test-connection"
+  labels:
+    helm.sh/chart: zammad-4.0.5
+    app.kubernetes.io/name: zammad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-zammad:8080']
+  restartPolicy: Never

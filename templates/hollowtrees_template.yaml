@@ -1,0 +1,309 @@
+---
+# Source: hollowtrees/charts/asgplugin/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-asgplugin
+  labels:
+    app: "asgplugin"
+    chart: "asgplugin-0.0.3"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  awsAccessKeyId: 
+  awsSecretAccessKey:
+---
+# Source: hollowtrees/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-hollowtrees"
+  labels:
+    app: "hollowtrees"
+    chart: "hollowtrees-0.0.6"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  config.yaml: |-
+    global:
+        bindAddr: ":8080"
+        buffersize: 100
+
+    # logger settings
+    log:
+        format: "text"
+        level: "debug"
+
+    # action plugin settings
+    action_plugins:
+      
+        - name: "ht-k8s-action-plugin"
+          address: "release-name-k8splugin:8080"
+      
+
+      
+        - name: "ht-aws-asg-action-plugin"
+          address: "release-name-asgplugin:8080"
+      
+
+    # action plugin rules
+    rules:
+        - action_plugins:
+          - ht-k8s-action-plugin
+          - ht-aws-asg-action-plugin
+          description: spot to k8s drainer
+          event_type: prometheus.server.alert.SpotTerminationNotice
+          name: spot_to_drainer
+        - action_plugins:
+          - ht-aws-asg-action-plugin
+          description: price alert to asg rebalance
+          event_type: prometheus.server.alert.SpotInstanceTooExpensive
+          name: spot_rebalance
+---
+# Source: hollowtrees/charts/asgplugin/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-asgplugin
+  labels:
+    app: "asgplugin"
+    chart: "asgplugin-0.0.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: grpc
+    protocol: TCP
+    port: 8080
+    targetPort: grpc
+  selector:
+    app: "release-name-asgplugin"
+---
+# Source: hollowtrees/charts/k8splugin/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-k8splugin
+  labels:
+    app: "k8splugin"
+    chart: "k8splugin-0.0.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: grpc
+    port: 8080
+    protocol: TCP
+    targetPort: grpc
+  selector:
+    app: "release-name-k8splugin"
+---
+# Source: hollowtrees/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hollowtrees
+  labels:
+    app: "hollowtrees"
+    chart: "hollowtrees-0.0.6"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+  selector:
+    app: "release-name-hollowtrees"
+---
+# Source: hollowtrees/charts/asgplugin/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: "release-name-asgplugin"
+  labels:
+    app: "asgplugin"
+    chart: "asgplugin-0.0.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 
+
+  template:
+    metadata:
+      labels:
+        app: "asgplugin"
+        chart: "asgplugin-0.0.3"
+        release: "release-name"
+        heritage: "Helm"
+
+    spec:
+      containers:
+      - name: ht-aws-asg-action-plugin
+        image: "banzaicloud/ht-aws-asg-action-plugin:0.0.1"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - "/bin/sh"
+        - "-ecx"
+        - |
+          ht-aws-asg-action-plugin \
+          -bind.address=0.0.0.0:8080 \
+          -log.level=debug \
+          -aws.region=eu-west-1 \
+          -recommender.url=http://sr-spot-recommender:9090
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: release-name-asgplugin
+                key: awsAccessKeyId
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: release-name-asgplugin
+                key: awsSecretAccessKey
+
+        ports:
+        - name: grpc
+          containerPort: 8080
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 120
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          periodSeconds: 5
+
+        resources:
+          requests:
+            cpu: 120m
+            memory: 256Mi
+---
+# Source: hollowtrees/charts/k8splugin/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: "release-name-k8splugin"
+  labels:
+    app: "k8splugin"
+    chart: "k8splugin-0.0.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 
+
+  template:
+    metadata:
+      labels:
+        app: "k8splugin"
+        chart: "k8splugin-0.0.3"
+        release: "release-name"
+        heritage: "Helm"
+
+    spec:
+      containers:
+      - name: ht-k8s-action-plugin
+        image: "banzaicloud/ht-k8s-action-plugin:0.0.1"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - "/bin/sh"
+        - "-ecx"
+        - |
+          ht-k8s-action-plugin \
+          -bind.address=0.0.0.0:8080 \
+          -log.level=debug \
+          -cluster.config.root=/statestore
+
+
+        ports:
+        - name: grpc
+          containerPort: 8080
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 120
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          periodSeconds: 5
+
+        resources:
+          requests:
+            cpu: 120m
+            memory: 256Mi
+
+        volumeMounts:
+        - mountPath: /statestore
+          name: statestore
+
+      volumes:
+      - name: statestore
+        hostPath:
+          path: /opt/pipeline/statestore/
+---
+# Source: hollowtrees/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "release-name-hollowtrees"
+  labels:
+    app: "hollowtrees"
+    chart: "hollowtrees-0.0.6"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 
+  template:
+    metadata:
+      labels:
+        app: "hollowtrees"
+        chart: "hollowtrees-0.0.6"
+        release: "release-name"
+        heritage: "Helm"
+    spec:
+      containers:
+      - name: hollowtrees
+        image: "banzaicloud/hollowtrees:0.0.1"
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - name: http
+          containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 120
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+            httpHeaders:
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 120m
+            memory: 256Mi
+        volumeMounts:
+        - name: config
+          mountPath: /root/conf/
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-hollowtrees

@@ -1,0 +1,772 @@
+---
+# Source: maxscale/charts/mariadb/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-mariadb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/templates/podDisruptionBudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-maxscale
+  namespace: default
+  labels:
+    app.kubernetes.io/name: maxscale
+    helm.sh/chart: maxscale-4.1.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maxscale
+      app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/charts/mariadb/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mariadb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  mariadb-root-password: "Q0hBTkdFTUU="
+  mariadb-password: "Q0hBTkdFTUU="
+  mariadb-galera-mariabackup-password: "Q0hBTkdFTUU="
+---
+# Source: maxscale/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-maxscale
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: maxscale
+type: Opaque
+stringData:
+  root-password: "CHANGEME"
+---
+# Source: maxscale/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-maxscale-configuration
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: maxscale
+data:
+  maxscale.cnf: |-
+    [maxscale]
+    threads=1
+    query_classifier_cache_size=77Mi
+    substitute_variables=true
+    piddir=/var/cache/maxscale
+    persistdir=/var/cache/maxscale
+    datadir=/var/cache/maxscale
+    admin_gui=false
+  mariadb-galera.cnf: |-
+
+    [server-0]
+    type=server
+    address=release-name-mariadb-0.release-name-mariadb-headless.default.svc.cluster.local
+    port=3306
+    protocol=MariaDBBackend
+
+    [server-1]
+    type=server
+    address=release-name-mariadb-1.release-name-mariadb-headless.default.svc.cluster.local
+    port=3306
+    protocol=MariaDBBackend
+
+    [server-2]
+    type=server
+    address=release-name-mariadb-2.release-name-mariadb-headless.default.svc.cluster.local
+    port=3306
+    protocol=MariaDBBackend
+
+    # Monitor for the servers
+    # This will keep MaxScale aware of the state of the servers.
+
+    [MariaDB-Monitor]
+    type=monitor
+    module=galeramon
+    servers=server-0,server-1,server-2
+    user=root
+    password=$MAXSCALE_PASSWORD
+    backend_connect_timeout=3s
+    backend_write_timeout=3s
+    backend_read_timeout=3s
+    disable_master_failback=false
+    disable_master_role_setting=false
+
+    # Service definitions
+    # Service Definition for a read-only service and a read/write splitting service.
+
+    [Read-Write-Service]
+    type=service
+    router=readwritesplit
+    master_failure_mode=fail_on_write
+    servers=server-0,server-1,server-2
+    user=root
+    password=$MAXSCALE_PASSWORD
+    enable_root_user=true
+
+    # Listener definitions for the services
+    # Listeners represent the ports the services will listen on.
+
+    [Read-Write-Listener]
+    type=listener
+    service=Read-Write-Service
+    protocol=MariaDBClient
+    port=3306
+---
+# Source: maxscale/templates/mariadb/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-mariadb-configuration"
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: maxscale
+    helm.sh/chart: maxscale-4.1.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  my.cnf: |
+    [client]
+    port=3306
+    socket=/opt/bitnami/mariadb/tmp/mysql.sock
+    plugin_dir=/opt/bitnami/mariadb/plugin
+    
+    [mysqld]
+    default_storage_engine=InnoDB
+    basedir=/opt/bitnami/mariadb
+    datadir=/bitnami/mariadb/data
+    plugin_dir=/opt/bitnami/mariadb/plugin
+    tmpdir=/opt/bitnami/mariadb/tmp
+    socket=/opt/bitnami/mariadb/tmp/mysql.sock
+    pid_file=/opt/bitnami/mariadb/tmp/mysqld.pid
+    bind_address=0.0.0.0
+    
+    ## Character set
+    ##
+    collation_server=utf8_unicode_ci
+    init_connect='SET NAMES utf8'
+    character_set_server=utf8
+    
+    ## MyISAM
+    ##
+    key_buffer_size=32M
+    myisam_recover_options=FORCE,BACKUP
+    
+    ## Safety
+    ##
+    skip_host_cache
+    skip_name_resolve
+    max_allowed_packet=16M
+    max_connect_errors=1000000
+    sql_mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION,NO_ZERO_DATE,NO_ZERO_IN_DATE,ONLY_FULL_GROUP_BY
+    sysdate_is_now=1
+    
+    ## Binary Logging
+    ##
+    log_bin=mysql-bin
+    expire_logs_days=14
+    # Disabling for performance per http://severalnines.com/blog/9-tips-going-production-galera-cluster-mysql
+    sync_binlog=0
+    # Required for Galera
+    binlog_format=row
+    
+    ## Caches and Limits
+    ##
+    tmp_table_size=32M
+    max_heap_table_size=32M
+    # Re-enabling as now works with Maria 10.1.2
+    query_cache_type=1
+    query_cache_limit=4M
+    query_cache_size=256M
+    max_connections=500
+    thread_cache_size=50
+    open_files_limit=65535
+    table_definition_cache=4096
+    table_open_cache=4096
+    
+    ## InnoDB
+    ##
+    innodb=FORCE
+    innodb_strict_mode=1
+    # Mandatory per https://github.com/codership/documentation/issues/25
+    innodb_autoinc_lock_mode=2
+    # Per https://www.percona.com/blog/2006/08/04/innodb-double-write/
+    innodb_doublewrite=1
+    innodb_flush_method=O_DIRECT
+    innodb_log_files_in_group=2
+    innodb_log_file_size=128M
+    innodb_flush_log_at_trx_commit=1
+    innodb_file_per_table=1
+    # 80% Memory is default reco.
+    # Need to re-evaluate when DB size grows
+    innodb_buffer_pool_size=1600M
+    innodb_file_format=Barracuda
+    
+    ## Logging
+    ##
+    log_error=/opt/bitnami/mariadb/logs/mysqld.log
+    slow_query_log_file=/opt/bitnami/mariadb/logs/mysqld.log
+    log_queries_not_using_indexes=1
+    slow_query_log=1
+    
+    ## SSL
+    ## Use extraVolumes and extraVolumeMounts to mount /certs filesystem
+    # ssl_ca=/certs/ca.pem
+    # ssl_cert=/certs/server-cert.pem
+    # ssl_key=/certs/server-key.pem
+    
+    [galera]
+    wsrep_on=ON
+    wsrep_provider=/opt/bitnami/mariadb/lib/libgalera_smm.so
+    wsrep_sst_method=mariabackup
+    wsrep_slave_threads=4
+    wsrep_cluster_address=gcomm://
+    wsrep_cluster_name=galera
+    wsrep_sst_auth="root:"
+    # Enabled for performance per https://mariadb.com/kb/en/innodb-system-variables/#innodb_flush_log_at_trx_commit
+    innodb_flush_log_at_trx_commit=2
+    # MYISAM REPLICATION SUPPORT #
+    wsrep_replicate_myisam=ON
+    
+    [mariadb]
+    plugin_load_add=auth_pam
+    
+    ## Data-at-Rest Encryption
+    ## Use extraVolumes and extraVolumeMounts to mount /encryption filesystem
+    # plugin_load_add=file_key_management
+    # file_key_management_filename=/encryption/keyfile.enc
+    # file_key_management_filekey=FILE:/encryption/keyfile.key
+    # file_key_management_encryption_algorithm=AES_CTR
+    # encrypt_binlog=ON
+    # encrypt_tmp_files=ON
+    
+    ## InnoDB/XtraDB Encryption
+    # innodb_encrypt_tables=ON
+    # innodb_encrypt_temporary_tables=ON
+    # innodb_encrypt_log=ON
+    # innodb_encryption_threads=4
+    # innodb_encryption_rotate_key_age=1
+    
+    ## Aria Encryption
+    # aria_encrypt_tables=ON
+    # encrypt_tmp_disk_tables=ON
+---
+# Source: maxscale/charts/mariadb/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: galera
+      port: 4567
+      targetPort: galera
+      appProtocol: mysql
+    - name: ist
+      port: 4568
+      targetPort: ist
+      appProtocol: mysql
+    - name: sst
+      port: 4444
+      targetPort: sst
+      appProtocol: mysql
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/charts/mariadb/templates/metrics-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb-metrics
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    prometheus.io/port: "9104"
+    prometheus.io/scrape: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9104
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/charts/mariadb/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      appProtocol: mysql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-maxscale
+  namespace: default
+  labels:
+    app.kubernetes.io/name: maxscale
+    helm.sh/chart: maxscale-4.1.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - port: 3306
+      targetPort: mysql
+      protocol: TCP
+      name: mysql
+  selector:
+    app.kubernetes.io/name: maxscale
+    app.kubernetes.io/instance: release-name
+---
+# Source: maxscale/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-maxscale
+  namespace: default
+  labels:
+    app.kubernetes.io/name: maxscale
+    helm.sh/chart: maxscale-4.1.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  strategy:
+    type: RollingUpdate
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maxscale
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: maxscale
+      annotations:
+        checksum/configmap: d87f91cbb2cf1a0474dedb5092654673503dcf09a2151d7971c11bf9e7c47b9a
+        checksum/secret: 57252fd50cdcb44219f4266b18b2f00b63854e332d66f61626b0bbe4f549102d
+    spec:
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mariadb
+                    app.kubernetes.io/instance: release-name
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: maxscale
+              app.kubernetes.io/instance: release-name
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: maxscale
+              app.kubernetes.io/instance: release-name
+      
+      
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 996
+        runAsGroup: 996
+        runAsNonRoot: true
+        runAsUser: 998
+      enableServiceLinks: false
+      containers:
+        - name: maxscale
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 996
+            runAsNonRoot: true
+            runAsUser: 998
+          image: docker.io/mariadb/maxscale:23.02.2
+          imagePullPolicy: Always
+          command:
+            - maxscale
+            - --syslog=no
+            - --log=stdout
+            - --nodaemon
+          env:
+            - name: MAXSCALE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-maxscale
+                  key: root-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: mysql
+            failureThreshold: 3
+            initialDelaySeconds: 0
+            periodSeconds: 1
+            successThreshold: 1
+            timeoutSeconds: 1
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -ex
+                - -c
+                - |-
+                  maxctrl show maxscale 
+                  state_ready_count=$(maxctrl list servers | grep "Running" | wc -l)
+                  if [ $state_ready_count -ge 2 ]; then
+                    exit 0
+                  else
+                    exit 1
+                  fi
+            failureThreshold: 3
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 11
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/maxscale.cnf.d/mariadb-galera.cnf
+              readOnly: true
+              subPath: mariadb-galera.cnf
+            - name: configuration
+              mountPath: /etc/maxscale.cnf
+              readOnly: true
+              subPath: maxscale.cnf
+            - name: cache
+              mountPath: /var/cache/maxscale
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 125m
+              memory: 128Mi
+      initContainers:
+        null
+      volumes:
+        - name: configuration
+          configMap:
+            optional: false
+            name: "release-name-maxscale-configuration"
+        - name: cache
+          emptyDir:
+            medium: Memory
+---
+# Source: maxscale/charts/mariadb/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mariadb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-mariadb-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: default
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: mariadb
+                  app.kubernetes.io/instance: release-name
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      containers:
+        - name: "mariadb-galera"
+          image: docker.io/bitnami/mariadb-galera:10.6.12-debian-11-r16
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - bash
+            - -ec
+            - |
+                exec /opt/bitnami/scripts/mariadb-galera/entrypoint.sh /opt/bitnami/scripts/mariadb-galera/run.sh
+          env:
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MARIADB_DEFAULT_PORT_NUMBER
+              value: "3306"
+            - name: MARIADB_GALERA_CLUSTER_NAME
+              value: "galera"
+            - name: MARIADB_GALERA_CLUSTER_ADDRESS
+              value: "gcomm://release-name-mariadb-0.release-name-mariadb-headless.default.svc.cluster.local,release-name-mariadb-1.release-name-mariadb-headless.default.svc.cluster.local,release-name-mariadb-2.release-name-mariadb-headless.default.svc.cluster.local"
+            - name: MARIADB_ROOT_USER
+              value: "root"
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mariadb
+                  key: mariadb-root-password
+            - name: MARIADB_DATABASE
+              value: "my_database"
+            - name: MARIADB_GALERA_MARIABACKUP_USER
+              value: "mariabackup"
+            - name: MARIADB_GALERA_MARIABACKUP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mariadb
+                  key: mariadb-galera-mariabackup-password
+            - name: MARIADB_ENABLE_LDAP
+              value: "no"
+            - name: MARIADB_ENABLE_TLS
+              value: "no"
+            - name: MARIADB_EXTRA_FLAGS
+              value: --skip-log-bin
+          ports:
+            - name: mysql
+              containerPort: 3306
+            - name: galera
+              containerPort: 4567
+            - name: ist
+              containerPort: 4568
+            - name: sst
+              containerPort: 4444
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -ec
+                - |
+                  password_aux="${MARIADB_ROOT_PASSWORD:-}"
+                  if [[ -f "${MARIADB_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MARIADB_ROOT_PASSWORD_FILE")
+                  fi
+                  exec mysql -u"${MARIADB_ROOT_USER}" -p"${password_aux}" -e "select * from mysql.wsrep_cluster_members;"
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -ec
+                - |
+                  password_aux="${MARIADB_ROOT_PASSWORD:-}"
+                  if [[ -f "${MARIADB_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MARIADB_ROOT_PASSWORD_FILE")
+                  fi
+                  exec mysqladmin status -u"${MARIADB_ROOT_USER}" -p"${password_aux}"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 1
+              memory: 2Gi
+            requests:
+              cpu: 100m
+              memory: 1Gi
+          volumeMounts:
+            - name: previous-boot
+              mountPath: /opt/bitnami/mariadb/.bootstrap
+            - name: data
+              mountPath: /bitnami/mariadb
+            - name: mariadb-galera-config
+              mountPath: /bitnami/conf/my.cnf
+              subPath: my.cnf
+        - name: metrics
+          image: docker.io/bitnami/mysqld-exporter:0.14.0-debian-11-r103
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: MARIADB_METRICS_EXTRA_FLAGS
+              value: ""
+            - name: MARIADB_ROOT_USER
+              value: "root"
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mariadb
+                  key: mariadb-root-password
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              password_aux="${MARIADB_ROOT_PASSWORD:-}"
+              if [[ -f "${MARIADB_ROOT_PASSWORD_FILE:-}" ]]; then
+                  password_aux=$(cat "$MARIADB_ROOT_PASSWORD_FILE")
+              fi
+              DATA_SOURCE_NAME="${MARIADB_ROOT_USER}:${password_aux}@(localhost:3306)/" /bin/mysqld_exporter $MARIADB_METRICS_EXTRA_FLAGS
+          ports:
+            - name: metrics
+              containerPort: 9104
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: 250m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      volumes:
+        - name: previous-boot
+          emptyDir: {}
+        - name: mariadb-galera-config
+          configMap:
+            name: release-name-mariadb-configuration
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: mariadb
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/managed-by: Helm
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: maxscale/charts/mariadb/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-mariadb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mariadb
+    helm.sh/chart: mariadb-7.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  jobLabel: ""
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: release-name
+  endpoints:
+    - port: metrics
+  namespaceSelector:
+    matchNames:
+      - "default"

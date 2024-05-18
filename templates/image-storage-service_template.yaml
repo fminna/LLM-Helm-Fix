@@ -1,0 +1,338 @@
+---
+# Source: image-storage-service/charts/mongodb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+secrets:
+  - name: release-name-mongodb
+automountServiceAccountToken: true
+---
+# Source: image-storage-service/charts/mongodb/templates/common-scripts-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongodb-common-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+data:
+  startup-probe.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.hello().isWritablePrimary || db.hello().secondary' | grep 'true'
+  readiness-probe.sh: |
+    #!/bin/bash
+    # Run the proper check depending on the version
+    [[ $(mongod -version | grep "db version") =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] && VERSION=${BASH_REMATCH[1]}
+    . /opt/bitnami/scripts/libversion.sh
+    VERSION_MAJOR="$(get_sematic_version "$VERSION" 1)"
+    VERSION_MINOR="$(get_sematic_version "$VERSION" 2)"
+    VERSION_PATCH="$(get_sematic_version "$VERSION" 3)"
+    readiness_test='db.isMaster().ismaster || db.isMaster().secondary'
+    if [[ ( "$VERSION_MAJOR" -ge 5 ) || ( "$VERSION_MAJOR" -ge 4 && "$VERSION_MINOR" -ge 4 && "$VERSION_PATCH" -ge 2 ) ]]; then
+        readiness_test='db.hello().isWritablePrimary || db.hello().secondary'
+    fi
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "${readiness_test}" | grep 'true'
+  ping-mongodb.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "db.adminCommand('ping')"
+---
+# Source: image-storage-service/charts/mongodb/templates/standalone/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+  annotations:
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "100Gi"
+---
+# Source: image-storage-service/templates/api/pvc.yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-iss-back
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: image-storage-service/charts/mongodb/templates/standalone/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: "mongodb"
+      port: 27017
+      targetPort: mongodb
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/component: mongodb
+---
+# Source: image-storage-service/templates/api/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-iss-back
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-iss-back
+  ports:
+  - port: 80
+---
+# Source: image-storage-service/templates/gui/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-iss-gui
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-iss-gui
+  ports:
+  - port: 80
+---
+# Source: image-storage-service/templates/proxy/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-iss-proxy
+spec:
+  selector:
+    app: release-name-iss-proxy
+  type: NodePort
+  ports:
+  - port: 80
+    
+    nodePort: 32101
+---
+# Source: image-storage-service/charts/mongodb/templates/standalone/dep-sts.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/version: 6.0.10
+        helm.sh/chart: mongodb-13.18.5
+        app.kubernetes.io/component: mongodb
+    spec:
+      
+      serviceAccountName: release-name-mongodb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: mongodb
+                    app.kubernetes.io/component: mongodb
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      containers:
+        - name: mongodb
+          image: docker.io/bitnami/mongodb:6.0.10-debian-11-r8
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: MONGODB_SYSTEM_LOG_VERBOSITY
+              value: "0"
+            - name: MONGODB_DISABLE_SYSTEM_LOG
+              value: "no"
+            - name: MONGODB_DISABLE_JAVASCRIPT
+              value: "no"
+            - name: MONGODB_ENABLE_JOURNAL
+              value: "yes"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: MONGODB_ENABLE_DIRECTORY_PER_DB
+              value: "no"
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /bitnami/mongodb
+              subPath: 
+            - name: common-scripts
+              mountPath: /bitnami/scripts
+      volumes:
+        - name: common-scripts
+          configMap:
+            name: release-name-mongodb-common-scripts
+            defaultMode: 0550
+        - name: datadir
+          persistentVolumeClaim:
+            claimName: release-name-mongodb
+---
+# Source: image-storage-service/templates/api/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-iss-back
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-iss-back
+  template:
+    metadata:
+      labels:
+        app: release-name-iss-back
+    spec:
+      containers:
+      - name: release-name-iss-back
+        image: public.ecr.aws/jtekt-corporation/image-storage-service:v1.16.9
+        ports:
+        - containerPort: 80
+        env:
+        - name: MONGODB_URL
+          value: mongodb://release-name-mongodb
+        
+        volumeMounts:
+        - mountPath: /usr/src/app/uploads
+          name: release-name-iss-back
+      volumes:
+      - name: release-name-iss-back
+        persistentVolumeClaim:
+          claimName: release-name-iss-back
+---
+# Source: image-storage-service/templates/gui/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-iss-gui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-iss-gui
+  template:
+    metadata:
+      labels:
+        app: release-name-iss-gui
+    spec:
+      containers:
+      - name: release-name-iss-gui
+        image: public.ecr.aws/jtekt-corporation/image-storage-service-gui:v1.8.2
+        ports:
+        - containerPort: 80
+        env:
+        - name: VUE_APP_IMAGE_STORAGE_API_URL
+          value: /api
+---
+# Source: image-storage-service/templates/proxy/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-iss-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-iss-proxy
+  template:
+    metadata:
+      labels:
+        app: release-name-iss-proxy
+    spec:
+      containers:
+      - name: release-name-iss-proxy
+        image: moreillon/api-proxy:ebc18c41
+        ports:
+        - containerPort: 80
+        env:
+        - name: PATH_PREFIX
+          value: ""
+        - name: PROXY_API
+          value: http://release-name-iss-back
+        - name: PROXY_ROOT
+          value: http://release-name-iss-gui

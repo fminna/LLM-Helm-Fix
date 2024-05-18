@@ -1,0 +1,559 @@
+---
+# Source: flagsmith/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgres-password: "enJ5ZWlJUVRZMA=="
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: flagsmith/templates/api-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-flagsmith
+  namespace: default
+data:
+  
+  DJANGO_DB_PASSWORD: Y2lKOEtmaU1VSw==
+  DATABASE_URL: cG9zdGdyZXNxbDovL2ZsYWdzbWl0aDpjaUo4S2ZpTVVLQHJlbGVhc2UtbmFtZS1wb3N0Z3Jlc3FsLmRlZmF1bHQuc3ZjOjU0MzIvZmxhZ3NtaXRo
+  ADMIN_INITIAL_PASSWORD: eDFIdzEzOEJDeQ==
+  DJANGO_SECRET_KEY: TlhkeEN0T1dmSw==
+  # Custom keys
+---
+# Source: flagsmith/templates/frontend-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-flagsmith-frontend
+  namespace: default
+data:
+---
+# Source: flagsmith/templates/conf.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-conf
+  namespace: default
+data:
+  admin.py: |
+    ADMIN_USERNAME         = env("ADMIN_USERNAME",         default="admin")
+    ADMIN_EMAIL            = env("ADMIN_EMAIL",            default="admin@example.com")
+    ADMIN_INITIAL_PASSWORD = env("ADMIN_INITIAL_PASSWORD", default="password")
+---
+# Source: flagsmith/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: flagsmith/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: flagsmith/templates/api-svc.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-api
+  namespace: default
+spec:
+  selector:
+    org.oneacrefund.instance: release-name-flagsmith-api
+  ports:
+  - targetPort: 8000
+    port: 8000
+    name: api
+  type: ClusterIP
+---
+# Source: flagsmith/templates/frontend-svc.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-frontend
+  namespace: default
+spec:
+  selector:
+    org.oneacrefund.instance: release-name-flagsmith-frontend
+  ports:
+  - targetPort: 8080
+    port: 8080
+    name: frontend
+  type: ClusterIP
+---
+# Source: flagsmith/templates/api-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-flagsmith-api
+  namespace: default
+  labels:
+    org.oneacrefund.project: flagsmith
+    org.oneacrefund.app: api
+    org.oneacrefund.instance: release-name-flagsmith-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.oneacrefund.instance: release-name-flagsmith-api
+  template:
+    metadata:
+      annotations:
+        checksum/secrets: 666f4af32a6cc6cf70a44ee80a54554ff2e7ac5cedad3db579c0a993ee36f6a7
+      labels:
+        org.oneacrefund.project: flagsmith
+        org.oneacrefund.app: api
+        org.oneacrefund.instance: release-name-flagsmith-api
+    spec:
+      securityContext:
+        runAsGroup: 1000
+        runAsUser: 1000
+
+      initContainers:
+        # Wait for db
+        - name: wait-db
+          image: jwilder/dockerize:0.6.1
+          args:
+            - -wait
+            - tcp://release-name-postgresql.default.svc:5432
+            - -timeout
+            - 300s
+
+        # Customize conf to pass admin user from env
+        - name: init-conf
+          image: "flagsmith/flagsmith-api:v2.6.0"
+          command:
+            - bash
+            - -c
+            - |
+              if [ ! -f /cache/common.py ]; then
+                cp /app/src/app/settings/common.py /cache/
+                cat /config/*.py >> /cache/common.py
+              fi
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /cache
+              subPath: config
+            - name: config
+              mountPath: /config
+              readOnly: true
+
+      containers:
+        - name: api
+          image: "flagsmith/flagsmith-api:v2.6.0"
+          imagePullPolicy: IfNotPresent
+          # Mount custom conf file
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /app/src/app/settings/common.py
+              subPath: config/common.py
+            # Mount static folder as an emptydir so we control the permissions
+            - name: cache-volume
+              mountPath: /app/src/static
+              subPath: static
+
+          env:
+            - name: ADMIN_USERNAME
+              value: "admin"
+            - name: ADMIN_EMAIL
+              value: "admin@example.com"
+            - name: DJANGO_DB_HOST
+              value: "release-name-postgresql.default.svc"
+            - name: DJANGO_DB_NAME
+              value: "flagsmith"
+            - name: DJANGO_DB_USER
+              value: "flagsmith"
+            - name: DJANGO_DB_PORT
+              value: "5432"
+
+            # Extra vars
+            - name: "DJANGO_ALLOWED_HOSTS"
+              value: |-
+                *
+            - name: "DJANGO_CSRF_TRUSTED_ORIGINS"
+              value: |-
+                "example.com"
+
+          envFrom:
+            - secretRef:
+                name: release-name-flagsmith
+
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 50m
+              memory: 100Mi
+
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 15
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 5
+            failureThreshold: 5
+
+      volumes:
+        # Temp folder to host cache files
+        - name: cache-volume
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: release-name-conf
+---
+# Source: flagsmith/templates/frontend-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-flagsmith-frontend
+  namespace: default
+  labels:
+    org.oneacrefund.project: flagsmith
+    org.oneacrefund.app: frontend
+    org.oneacrefund.instance: release-name-flagsmith-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.oneacrefund.instance: release-name-flagsmith-frontend
+  template:
+    metadata:
+      annotations:
+        checksum/secrets: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      labels:
+        org.oneacrefund.project: flagsmith
+        org.oneacrefund.app: frontend
+        org.oneacrefund.instance: release-name-flagsmith-frontend
+    spec:
+      securityContext:
+        runAsGroup: 1000
+        runAsUser: 1000
+
+      initContainers:
+        # Wait for API
+        - name: wait-api
+          image: jwilder/dockerize
+          imagePullPolicy: IfNotPresent
+          args:
+            - -wait
+            - http://release-name-api.default.svc:8000
+            - -timeout
+            - 300s
+
+      containers:
+        - name: frontend
+          image: "flagsmith/flagsmith-frontend:v2.6.0"
+          imagePullPolicy: IfNotPresent
+
+          env:
+            # Absolute *external* URL for the API
+            - name: API_URL
+              value: "https://example.com/api/v1/"
+            # Absolute *external* URL for assets
+            - name: ASSET_URL
+              value: "https://example.com"
+
+          envFrom:
+            - secretRef:
+                name: release-name-flagsmith-frontend
+
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 50m
+              memory: 100Mi
+
+          # This one is REALLY slow to start... give it plenty of time
+          # For some reason this gives a 404 when hitting it over http, so using a TCP probe here
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 600
+            periodSeconds: 5
+            failureThreshold: 5
+---
+# Source: flagsmith/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-11.6.26
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+      annotations:
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      initContainers:
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:14.4.0-debian-11-r23
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                
+                - |
+                  exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+        storageClassName: standard
+---
+# Source: flagsmith/templates/hooks/init-admin.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-init
+  namespace: default
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    # "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: init
+      image: blacktop/httpie
+      imagePullPolicy: IfNotPresent
+      command:
+      - sh
+      - -c
+      - |
+        # Wait for API to be up
+        timeout -t 300 sh -c "until http --ignore-stdin --check-status "$API_HOME"; do echo Retrying; sleep 2; done; echo API up"
+        echo Init users...
+        http --ignore-stdin --check-status "$API_HOME/users/init/"
+      env:
+      - name: API_HOME
+        value: "http://release-name-api.default.svc:8000/api/v1"
+      - name: ADMIN_EMAIL
+        value: "admin@example.com"
+      envFrom:
+      - secretRef:
+          name: release-name-flagsmith
+---
+# Source: flagsmith/templates/tests/test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-test
+  namespace: default
+  annotations:
+    "helm.sh/hook": test-success
+    # "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test-http
+      image: blacktop/httpie
+      imagePullPolicy: IfNotPresent
+      command:
+      - sh
+      - -ce
+      - |
+        http --print bh --ignore-stdin --check-status "http://release-name-api.default.svc:8000/api/v1/"
+        http --print h --ignore-stdin --check-status "http://release-name-frontend.default.svc:8080/"

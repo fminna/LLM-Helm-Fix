@@ -1,0 +1,2166 @@
+---
+# Source: kubefarm/templates/ltsp-publisher-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-publisher
+  name: ltsp-publisher
+---
+# Source: kubefarm/templates/token-generator-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-token-generator
+  name: ltsp-token-generator
+---
+# Source: kubefarm/templates/ltsp-join-config-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-join-config
+  name: ltsp-join-config
+---
+# Source: kubefarm/charts/kubernetes/templates/admin-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-admin-conf
+data:
+  admin.conf: |
+    apiVersion: v1
+    clusters:
+    - cluster:
+        certificate-authority: /pki/admin-client/ca.crt
+        server: https://kubernetes-apiserver:6443
+      name: default-cluster
+    contexts:
+    - context:
+        cluster: default-cluster
+        namespace: default
+        user: default-auth
+      name: default-context
+    current-context: default-context
+    kind: Config
+    preferences: {}
+    users:
+    - name: default-auth
+      user:
+        client-certificate: /pki/admin-client/tls.crt
+        client-key: /pki/admin-client/tls.key
+---
+# Source: kubefarm/charts/kubernetes/templates/apiserver-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-apiserver-config
+data:
+  egress-selector-configuration.yaml: |
+    apiVersion: apiserver.k8s.io/v1beta1
+    kind: EgressSelectorConfiguration
+    egressSelections:
+    - name: cluster
+      connection:
+        proxyProtocol: Direct
+    - name: master
+      connection:
+        proxyProtocol: Direct
+    - name: etcd
+      connection:
+        proxyProtocol: Direct
+---
+# Source: kubefarm/charts/kubernetes/templates/controller-manager-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-controller-manager-conf
+data:
+  controller-manager.conf: |
+    apiVersion: v1
+    clusters:
+    - cluster:
+        certificate-authority: /pki/controller-manager-client/ca.crt
+        server: https://kubernetes-apiserver:6443
+      name: default-cluster
+    contexts:
+    - context:
+        cluster: default-cluster
+        namespace: default
+        user: default-auth
+      name: default-context
+    current-context: default-context
+    kind: Config
+    preferences: {}
+    users:
+    - name: default-auth
+      user:
+        client-certificate: /pki/controller-manager-client/tls.crt
+        client-key: /pki/controller-manager-client/tls.key
+---
+# Source: kubefarm/charts/kubernetes/templates/kubeadm-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-kubeadm-config
+data:
+  kubeadmcfg.yaml: |+
+    apiVersion: kubeadm.k8s.io/v1beta3
+    kind: ClusterConfiguration
+    controlPlaneEndpoint: kubernetes-apiserver:6443
+    networking:
+      dnsDomain: cluster.local
+      serviceSubnet: 10.96.0.0/12
+---
+# Source: kubefarm/charts/kubernetes/templates/kubeadm-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-kubeadm-scripts
+data:
+  configure-cluster.sh: |+
+    #!/bin/sh
+    set -e
+    set -x
+    ENDPOINT=$(awk -F'[ "]+' '$1 == "controlPlaneEndpoint:" {print $2}' /config/kubeadmcfg.yaml)
+    
+    # ------------------------------------------------------------------------------
+    # Update secrets and component configs
+    # ------------------------------------------------------------------------------
+    
+    # wait for cluster
+    echo "Waiting for api-server endpoint ${ENDPOINT}..."
+    until kubectl cluster-info >/dev/null 2>/dev/null; do
+      sleep 1
+    done
+    
+    # ------------------------------------------------------------------------------
+    # Cluster configuration
+    # ------------------------------------------------------------------------------
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    
+    # upload configuration
+    # TODO: https://github.com/kvaps/kubernetes-in-kubernetes/issues/6
+    kubeadm init phase upload-config kubeadm --config /config/kubeadmcfg.yaml
+    
+    # upload configuration
+    # TODO: https://github.com/kvaps/kubernetes-in-kubernetes/issues/5
+    kubeadm init phase upload-config kubelet --config /config/kubeadmcfg.yaml -v1 2>&1 |
+      while read line; do echo "$line" | grep 'Preserving the CRISocket information for the control-plane node' && killall kubeadm || echo "$line"; done
+    
+    # setup bootstrap-tokens
+    # TODO: https://github.com/kvaps/kubernetes-in-kubernetes/issues/7
+    # TODO: https://github.com/kubernetes/kubernetes/issues/98881
+    flatconfig=$(mktemp)
+    kubectl config view --flatten > "$flatconfig"
+    kubeadm init phase bootstrap-token --config /config/kubeadmcfg.yaml --skip-token-print --kubeconfig="$flatconfig"
+    rm -f "$flatconfig"
+    
+    # correct apiserver address for the external clients
+    kubectl apply -n kube-public -f - <<EOT
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cluster-info
+    data:
+      kubeconfig: |
+        apiVersion: v1
+        clusters:
+        - cluster:
+            certificate-authority-data: $(base64 /pki/admin-client/ca.crt | tr -d '\n')
+            server: https://${ENDPOINT}
+          name: ""
+        contexts: null
+        current-context: ""
+        kind: Config
+        preferences: {}
+        users: null
+    EOT
+    
+    kubectl delete -f /manifests/konnectivity-server-rbac.yaml 2>/dev/null || true
+    
+    # uninstall konnectivity agent
+    kubectl delete -f /manifests/konnectivity-agent-deployment.yaml -f /manifests/konnectivity-agent-rbac.yaml 2>/dev/null || true
+    
+    # install coredns addon
+    kubectl apply -f /manifests/coredns.yaml
+    
+    # install kube-proxy addon
+    # TODO: https://github.com/kvaps/kubernetes-in-kubernetes/issues/4
+    kubeadm init phase addon kube-proxy --config /config/kubeadmcfg.yaml
+---
+# Source: kubefarm/charts/kubernetes/templates/kubedns-manifests.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-coredns-manifests
+data:
+  coredns.yaml: |
+    # Source: https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/dns/coredns/coredns.yaml.base
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: coredns
+      namespace: kube-system
+      labels:
+          kubernetes.io/cluster-service: "true"
+          addonmanager.kubernetes.io/mode: Reconcile
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+        addonmanager.kubernetes.io/mode: Reconcile
+      name: system:coredns
+    rules:
+    - apiGroups:
+      - ""
+      resources:
+      - endpoints
+      - services
+      - pods
+      - namespaces
+      verbs:
+      - list
+      - watch
+    - apiGroups:
+      - ""
+      resources:
+      - nodes
+      verbs:
+      - get
+    - apiGroups:
+      - discovery.k8s.io
+      resources:
+      - endpointslices
+      verbs:
+      - list
+      - watch
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      annotations:
+        rbac.authorization.kubernetes.io/autoupdate: "true"
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+        addonmanager.kubernetes.io/mode: EnsureExists
+      name: system:coredns
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:coredns
+    subjects:
+    - kind: ServiceAccount
+      name: coredns
+      namespace: kube-system
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: coredns
+      namespace: kube-system
+    data:
+      Corefile: |
+        .:53 {
+            errors
+            health {
+                lameduck 5s
+            }
+            ready
+            kubernetes cluster.local in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+                ttl 30
+            }
+            prometheus :9153
+            forward . /etc/resolv.conf {
+                max_concurrent 1000
+            }
+            cache 30
+            loop
+            reload
+            loadbalance
+        }
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: coredns
+      namespace: kube-system
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/cluster-service: "true"
+        addonmanager.kubernetes.io/mode: Reconcile
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      replicas: 2
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+      selector:
+        matchLabels:
+          k8s-app: kube-dns
+      template:
+        metadata:
+          labels:
+            k8s-app: kube-dns
+        spec:
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          priorityClassName: system-cluster-critical
+          serviceAccountName: coredns
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: k8s-app
+                        operator: In
+                        values: ["kube-dns"]
+                  topologyKey: kubernetes.io/hostname
+          tolerations:
+            - key: "CriticalAddonsOnly"
+              operator: "Exists"
+          nodeSelector:
+            kubernetes.io/os: linux
+          containers:
+          - name: coredns
+            image: "coredns/coredns:1.8.6"
+            imagePullPolicy: IfNotPresent
+            resources:
+              limits:
+                memory: 170Mi
+              requests:
+                cpu: 100m
+                memory: 70Mi
+            args: [ "-conf", "/etc/coredns/Corefile" ]
+            volumeMounts:
+            - name: config-volume
+              mountPath: /etc/coredns
+              readOnly: true
+            ports:
+            - containerPort: 53
+              name: dns
+              protocol: UDP
+            - containerPort: 53
+              name: dns-tcp
+              protocol: TCP
+            - containerPort: 9153
+              name: metrics
+              protocol: TCP
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 60
+              timeoutSeconds: 5
+              successThreshold: 1
+              failureThreshold: 5
+            readinessProbe:
+              httpGet:
+                path: /ready
+                port: 8181
+                scheme: HTTP
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                add:
+                - NET_BIND_SERVICE
+                drop:
+                - all
+              readOnlyRootFilesystem: true
+          dnsPolicy: Default
+          volumes:
+            - name: config-volume
+              configMap:
+                name: coredns
+                items:
+                - key: Corefile
+                  path: Corefile
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-dns
+      namespace: kube-system
+      annotations:
+        prometheus.io/port: "9153"
+        prometheus.io/scrape: "true"
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/cluster-service: "true"
+        addonmanager.kubernetes.io/mode: Reconcile
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      selector:
+        k8s-app: kube-dns
+      clusterIP: 10.96.0.10
+      ports:
+      - name: dns
+        port: 53
+        protocol: UDP
+      - name: dns-tcp
+        port: 53
+        protocol: TCP
+      - name: metrics
+        port: 9153
+        protocol: TCP
+---
+# Source: kubefarm/charts/kubernetes/templates/scheduler-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-scheduler-conf
+data:
+  scheduler.conf: |
+    apiVersion: v1
+    clusters:
+    - cluster:
+        certificate-authority: /pki/scheduler-client/ca.crt
+        server: https://kubernetes-apiserver:6443
+      name: default-cluster
+    contexts:
+    - context:
+        cluster: default-cluster
+        namespace: default
+        user: default-auth
+      name: default-context
+    current-context: default-context
+    kind: Config
+    preferences: {}
+    users:
+    - name: default-auth
+      user:
+        client-certificate: /pki/scheduler-client/tls.crt
+        client-key: /pki/scheduler-client/tls.key
+---
+# Source: kubefarm/templates/ltsp-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp
+  name: ltsp
+data:
+  docker.json: |
+    {
+      "bridge": "none",
+      "exec-opts": [
+        "native.cgroupdriver=systemd"
+      ],
+      "ip-forward": false,
+      "iptables": false,
+      "log-driver": "journald",
+      "storage-driver": "overlay2"
+    }
+
+  kubeadm-join.service: |
+    [Unit]
+    Description=Join Kubernetes
+    After=network-online.target
+    Wants=network-online.target
+    Wants=docker.service docker.socket
+    After=docker.service docker.socket
+
+    [Service]
+    Type=oneshot
+    Environment=HOME=/root
+    EnvironmentFile=/etc/ltsp/kubeadm-join.conf
+    ExecStart=/bin/sh -c "exec ${JOIN_COMMAND}"
+    Restart=on-failure
+
+    [Install]
+    WantedBy=multi-user.target
+  ltsp.conf: |
+    [common]
+    OMIT_FUNCTIONS="pam_main mask_services_main config_network_manager"
+    PRE_INIT_KUBERNETES_HOSTS=". /etc/ltsp/kubeadm-join.conf"
+    POST_INIT_HOSTS='sed -i "s/^127.0.1.1/${IP_ADDRESS}/g" /etc/hosts'
+    MENU_TIMEOUT="0"
+
+    # ===== Sections =====
+    [init/]
+    # Disable autoupdates
+    systemctl mask apt-daily.timer apt-daily-upgrade.timer
+    # Setup SSH Daemon
+    ssh-keygen -A
+    # Sysctl settings
+    cp -f /etc/ltsp/sysctl.conf /etc/sysctl.d/99-sysctl.conf
+    # Setup modules
+    cp -f /etc/ltsp/modules /etc/modules
+    # Setup docker config
+    mkdir -p /etc/docker
+    cp -f /etc/ltsp/docker.json /etc/docker/daemon.json
+
+    # Setup services
+    for svc in /etc/ltsp/*.service; do
+      cp "$svc" /etc/systemd/system/
+      systemctl enable "$(basename "$svc")"
+    done
+
+    # Setup kubelet extraArgs
+    mkdir -p /etc/systemd/system/kubelet.service.d
+    ( LABELS=$(echo_values "KUBERNETES_LABELS_[[:alnum:]_]*" | paste -s -d,)
+      TAINTS=$(echo_values "KUBERNETES_TAINTS_[[:alnum:]_]*" | paste -s -d,)
+      EXTRA_ARGS=$(echo_values "KUBELET_EXTRA_ARGS_[[:alnum:]_]*" | paste -s -d" ")
+      printf "[Service]\nEnvironment=\"KUBELET_EXTRA_ARGS=%s %s %s\"\n" \
+        "${LABELS:+--node-labels=$LABELS}" "${TAINTS:+--register-with-taints=$TAINTS}" "$EXTRA_ARGS"
+    ) > /etc/systemd/system/kubelet.service.d/99-extra-args.conf
+
+    # ====== Options ======
+    [clients]
+    FSTAB_DOCKER="tmpfs /var/lib/docker tmpfs x-systemd.wanted-by=docker.service 0 0"
+    FSTAB_KUBELET="tmpfs /var/lib/kubelet tmpfs x-systemd.wanted-by=kubelet.service 0 0"
+    KUBELET_EXTRA_ARGS_CGROUP="--cgroup-driver=systemd"
+    [tag_debug]
+    DEBUG_SHELL="1"
+
+    # ====== Nodes ======
+  modules: |
+    br_netfilter
+  sysctl.conf: |
+    net.ipv4.ip_forward=1
+    net.ipv6.conf.all.forwarding=1
+---
+# Source: kubefarm/templates/ltsp-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp
+  name: ltsp-scripts
+data:
+  gentoken.sh: |+
+    #!/bin/sh
+    # This script is waiting until LoadBalancer service be ready
+    # then generates token and records it into Kubernetes secret
+    #
+    # Usage: gentoken.sh <serviceName> <secretName>
+    
+    set -e
+    
+    SVC=${1:-$SVC}
+    SECRET=${2:-$SECRET}
+    
+    getip(){
+      kubectl get service -w "$1" -o 'go-template={{with .status.loadBalancer.ingress}}{{range .}}{{.ip}}{{"\n"}}{{end}}{{.err}}{{end}}' 2>/tmp/error | head -n1
+    }
+    
+    echo "Waiting for svc/$SVC"
+    IP=$(getip "$SVC")
+    if [ -z "$IP" ]; then
+      cat /tmp/error
+      exit 1
+    fi
+    
+    echo "Acquiring token"
+    kubeadm --kubeconfig /etc/kubernetes/admin.conf token create --description kubefarm --print-join-command > /tmp/token
+    CONFIG=$(cat <<EOT
+    HOSTS_KUBERNETES="${IP} $(awk -F'[ :]' '{print $3}' /tmp/token)"
+    JOIN_COMMAND="$(cat /tmp/token)"
+    EOT
+    )
+    CONFIG_BASE64=$(echo "$CONFIG" | base64 | tr -d '\n')
+    
+    kubectl patch secret "$SECRET" --type merge -p="{\"data\":{\"kubeadm-join.conf\":\"$CONFIG_BASE64\"}}"
+    
+  publiship.sh: |+
+    #!/bin/sh
+    # This script is waiting until two LoadBalancer service be ready
+    # then performs checks if they are having identical externalIP
+    # and records the IP-address to DhcpOptions object 
+    #
+    # Usage: publiship.sh <serviceName> <serviceName> <tagName> <DhcpOptionsName>
+    
+    set -e
+    
+    SVC1=${1:-$SVC1}
+    SVC2=${2:-$SVC2}
+    TAG=${3:-$TAG}
+    DHCPOPTIONS=${4:-$DHCPOPTIONS}
+    
+    getip(){
+      kubectl get service -w "$1" -o 'go-template={{with .status.loadBalancer.ingress}}{{range .}}{{.ip}}{{"\n"}}{{end}}{{.err}}{{end}}' 2>/tmp/error | head -n1
+    }
+    
+    echo "Waiting for svc/$SVC1"
+    IP1=$(getip $SVC1)
+    if [ -z "$IP1" ]; then
+      cat /tmp/error
+      exit 1
+    fi
+    
+    echo "Waiting for svc/$SVC2"
+    IP2=$(getip $SVC2)
+    if [ -z "$IP1" ]; then
+      cat /tmp/error
+      exit 1
+    fi
+    
+    if [ "$IP1" != "$IP2" ]; then
+      echo "IP for $SVC1 and $SVC2 not match"
+      exit 1
+    fi
+    
+    #kubectl patch dnshosts $DNSHOST --type merge -p "{\"spec\":{\"hosts\":[{\"hostnames\":[\"$HOSTNAME\"],\"ip\":\"$IP1\"}]}}"
+    kubectl patch dhcpoptions $DHCPOPTIONS --type merge -p "{\"spec\":{\"options\":[{\"key\":\"option:server-ip-address\",\"tags\":[\"$TAG\"],\"values\":[\"$IP1\"]}]}}"
+---
+# Source: kubefarm/templates/ltsp-publisher-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-publisher
+  name: ltsp-publisher
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - '*'
+  resourceNames:
+  - ltsp-tftp
+  - ltsp-http
+- apiGroups:
+  - "dnsmasq.kvaps.cf"
+  resources:
+  #- dnshosts
+  - dhcpoptions
+  verbs:
+  - get
+  - patch
+  resourceNames:
+  - ltsp-ip
+---
+# Source: kubefarm/templates/token-generator-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-token-generator
+  name: ltsp-token-generator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - watch
+  resourceNames:
+  - kubernetes-apiserver
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - patch
+  resourceNames:
+  - ltsp-join-config
+---
+# Source: kubefarm/templates/ltsp-publisher-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-publisher
+  name: ltsp-publisher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ltsp-publisher
+subjects:
+- kind: ServiceAccount
+  name: ltsp-publisher
+  namespace: default
+---
+# Source: kubefarm/templates/token-generator-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp-token-generator
+  name: ltsp-token-generator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ltsp-token-generator
+subjects:
+- kind: ServiceAccount
+  name: ltsp-token-generator
+  namespace: default
+---
+# Source: kubefarm/charts/kubernetes/templates/apiserver-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-apiserver
+  labels:
+    app: kubernetes-apiserver
+  annotations:
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 6443
+    name: client
+  selector:
+    app: kubernetes-apiserver
+---
+# Source: kubefarm/charts/kubernetes/templates/controller-manager-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-controller-manager
+  labels:
+    app: kubernetes-controller-manager
+spec:
+  type: ClusterIP
+  ports:
+  - port: 10257
+    name: client
+  selector:
+    app: kubernetes-controller-manager
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-etcd
+  labels:
+    app: kubernetes-etcd
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  clusterIP: None
+  ports:
+  - port: 2379
+    name: client
+  - port: 2380
+    name: peer
+  - port: 2381
+    name: metrics
+  selector:
+    app: kubernetes-etcd
+---
+# Source: kubefarm/charts/kubernetes/templates/scheduler-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-scheduler
+  labels:
+    app: kubernetes-scheduler
+spec:
+  type: ClusterIP
+  ports:
+  - port: 10259
+    name: client
+  selector:
+    app: kubernetes-scheduler
+---
+# Source: kubefarm/templates/ltsp-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/allow-shared-ip: ltsp
+  labels:
+    app: ltsp
+  name: ltsp-http
+spec:
+  ports:
+  - name: http
+    port: 80
+  selector:
+    app: ltsp
+  type: LoadBalancer
+---
+# Source: kubefarm/templates/ltsp-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/allow-shared-ip: ltsp
+  labels:
+    app: ltsp
+  name: ltsp-tftp
+spec:
+  ports:
+  - name: tftp
+    port: 69
+    protocol: UDP
+  selector:
+    app: ltsp
+  type: LoadBalancer
+---
+# Source: kubefarm/charts/kubernetes/templates/admin-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "kubernetes-admin"
+  labels:
+    app: "kubernetes-admin"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "kubernetes-admin"
+  template:
+    metadata:
+      labels:
+        app: "kubernetes-admin"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: kubernetes-admin
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      containers:
+      - command: [ 'sleep', 'infinity' ]
+        image: "ghcr.io/kvaps/kubernetes-tools:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        name: admin
+        readinessProbe:
+          exec:
+            command:
+            - kubectl
+            - auth
+            - can-i
+            - '*'
+            - '*'
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        env:
+        - name: KUBECONFIG
+          value: "/etc/kubernetes/admin.conf"
+        volumeMounts:
+        - mountPath: /etc/kubernetes/
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /pki/admin-client
+          name: pki-admin-client
+        - mountPath: /scripts
+          name: scripts
+        - mountPath: /config
+          name: config
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: "kubernetes-admin-conf"
+        name: kubeconfig
+      - secret:
+          secretName: "kubernetes-pki-admin-client"
+        name: pki-admin-client
+      - name: scripts
+        configMap:
+          name: "kubernetes-kubeadm-scripts"
+          defaultMode: 0777
+      - name: config
+        configMap:
+          name: "kubernetes-kubeadm-config"
+---
+# Source: kubefarm/charts/kubernetes/templates/apiserver-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "kubernetes-apiserver"
+  labels:
+    app: "kubernetes-apiserver"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: "kubernetes-apiserver"
+  template:
+    metadata:
+      labels:
+        app: "kubernetes-apiserver"
+      annotations:
+        checksum/config: ba965b49810eac4b2b426ec82d86c69f8a89049977b267c9d18c3f6b21fe2752
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: kubernetes-apiserver
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-apiserver
+        - --allow-privileged=true
+        - --authorization-mode=Node,RBAC
+        - --bind-address=0.0.0.0
+        - --client-ca-file=/pki/apiserver-server/ca.crt
+        - --enable-admission-plugins=NodeRestriction
+        - --enable-bootstrap-token-auth=true
+        - --etcd-cafile=/pki/apiserver-etcd-client/ca.crt
+        - --etcd-certfile=/pki/apiserver-etcd-client/tls.crt
+        - --etcd-keyfile=/pki/apiserver-etcd-client/tls.key
+        - --etcd-servers=https://kubernetes-etcd-0.kubernetes-etcd:2379,https://kubernetes-etcd-1.kubernetes-etcd:2379,https://kubernetes-etcd-2.kubernetes-etcd:2379
+        - --insecure-port=0
+        - --kubelet-client-certificate=/pki/apiserver-kubelet-client/tls.crt
+        - --kubelet-client-key=/pki/apiserver-kubelet-client/tls.key
+        - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+        - --proxy-client-cert-file=/pki/front-proxy-client/tls.crt
+        - --proxy-client-key-file=/pki/front-proxy-client/tls.key
+        - --requestheader-allowed-names=kubernetes-front-proxy-client
+        - --requestheader-client-ca-file=/pki/front-proxy-client/ca.crt
+        - --requestheader-extra-headers-prefix=X-Remote-Extra-
+        - --requestheader-group-headers=X-Remote-Group
+        - --requestheader-username-headers=X-Remote-User
+        - --secure-port=6443
+        - --service-account-key-file=/pki/sa/tls.crt
+        - --service-cluster-ip-range=10.96.0.0/12
+        - --tls-cert-file=/pki/apiserver-server/tls.crt
+        - --tls-private-key-file=/pki/apiserver-server/tls.key
+        - --egress-selector-config-file=/etc/kubernetes/egress-selector-configuration.yaml
+        - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+        - --service-account-signing-key-file=/pki/sa/tls.key
+        ports:
+        - containerPort: 6443
+          name: client
+        image: "k8s.gcr.io/kube-apiserver:v1.22.4"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /livez
+            port: 6443
+            scheme: HTTPS
+          initialDelaySeconds: 15
+          timeoutSeconds: 15
+        name: kube-apiserver
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /etc/kubernetes
+          name: apiserver-config
+        - mountPath: /pki/front-proxy-client
+          name: pki-front-proxy-client
+        - mountPath: /pki/apiserver-server
+          name: pki-apiserver-server
+        - mountPath: /pki/apiserver-etcd-client
+          name: pki-apiserver-etcd-client
+        - mountPath: /pki/apiserver-kubelet-client
+          name: pki-apiserver-kubelet-client
+        - mountPath: /pki/sa
+          name: pki-sa
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: "kubernetes-apiserver-config"
+        name: apiserver-config
+      - secret:
+          secretName: "kubernetes-pki-front-proxy-client"
+        name: pki-front-proxy-client
+      - secret:
+          secretName: "kubernetes-pki-apiserver-server"
+        name: pki-apiserver-server
+      - secret:
+          secretName: "kubernetes-pki-apiserver-etcd-client"
+        name: pki-apiserver-etcd-client
+      - secret:
+          secretName: "kubernetes-pki-apiserver-kubelet-client"
+        name: pki-apiserver-kubelet-client
+      - secret:
+          secretName: "kubernetes-pki-sa"
+        name: pki-sa
+---
+# Source: kubefarm/charts/kubernetes/templates/controller-manager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "kubernetes-controller-manager"
+  labels:
+    app: "kubernetes-controller-manager"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: "kubernetes-controller-manager"
+  template:
+    metadata:
+      labels:
+        app: "kubernetes-controller-manager"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: kubernetes-controller-manager
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-controller-manager
+        - --authentication-kubeconfig=/etc/kubernetes/controller-manager.conf
+        - --authorization-kubeconfig=/etc/kubernetes/controller-manager.conf
+        - --bind-address=0.0.0.0
+        - --client-ca-file=/pki/ca/tls.crt
+        - --cluster-name=kubernetes
+        - --cluster-signing-cert-file=/pki/ca/tls.crt
+        - --cluster-signing-key-file=/pki/ca/tls.key
+        - --controllers=*,bootstrapsigner,tokencleaner
+        - --kubeconfig=/etc/kubernetes/controller-manager.conf
+        - --leader-elect=true
+        - --requestheader-client-ca-file=/pki/front-proxy-client/tls.crt
+        - --root-ca-file=/pki/ca/tls.crt
+        - --secure-port=10257
+        - --service-account-private-key-file=/pki/sa/tls.key
+        - --use-service-account-credentials=true
+        - --tls-cert-file=/pki/controller-manager-server/tls.crt
+        - --tls-private-key-file=/pki/controller-manager-server/tls.key
+        - --service-cluster-ip-range=10.96.0.0/12
+        
+        image: "k8s.gcr.io/kube-controller-manager:v1.22.4"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /healthz
+            port: 10257
+            scheme: HTTPS
+          initialDelaySeconds: 15
+          timeoutSeconds: 15
+        name: kube-controller-manager
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /etc/kubernetes/
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /pki/controller-manager-server
+          name: pki-controller-manager-server
+        - mountPath: /pki/controller-manager-client
+          name: pki-controller-manager-client
+        - mountPath: /pki/ca
+          name: pki-ca
+        - mountPath: /pki/front-proxy-client
+          name: pki-front-proxy-client
+        - mountPath: /pki/sa
+          name: pki-sa
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: "kubernetes-controller-manager-conf"
+        name: kubeconfig
+      - secret:
+          secretName: "kubernetes-pki-controller-manager-server"
+        name: pki-controller-manager-server
+      - secret:
+          secretName: "kubernetes-pki-controller-manager-client"
+        name: pki-controller-manager-client
+      - secret:
+          secretName: "kubernetes-pki-ca"
+        name: pki-ca
+      - secret:
+          secretName: "kubernetes-pki-front-proxy-client"
+        name: pki-front-proxy-client
+      - secret:
+          secretName: "kubernetes-pki-sa"
+        name: pki-sa
+---
+# Source: kubefarm/charts/kubernetes/templates/scheduler-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "kubernetes-scheduler"
+  labels:
+    app: "kubernetes-scheduler"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: "kubernetes-scheduler"
+  template:
+    metadata:
+      labels:
+        app: "kubernetes-scheduler"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: kubernetes-scheduler
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-scheduler
+        - --authentication-kubeconfig=/etc/kubernetes/scheduler.conf
+        - --authorization-kubeconfig=/etc/kubernetes/scheduler.conf
+        - --bind-address=0.0.0.0
+        - --kubeconfig=/etc/kubernetes/scheduler.conf
+        - --leader-elect=true
+        - --secure-port=10259
+        - --tls-cert-file=/pki/scheduler-server/tls.crt
+        - --tls-private-key-file=/pki/scheduler-server/tls.key
+        image: "k8s.gcr.io/kube-scheduler:v1.22.4"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 15
+          timeoutSeconds: 15
+        name: kube-scheduler
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /etc/kubernetes/
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /pki/scheduler-server
+          name: pki-scheduler-server
+        - mountPath: /pki/scheduler-client
+          name: pki-scheduler-client
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          name: "kubernetes-scheduler-conf"
+        name: kubeconfig
+      - secret:
+          secretName: "kubernetes-pki-scheduler-server"
+        name: pki-scheduler-server
+      - secret:
+          secretName: "kubernetes-pki-scheduler-client"
+        name: pki-scheduler-client
+---
+# Source: kubefarm/templates/ltsp-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp
+  name: ltsp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ltsp
+  template:
+    metadata:
+      labels:
+        app: ltsp
+    spec:
+      containers:
+
+      - name: config
+        image: "ghcr.io/kvaps/kubefarm-ltsp:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - touch /etc/ssh/ssh_host__key.pub &&
+          ltsp initrd && ltsp grub -h -H &&
+          while inotifywait -e delete_self -q /etc/ltsp/..data; do ltsp initrd && ltsp grub -h -H; done
+        env:
+        - name: TFTP_DIR
+          value: /shared
+        volumeMounts:
+        - mountPath: /etc/ltsp
+          name: config
+        - mountPath: /shared
+          name: shared
+
+      - name: http
+        image: "ghcr.io/kvaps/kubefarm-ltsp:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - ln -sf /shared/ltsp/ltsp.img /srv/tftp/ltsp/ltsp.img &&
+          ln -sf /shared/ltsp/grub /srv/tftp/ltsp/grub &&
+          ln -sf /proc/self/fd/2 /var/log/nginx/error.log &&
+          ln -sf /proc/self/fd/2 /var/log/nginx/access.log && 
+          exec nginx -g "daemon off;"
+        readinessProbe:
+          httpGet:
+            path: /ltsp/grub/grub.cfg
+            port: 80
+            scheme: HTTP
+          periodSeconds: 10
+          initialDelaySeconds: 5
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - mountPath: /shared
+          name: shared
+
+      - name: tftp
+        image: "ghcr.io/kvaps/kubefarm-ltsp:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - rm -rf /srv/tftp/ltsp/grub &&
+          ln -sf /shared/ltsp/ltsp.img /srv/tftp/ltsp/ltsp.img &&
+          ln -sf /shared/ltsp/grub /srv/tftp/ltsp/grub &&
+          exec dnsmasq -d --port=0 --enable-tftp=eth0 --tftp-single-port --tftp-root=/srv/tftp
+        ports:
+        - containerPort: 69
+          name: tftp
+          protocol: UDP
+        volumeMounts:
+        - mountPath: /shared
+          name: shared
+
+      volumes:
+      - name: shared
+        emptyDir: {}
+
+      - name: config
+        projected:
+          sources:
+          - configMap:
+              name: ltsp
+          - secret:
+              name: ltsp-join-config
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kubernetes-etcd
+  labels:
+    app: kubernetes-etcd
+spec:
+  replicas: 3
+  serviceName: kubernetes-etcd
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kubernetes-etcd
+  template:
+    metadata:
+      name: kubernetes-etcd
+      labels:
+        app: kubernetes-etcd
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: kubernetes-etcd
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - etcd
+        - --advertise-client-urls=https://$(POD_NAME).kubernetes-etcd:2379
+        - --cert-file=/pki/etcd/server/tls.crt
+        - --client-cert-auth=true
+        - --data-dir=/var/lib/etcd
+        - --initial-advertise-peer-urls=https://$(POD_NAME).kubernetes-etcd:2380
+        - --initial-cluster=kubernetes-etcd-0=https://kubernetes-etcd-0.kubernetes-etcd:2380,kubernetes-etcd-1=https://kubernetes-etcd-1.kubernetes-etcd:2380,kubernetes-etcd-2=https://kubernetes-etcd-2.kubernetes-etcd:2380
+        - --initial-cluster-state=new
+        - --initial-cluster-token=kubernetes-etcd
+        - --key-file=/pki/etcd/server/tls.key
+        - --listen-client-urls=https://0.0.0.0:2379
+        - --listen-peer-urls=https://0.0.0.0:2380
+        - --listen-metrics-urls=http://0.0.0.0:2381
+        - --name=$(POD_NAME)
+        - --peer-cert-file=/pki/etcd/peer/tls.crt
+        - --peer-client-cert-auth=true
+        - --peer-key-file=/pki/etcd/peer/tls.key
+        - --peer-trusted-ca-file=/pki/etcd/ca/tls.crt
+        - --snapshot-count=10000
+        - --trusted-ca-file=/pki/etcd/ca/tls.crt
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: ETCDCTL_API
+          value: "3"
+        - name: ETCDCTL_CACERT
+          value: /pki/etcd/peer/ca.crt
+        - name: ETCDCTL_CERT
+          value: /pki/etcd/peer/tls.crt
+        - name: ETCDCTL_KEY
+          value: /pki/etcd/peer/tls.key 
+        - name: ETCDCTL_ENDPOINTS
+          value: https://kubernetes-etcd-0.kubernetes-etcd:2379,https://kubernetes-etcd-1.kubernetes-etcd:2379,https://kubernetes-etcd-2.kubernetes-etcd:2379
+        image: "k8s.gcr.io/etcd:3.5.1-0"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 2379
+          name: client
+        - containerPort: 2380
+          name: peer
+        - containerPort: 2381
+          name: metrics
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /health
+            port: 2381
+            scheme: HTTP
+          initialDelaySeconds: 15
+          timeoutSeconds: 15
+        name: etcd
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /pki/etcd/ca
+          name: pki-etcd-certs-ca
+        - mountPath: /pki/etcd/peer
+          name: pki-etcd-certs-peer
+        - mountPath: /pki/etcd/server
+          name: pki-etcd-certs-server
+        - mountPath: /var/lib/etcd
+          name: etcd-data
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - secret:
+          secretName: kubernetes-pki-etcd-ca
+        name: pki-etcd-certs-ca
+      - secret:
+          secretName: kubernetes-pki-etcd-peer
+        name: pki-etcd-certs-peer
+      - secret:
+          secretName: kubernetes-pki-etcd-server
+        name: pki-etcd-certs-server
+  volumeClaimTemplates:
+  - metadata:
+      name: etcd-data
+      labels:
+        app: kubernetes-etcd
+      finalizers:
+        - kubernetes.io/pvc-protection
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: "1Gi"
+---
+# Source: kubefarm/charts/kubernetes/templates/kubeadm-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "kubernetes-kubeadm-tasks"
+  labels:
+    app: "kubernetes-kubeadm-tasks"
+spec:
+  schedule: "0 0 1 */6 *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: "kubernetes-kubeadm-tasks"
+      annotations:
+        checksum/config: fc0588804c9a6c190484a09d0eb46dae0cdf1a15c56de11b9aa76348d815683f
+        checksum/scripts: fea9d591cd71d92dbd839b59e88ff337192aeaf2055c1962737795bdaf8c750d
+    spec:
+      template:
+        metadata:
+          labels:
+            app: kubernetes-kubeadm-tasks
+        spec:
+          automountServiceAccountToken: false
+          containers:
+          - command:
+            - /scripts/configure-cluster.sh
+            env:
+            - name: KUBECONFIG
+              value: /etc/kubernetes/admin.conf
+            image: ghcr.io/kvaps/kubernetes-tools:v0.13.4
+            imagePullPolicy: IfNotPresent
+            name: kubeadm
+            volumeMounts:
+            - mountPath: /etc/kubernetes/
+              name: kubeconfig
+              readOnly: true
+            - mountPath: /pki/admin-client
+              name: pki-admin-client
+            - mountPath: /scripts
+              name: scripts
+            - mountPath: /manifests
+              name: manifests
+            - mountPath: /config
+              name: config
+          restartPolicy: OnFailure
+          volumes:
+          - configMap:
+              name: kubernetes-admin-conf
+            name: kubeconfig
+          - name: pki-admin-client
+            secret:
+              secretName: kubernetes-pki-admin-client
+          - configMap:
+              defaultMode: 511
+              name: kubernetes-kubeadm-scripts
+            name: scripts
+          - name: manifests
+            projected:
+              sources:
+              - configMap:
+                  name: kubernetes-coredns-manifests
+          - configMap:
+              name: kubernetes-kubeadm-config
+            name: config
+---
+# Source: kubefarm/templates/token-generator-cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  labels:
+    app: ltsp-token-generator
+  name: ltsp-token-update
+spec:
+  schedule: "0 */12 * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: ltsp-token-generator
+        spec:
+          containers:
+          - command:
+            - /scripts/gentoken.sh
+            env:
+            - name: SVC
+              value: kubernetes-apiserver
+            - name: SECRET
+              value: ltsp-join-config
+            image: ghcr.io/kvaps/kubernetes-tools:v0.13.4
+            imagePullPolicy: IfNotPresent
+            name: kubeadm
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+            volumeMounts:
+            - mountPath: /etc/kubernetes/
+              name: kubeconfig
+              readOnly: true
+            - mountPath: /scripts
+              name: scripts
+            - mountPath: /pki/admin-client
+              name: pki-admin-client
+          restartPolicy: OnFailure
+          serviceAccountName: ltsp-token-generator
+          volumes:
+          - configMap:
+              defaultMode: 420
+              name: kubernetes-admin-conf
+            name: kubeconfig
+          - configMap:
+              defaultMode: 511
+              name: ltsp-scripts
+            name: scripts
+          - name: pki-admin-client
+            secret:
+              secretName: kubernetes-pki-admin-client
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-etcd-ca"
+spec:
+  commonName: "kubernetes-etcd-ca"
+  secretName: "kubernetes-pki-etcd-ca"
+  duration: 87600h # 3650d
+  renewBefore: 8760h # 365d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "cert sign"
+  isCA: true
+  issuerRef:
+    name: "kubernetes-selfsigning-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-etcd-peer"
+spec:
+  commonName: "kubernetes-etcd-peer"
+  secretName: "kubernetes-pki-etcd-peer"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "server auth"
+  - "client auth"
+  dnsNames:
+  - "kubernetes-etcd"
+  - "kubernetes-etcd.default"
+  - "kubernetes-etcd.default.svc"
+  - "*.kubernetes-etcd"
+  - "*.kubernetes-etcd.default"
+  - "*.kubernetes-etcd.default.svc"
+  - "localhost"
+  ipAddresses:
+  - "127.0.0.1"
+  issuerRef:
+    name: "kubernetes-etcd-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-etcd-server"
+spec:
+  commonName: "kubernetes-etcd-server"
+  secretName: "kubernetes-pki-etcd-server"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "server auth"
+  - "client auth"
+  dnsNames:
+  - "kubernetes-etcd"
+  - "kubernetes-etcd.default"
+  - "kubernetes-etcd.default.svc"
+  - "*.kubernetes-etcd"
+  - "*.kubernetes-etcd.default"
+  - "*.kubernetes-etcd.default.svc"
+  - "kubernetes-etcd-client"
+  - "kubernetes-etcd-client.default"
+  - "kubernetes-etcd-client.default.svc"
+  - "localhost"
+  ipAddresses:
+  - "127.0.0.1"
+  issuerRef:
+    name: "kubernetes-etcd-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-etcd-healthcheck-client"
+spec:
+  commonName: "kubernetes-etcd-healthcheck-client"
+  secretName: "kubernetes-pki-etcd-healthcheck-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:masters"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-etcd-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-apiserver-etcd-client"
+spec:
+  commonName: "kubernetes-apiserver-etcd-client"
+  secretName: "kubernetes-pki-apiserver-etcd-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:masters"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-etcd-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-ca"
+spec:
+  commonName: "kubernetes-ca"
+  secretName: "kubernetes-pki-ca"
+  duration: 87600h # 3650d
+  renewBefore: 8760h # 365d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "cert sign"
+  isCA: true
+  issuerRef:
+    name: "kubernetes-selfsigning-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-sa"
+spec:
+  commonName: "kubernetes-sa"
+  secretName: "kubernetes-pki-sa"
+  duration: 87600h # 3650d
+  renewBefore: 8760h # 365d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "cert sign"
+  isCA: true
+  issuerRef:
+    name: "kubernetes-selfsigning-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-controller-manager-server"
+spec:
+  commonName: "kubernetes-controller-manager-server"
+  secretName: "kubernetes-pki-controller-manager-server"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "server auth"
+  dnsNames:
+  - "kubernetes-controller-manager"
+  - "kubernetes-controller-manager.default"
+  - "kubernetes-controller-manager.default.svc"
+  - "localhost"
+  ipAddresses:
+  - "127.0.0.1"
+  - "10.96.0.1"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-scheduler-server"
+spec:
+  commonName: "kubernetes-scheduler-server"
+  secretName: "kubernetes-pki-scheduler-server"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "server auth"
+  dnsNames:
+  - "kubernetes-scheduler"
+  - "kubernetes-scheduler.default"
+  - "kubernetes-scheduler.default.svc"
+  - "localhost"
+  ipAddresses:
+  - "127.0.0.1"
+  - "10.96.0.1"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-apiserver-server"
+spec:
+  commonName: "kubernetes-apiserver-server"
+  secretName: "kubernetes-pki-apiserver-server"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "server auth"
+  dnsNames:
+  - "kubernetes-apiserver"
+  - "kubernetes-apiserver.default"
+  - "kubernetes-apiserver.default.svc"
+  - "localhost"
+  ipAddresses:
+  - "127.0.0.1"
+  - "10.96.0.1"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-controller-manager-client"
+spec:
+  commonName: "system:kube-controller-manager"
+  secretName: "kubernetes-pki-controller-manager-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:kube-controller-manager"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-scheduler-client"
+spec:
+  commonName: "system:kube-scheduler"
+  secretName: "kubernetes-pki-scheduler-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:kube-scheduler"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-konnectivity-server-client"
+spec:
+  commonName: "system:konnectivity-server"
+  secretName: "kubernetes-pki-konnectivity-server-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:konnectivity-server"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-admin-client"
+spec:
+  commonName: "kubernetes-admin-client"
+  secretName: "kubernetes-pki-admin-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:masters"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-apiserver-kubelet-client"
+spec:
+  commonName: "kubernetes-apiserver-kubelet-client"
+  secretName: "kubernetes-pki-apiserver-kubelet-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:masters"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-front-proxy-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-front-proxy-ca"
+spec:
+  commonName: "kubernetes-front-proxy-ca"
+  secretName: "kubernetes-pki-front-proxy-ca"
+  duration: 87600h # 3650d
+  renewBefore: 8760h # 365d
+  subject:
+    organizations:
+    - "kubernetes"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "cert sign"
+  isCA: true
+  issuerRef:
+    name: "kubernetes-selfsigning-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-front-proxy-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "kubernetes-pki-front-proxy-client"
+spec:
+  commonName: "kubernetes-front-proxy-client"
+  secretName: "kubernetes-pki-front-proxy-client"
+  duration: 8760h # 365d
+  renewBefore: 4380h # 178d
+  subject:
+    organizations:
+    - "system:masters"
+  usages:
+  - "signing"
+  - "key encipherment"
+  - "client auth"
+  issuerRef:
+    name: "kubernetes-front-proxy-issuer"
+    kind: Issuer
+---
+# Source: kubefarm/templates/ltsp-ip-dhcpoptions.yaml
+apiVersion: dnsmasq.kvaps.cf/v1beta1
+kind: DhcpOptions
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp
+  name: ltsp-ip
+spec:
+  controller: ""
+---
+# Source: kubefarm/templates/ltsp-options-dhcpoptions.yaml
+apiVersion: dnsmasq.kvaps.cf/v1beta1
+kind: DhcpOptions
+metadata:
+  annotations: {}
+  labels:
+    app: ltsp
+  name: ltsp-options
+spec:
+  controller: ""
+  options:
+  - key: option:tftp-server
+    tags:
+    - ltsp
+    values:
+    - ltsp
+  - key: option:bootfile-name
+    tags:
+    - ltsp
+    - X86PC
+    values:
+    - ltsp/grub/i386-pc/core.0
+  - key: option:bootfile-name
+    tags:
+    - ltsp
+    - X86-64_EFI
+    values:
+    - ltsp/grub/x86_64-efi/core.efi
+---
+# Source: kubefarm/charts/kubernetes/templates/etcd-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: "kubernetes-etcd-issuer"
+spec:
+  ca:
+    secretName: "kubernetes-pki-etcd-ca"
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: "kubernetes-issuer"
+spec:
+  ca:
+    secretName: "kubernetes-pki-ca"
+---
+# Source: kubefarm/charts/kubernetes/templates/kubernetes-front-proxy-certs.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: "kubernetes-front-proxy-issuer"
+spec:
+  ca:
+    secretName: "kubernetes-pki-front-proxy-ca"
+---
+# Source: kubefarm/charts/kubernetes/templates/selfsigning-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: "kubernetes-selfsigning-issuer"
+spec:
+  selfSigned: {}
+---
+# Source: kubefarm/charts/kubernetes/templates/kubeadm-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "kubernetes-kubeadm-tasks"
+  labels:
+    app: "kubernetes-kubeadm-tasks"
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+    checksum/config: fc0588804c9a6c190484a09d0eb46dae0cdf1a15c56de11b9aa76348d815683f
+    checksum/scripts: fea9d591cd71d92dbd839b59e88ff337192aeaf2055c1962737795bdaf8c750d
+spec:
+  template:
+    metadata:
+      labels:
+        app: "kubernetes-kubeadm-tasks"
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      containers:
+      - name: kubeadm
+        image: "ghcr.io/kvaps/kubernetes-tools:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command: [ '/scripts/configure-cluster.sh' ]
+        env:
+        - name: KUBECONFIG
+          value: "/etc/kubernetes/admin.conf"
+        volumeMounts:
+        - mountPath: /etc/kubernetes/
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /pki/admin-client
+          name: pki-admin-client
+        - mountPath: /scripts
+          name: scripts
+        - mountPath: /manifests
+          name: manifests
+        - mountPath: /config
+          name: config
+      volumes:
+      - configMap:
+          name: "kubernetes-admin-conf"
+        name: kubeconfig
+      - secret:
+          secretName: "kubernetes-pki-admin-client"
+        name: pki-admin-client
+      - name: scripts
+        configMap:
+          name: "kubernetes-kubeadm-scripts"
+          defaultMode: 0777
+      - name: manifests
+        projected:
+          sources:
+          - configMap:
+              name: "kubernetes-coredns-manifests"
+      - name: config
+        configMap:
+          name: "kubernetes-kubeadm-config"
+---
+# Source: kubefarm/templates/ltsp-publisher-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: before-hook-creation
+  labels:
+    app: ltsp-publisher
+  name: ltsp-publish
+spec:
+  template:
+    metadata:
+      labels:
+        app: ltsp-publisher
+    spec:
+      containers:
+      - name: kubeadm
+        image: "ghcr.io/kvaps/kubernetes-tools:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command: [ '/scripts/publiship.sh' ]
+        env:
+        - name: SVC1
+          value: ltsp-tftp
+        - name: SVC2
+          value: ltsp-http
+        - name: TAG
+          value: ltsp
+        - name: DHCPOPTIONS
+          value: ltsp-ip
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /scripts
+          name: scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: ltsp-scripts
+          defaultMode: 0777
+      restartPolicy: OnFailure
+      serviceAccountName: ltsp-publisher
+---
+# Source: kubefarm/templates/token-generator-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+  labels:
+    app: ltsp-token-generator
+  name: ltsp-token-create
+spec:
+  template:
+    metadata:
+      labels:
+        app: ltsp-token-generator
+    spec:
+      containers:
+      - name: kubeadm
+        image: "ghcr.io/kvaps/kubernetes-tools:v0.13.4"
+        imagePullPolicy: IfNotPresent
+        command: [ '/scripts/gentoken.sh' ]
+        env:
+        - name: SVC
+          value: kubernetes-apiserver
+        - name: SECRET
+          value: ltsp-join-config
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /etc/kubernetes/
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /scripts
+          name: scripts
+        - mountPath: /pki/admin-client
+          name: pki-admin-client
+      volumes:
+      - name: kubeconfig
+        configMap:
+          defaultMode: 420
+          name: kubernetes-admin-conf
+      - name: scripts
+        configMap:
+          name: ltsp-scripts
+          defaultMode: 0777
+      - secret:
+          secretName: "kubernetes-pki-admin-client"
+        name: pki-admin-client
+      restartPolicy: OnFailure
+      serviceAccountName: ltsp-token-generator

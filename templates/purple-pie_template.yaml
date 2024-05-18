@@ -1,0 +1,1265 @@
+---
+# Source: purple-pie/charts/elasticsearch/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: "elasticsearch-master-pdb"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: "elasticsearch-master"
+---
+# Source: purple-pie/charts/microservice/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-purple-pie
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: purple-pie/charts/microservice/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-purple-pie-traefik-configurator
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: purple-pie/charts/vault/templates/injector-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-vault-agent-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: purple-pie/charts/vault/templates/server-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-vault
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.16.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: purple-pie/templates/vault.secrets.yaml
+# Default value is an empty string. Must be set manually
+#
+
+#
+
+#
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-purple-pie-vault-secrets
+type: Opaque
+data:
+  VAULT_TOKEN: ""
+---
+# Source: purple-pie/charts/vault/templates/server-config-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-vault-config
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.16.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  extraconfig-from-values.hcl: |-
+    disable_mlock = true
+    ui = true
+    
+    listener "tcp" {
+      tls_disable = 1
+      address = "[::]:8200"
+      cluster_address = "[::]:8201"
+    }
+    storage "file" {
+      path = "/vault/data"
+    }
+    
+    # Example configuration for using auto-unseal, using Google Cloud KMS. The
+    # GKMS keys must already exist, and the cluster must have a service account
+    # that is authorized to access GCP KMS.
+    #seal "gcpckms" {
+    #   project     = "vault-helm-dev"
+    #   region      = "global"
+    #   key_ring    = "vault-helm-unseal-kr"
+    #   crypto_key  = "vault-helm-unseal-key"
+    #}
+---
+# Source: purple-pie/templates/server-config.configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-purple-pie-server-configs
+data:
+  server-config.yaml: | 
+    {}
+---
+# Source: purple-pie/charts/vault/templates/injector-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-vault-agent-injector-clusterrole
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  verbs: 
+    - "get"
+    - "list"
+    - "watch"
+    - "patch"
+---
+# Source: purple-pie/charts/vault/templates/injector-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-vault-agent-injector-binding
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-vault-agent-injector-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: release-name-vault-agent-injector
+  namespace: default
+---
+# Source: purple-pie/charts/vault/templates/server-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-vault-server-binding
+  labels:
+    helm.sh/chart: vault-0.16.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: release-name-vault
+  namespace: default
+---
+# Source: purple-pie/charts/microservice/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-purple-pie-traefik-configurator
+subjects:
+  - kind: ServiceAccount
+    name: release-name-purple-pie-traefik-configurator
+    apiGroup: ""
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: ""
+---
+# Source: purple-pie/charts/elasticsearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: elasticsearch-master
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  selector:
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+  ports:
+  - name: http
+    protocol: TCP
+    port: 9200
+  - name: transport
+    protocol: TCP
+    port: 9300
+---
+# Source: purple-pie/charts/elasticsearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: elasticsearch-master-headless
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None # This is needed for statefulset hostnames like elasticsearch-0 to resolve
+  # Create endpoints also if the related pod isn't ready
+  publishNotReadyAddresses: true
+  selector:
+    app: "elasticsearch-master"
+  ports:
+  - name: http
+    port: 9200
+  - name: transport
+    port: 9300
+---
+# Source: purple-pie/charts/microservice/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-purple-pie-dashboard
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector: 
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: http
+  ports:
+    - port: 80
+      name: "http"
+      targetPort: "http"
+      protocol: TCP
+---
+# Source: purple-pie/charts/microservice/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-purple-pie-rest
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector: 
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: http
+  ports:
+    - port: 80
+      name: "http"
+      targetPort: "http"
+      protocol: TCP
+---
+# Source: purple-pie/charts/vault/templates/injector-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-vault-agent-injector-svc
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  
+spec:
+  ports:
+  - name: https
+    port: 443
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    component: webhook
+---
+# Source: purple-pie/charts/vault/templates/server-headless-service.yaml
+# Service for Vault cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-vault-internal
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.16.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: "http"
+      port: 8200
+      targetPort: 8200
+    - name: https-internal
+      port: 8201
+      targetPort: 8201
+  selector:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    component: server
+---
+# Source: purple-pie/charts/vault/templates/server-service.yaml
+# Service for Vault cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-vault
+  namespace: default
+  labels:
+    helm.sh/chart: vault-0.16.1
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+
+spec:
+  # We want the servers to become available even if they're not ready
+  # since this DNS is also used for join operations.
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+    - name: https-internal
+      port: 8201
+      targetPort: 8201
+  selector:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    component: server
+---
+# Source: purple-pie/charts/microservice/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-purple-pie-http
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: http
+spec:
+  selector:
+    matchLabels: 
+      app.kubernetes.io/name: purple-pie
+      app.kubernetes.io/instance: purple-pie-v1
+      
+      app.cryptexlabs.com/apiVersion: v1
+      
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/component: http
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels: 
+        
+        app.kubernetes.io/version: "0.0.4"
+        helm.sh/chart: microservice-0.5.0
+        
+        
+        app.kubernetes.io/name: purple-pie
+        app.kubernetes.io/instance: purple-pie-v1
+        
+        app.cryptexlabs.com/apiVersion: v1
+        
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: http
+    spec:
+    
+      
+      
+      
+      
+      
+      
+      containers:
+      
+        
+        
+        
+        - name: microservice
+          
+          image: "docker.io/cryptexlabs/purple-pie:0.0.4"
+          command:
+            - yarn
+            - start:prod
+          imagePullPolicy: IfNotPresent
+          
+          
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 150m
+              memory: 512Mi
+          
+          
+          ports:
+            - name: "http"
+              containerPort: 3000
+          
+            
+            
+            
+            
+            
+        
+          
+          
+          startupProbe:
+                    failureThreshold: 10
+                    httpGet:
+                      path: /healthz
+                      port: http
+                    initialDelaySeconds: 10
+                    periodSeconds: 3
+          readinessProbe:
+                    failureThreshold: 3
+                    httpGet:
+                      path: /healthz
+                      port: http
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+          livenessProbe:
+                    failureThreshold: 1
+                    httpGet:
+                      path: /healthz
+                      port: http
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+          
+          
+        
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: APP_VERSION
+              value: "0.0.4"
+            - name: API_VERSION
+              value: "v1"
+            - name: APP_PREFIX
+              value: "pii/api"
+            - name: AUTHENTICATION_SERVICE_TYPE
+              value: "authf"
+            - name: AUTHF_REDIRECT_URL
+              value: "http://some-domain.com:3002"
+            - name: AUTOLOAD_PURPLE_PIE_SERVER_CONFIG
+              value: "false"
+            - name: DATABASE_TYPE
+              value: "elasticsearch"
+            - name: DOCS_PATH
+              value: "/purple-pie"
+            - name: DOCS_PREFIX
+              value: "docs"
+            - name: ELASTICSEARCH_URL
+              value: "http://elasticsearch-master:9200"
+            - name: HTTP_PORT
+              value: "3000"
+            - name: LOG_LEVELS
+              value: "info,error"
+            - name: PURPLE_PIE_SERVER_CONFIG_PATH
+              value: "/var/app/config/config/server-config.yaml"
+            - name: UI_PREFIX
+              value: "/pii"
+            - name: VAULT_URL
+              value: "http://release-name-vault:8200"
+            
+          envFrom:
+                    - secretRef:
+                        name: 'release-name-vault-secrets'
+          volumeMounts:
+            
+            
+            - name: server-configs
+              mountPath: /var/app/config/config
+        
+      
+      volumes:
+      
+        
+        
+        
+        
+        - name: server-configs
+          configMap:
+            name: release-name-purple-pie-server-configs
+---
+# Source: purple-pie/charts/vault/templates/injector-deployment.yaml
+# Deployment for the injector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-vault-agent-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    component: webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault-agent-injector
+      app.kubernetes.io/instance: release-name
+      component: webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault-agent-injector
+        app.kubernetes.io/instance: release-name
+        component: webhook
+    spec:
+      
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vault-agent-injector
+                  app.kubernetes.io/instance: "release-name"
+                  component: webhook
+              topologyKey: kubernetes.io/hostname
+  
+      
+      
+      serviceAccountName: "release-name-vault-agent-injector"
+      hostNetwork: false
+      securityContext:
+        runAsNonRoot: true
+        runAsGroup: 1000
+        runAsUser: 100
+      containers:
+        - name: sidecar-injector
+          
+          image: "hashicorp/vault-k8s:0.13.1"
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            - name: AGENT_INJECT_LISTEN
+              value: :8080
+            - name: AGENT_INJECT_LOG_LEVEL
+              value: info
+            - name: AGENT_INJECT_VAULT_ADDR
+              value: http://release-name-vault.default.svc:8200
+            - name: AGENT_INJECT_VAULT_AUTH_PATH
+              value: auth/kubernetes
+            - name: AGENT_INJECT_VAULT_IMAGE
+              value: "hashicorp/vault:1.8.3"
+            - name: AGENT_INJECT_TLS_AUTO
+              value: release-name-vault-agent-injector-cfg
+            - name: AGENT_INJECT_TLS_AUTO_HOSTS
+              value: release-name-vault-agent-injector-svc,release-name-vault-agent-injector-svc.default,release-name-vault-agent-injector-svc.default.svc
+            - name: AGENT_INJECT_LOG_FORMAT
+              value: standard
+            - name: AGENT_INJECT_REVOKE_ON_SHUTDOWN
+              value: "false"
+            - name: AGENT_INJECT_CPU_REQUEST
+              value: "250m"
+            - name: AGENT_INJECT_CPU_LIMIT
+              value: "500m"
+            - name: AGENT_INJECT_MEM_REQUEST
+              value: "64Mi"
+            - name: AGENT_INJECT_MEM_LIMIT
+              value: "128Mi"
+            - name: AGENT_INJECT_DEFAULT_TEMPLATE
+              value: "map"
+            - name: AGENT_INJECT_TEMPLATE_CONFIG_EXIT_ON_RETRY_FAILURE
+              value: "true"
+            
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          args:
+            - agent-inject
+            - 2>&1
+          livenessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+              scheme: HTTPS
+            failureThreshold: 2
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+              scheme: HTTPS
+            failureThreshold: 2
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            successThreshold: 1
+            timeoutSeconds: 5
+---
+# Source: purple-pie/charts/microservice/templates/hpa.yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-purple-pie-http
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: http
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-purple-pie-http
+  maxReplicas: 20
+  minReplicas: 1 
+  metrics: 
+    - resource:
+        name: cpu
+        target:
+          averageUtilization: 50
+          type: Utilization
+      type: Resource
+---
+# Source: purple-pie/charts/elasticsearch/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch-master
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+  annotations:
+    esMajorVersion: "7"
+spec:
+  serviceName: elasticsearch-master-headless
+  selector:
+    matchLabels:
+      app: "elasticsearch-master"
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-master
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+  template:
+    metadata:
+      name: "elasticsearch-master"
+      labels:
+        heritage: "Helm"
+        release: "release-name"
+        chart: "elasticsearch"
+        app: "elasticsearch-master"
+      annotations:
+        
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - "elasticsearch-master"
+            topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 120
+      volumes:
+      enableServiceLinks: true
+      initContainers:
+      - name: configure-sysctl
+        securityContext:
+          runAsUser: 0
+          privileged: true
+        image: "docker.elastic.co/elasticsearch/elasticsearch:7.9.1"
+        imagePullPolicy: "IfNotPresent"
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        resources:
+          {}
+
+      containers:
+      - name: "elasticsearch"
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+          runAsUser: 1000
+        image: "docker.elastic.co/elasticsearch/elasticsearch:7.9.1"
+        imagePullPolicy: "IfNotPresent"
+        readinessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - |
+                #!/usr/bin/env bash -e
+                # If the node is starting up wait for the cluster to be ready (request params: "wait_for_status=green&timeout=1s" )
+                # Once it has started only check that the node itself is responding
+                START_FILE=/tmp/.es_start_file
+
+                http () {
+                  local path="${1}"
+                  local args="${2}"
+                  set -- -XGET -s
+
+                  if [ "$args" != "" ]; then
+                    set -- "$@" $args
+                  fi
+
+                  if [ -n "${ELASTIC_USERNAME}" ] && [ -n "${ELASTIC_PASSWORD}" ]; then
+                    set -- "$@" -u "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}"
+                  fi
+
+                  curl --output /dev/null -k "$@" "http://127.0.0.1:9200${path}"
+                }
+
+                if [ -f "${START_FILE}" ]; then
+                  echo 'Elasticsearch is already running, lets check the node is healthy'
+                  HTTP_CODE=$(http "/" "-w %{http_code}")
+                  RC=$?
+                  if [[ ${RC} -ne 0 ]]; then
+                    echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with RC ${RC}"
+                    exit ${RC}
+                  fi
+                  # ready if HTTP code 200, 503 is tolerable if ES version is 6.x
+                  if [[ ${HTTP_CODE} == "200" ]]; then
+                    exit 0
+                  elif [[ ${HTTP_CODE} == "503" && "7" == "6" ]]; then
+                    exit 0
+                  else
+                    echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with HTTP code ${HTTP_CODE}"
+                    exit 1
+                  fi
+
+                else
+                  echo 'Waiting for elasticsearch cluster to become ready (request params: "wait_for_status=green&timeout=1s" )'
+                  if http "/_cluster/health?wait_for_status=green&timeout=1s" "--fail" ; then
+                    touch ${START_FILE}
+                    exit 0
+                  else
+                    echo 'Cluster is not yet ready (request params: "wait_for_status=green&timeout=1s" )'
+                    exit 1
+                  fi
+                fi
+          failureThreshold: 3
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 3
+          timeoutSeconds: 5
+        ports:
+        - name: http
+          containerPort: 9200
+        - name: transport
+          containerPort: 9300
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+        env:
+          - name: node.name
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: cluster.initial_master_nodes
+            value: "elasticsearch-master-0,elasticsearch-master-1,elasticsearch-master-2,"
+          - name: discovery.seed_hosts
+            value: "elasticsearch-master-headless"
+          - name: cluster.name
+            value: "elasticsearch"
+          - name: network.host
+            value: "0.0.0.0"
+          - name: ES_JAVA_OPTS
+            value: "-Xmx1g -Xms1g"
+          - name: node.data
+            value: "true"
+          - name: node.ingest
+            value: "true"
+          - name: node.master
+            value: "true"
+        volumeMounts:
+          - name: "elasticsearch-master"
+            mountPath: /usr/share/elasticsearch/data
+---
+# Source: purple-pie/charts/vault/templates/server-statefulset.yaml
+# StatefulSet to run the actual vault server cluster.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-vault
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-vault-internal
+  podManagementPolicy: Parallel
+  replicas: 1
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+      app.kubernetes.io/instance: release-name
+      component: server
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: vault-0.16.1
+        app.kubernetes.io/name: vault
+        app.kubernetes.io/instance: release-name
+        component: server
+    spec:
+      
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vault
+                  app.kubernetes.io/instance: "release-name"
+                  component: server
+              topologyKey: kubernetes.io/hostname
+  
+      
+      
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: release-name-vault
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsGroup: 1000
+        runAsUser: 100
+        fsGroup: 1000
+      volumes:
+        
+        - name: config
+          configMap:
+            name: release-name-vault-config
+  
+        - name: home
+          emptyDir: {}
+      containers:
+        - name: vault
+          
+          image: hashicorp/vault:1.8.3
+          imagePullPolicy: IfNotPresent
+          command:
+          - "/bin/sh"
+          - "-ec"
+          args: 
+          - |
+            cp /vault/config/extraconfig-from-values.hcl /tmp/storageconfig.hcl;
+            [ -n "${HOST_IP}" ] && sed -Ei "s|HOST_IP|${HOST_IP?}|g" /tmp/storageconfig.hcl;
+            [ -n "${POD_IP}" ] && sed -Ei "s|POD_IP|${POD_IP?}|g" /tmp/storageconfig.hcl;
+            [ -n "${HOSTNAME}" ] && sed -Ei "s|HOSTNAME|${HOSTNAME?}|g" /tmp/storageconfig.hcl;
+            [ -n "${API_ADDR}" ] && sed -Ei "s|API_ADDR|${API_ADDR?}|g" /tmp/storageconfig.hcl;
+            [ -n "${TRANSIT_ADDR}" ] && sed -Ei "s|TRANSIT_ADDR|${TRANSIT_ADDR?}|g" /tmp/storageconfig.hcl;
+            [ -n "${RAFT_ADDR}" ] && sed -Ei "s|RAFT_ADDR|${RAFT_ADDR?}|g" /tmp/storageconfig.hcl;
+            /usr/local/bin/docker-entrypoint.sh vault server -config=/tmp/storageconfig.hcl 
+   
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VAULT_K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VAULT_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            - name: VAULT_API_ADDR
+              value: "http://$(POD_IP):8200"
+            - name: SKIP_CHOWN
+              value: "true"
+            - name: SKIP_SETCAP
+              value: "true"
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VAULT_CLUSTER_ADDR
+              value: "https://$(HOSTNAME).release-name-vault-internal:8201"
+            - name: HOME
+              value: "/home/vault"
+            
+            
+            
+          volumeMounts:
+          
+  
+    
+            - name: data
+              mountPath: /vault/data
+    
+  
+  
+            - name: config
+              mountPath: /vault/config
+  
+            - name: home
+              mountPath: /home/vault
+          ports:
+            - containerPort: 8200
+              name: http
+            - containerPort: 8201
+              name: https-internal
+            - containerPort: 8202
+              name: http-rep
+          readinessProbe:
+            # Check status; unsealed vault servers return 0
+            # The exit code reflects the seal status:
+            #   0 - unsealed
+            #   1 - error
+            #   2 - sealed
+            exec:
+              command: ["/bin/sh", "-ec", "vault status -tls-skip-verify"]
+            failureThreshold: 2
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 3
+          lifecycle:
+            # Vault container doesn't receive SIGTERM from Kubernetes
+            # and after the grace period ends, Kube sends SIGKILL.  This
+            # causes issues with graceful shutdowns such as deregistering itself
+            # from Consul (zombie services).
+            preStop:
+              exec:
+                command: [
+                  "/bin/sh", "-c",
+                  # Adding a sleep here to give the pod eviction a
+                  # chance to propagate, so requests will not be made
+                  # to this pod while it's terminating
+                  "sleep 5 && kill -SIGTERM $(pidof vault)",
+                ]
+      
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+---
+# Source: purple-pie/charts/vault/templates/injector-mutating-webhook.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: release-name-vault-agent-injector-cfg
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+webhooks:
+  - name: vault.hashicorp.com
+    sideEffects: None
+    admissionReviewVersions:
+    - "v1beta1"
+    - "v1"
+    clientConfig:
+      service:
+        name: release-name-vault-agent-injector-svc
+        namespace: default
+        path: "/mutate"
+      caBundle: ""
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    failurePolicy: Ignore
+---
+# Source: purple-pie/charts/elasticsearch/templates/test/test-elasticsearch-health.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-kuyqz-test"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  securityContext:
+    fsGroup: 1000
+    runAsUser: 1000
+  containers:
+  - name: "release-name-sxujz-test"
+    image: "docker.elastic.co/elasticsearch/elasticsearch:7.9.1"
+    imagePullPolicy: "IfNotPresent"
+    command:
+      - "sh"
+      - "-c"
+      - |
+        #!/usr/bin/env bash -e
+        curl -XGET --fail 'elasticsearch-master:9200/_cluster/health?wait_for_status=green&timeout=1s'
+  restartPolicy: Never
+---
+# Source: purple-pie/charts/microservice/templates/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-purple-pie-config-loader
+  labels: 
+    
+    app.kubernetes.io/version: "0.0.4"
+    helm.sh/chart: microservice-0.5.0
+    
+    
+    app.kubernetes.io/name: purple-pie
+    app.kubernetes.io/instance: purple-pie-v1
+    
+    app.cryptexlabs.com/apiVersion: v1
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: config-loader
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  
+  
+  
+  
+  
+  
+  
+  restartPolicy: Never
+  
+  containers:
+  
+    
+    
+    
+    - name: microservice
+      
+      image: "docker.io/cryptexlabs/purple-pie:0.0.4"
+      command:
+        - yarn
+        - start:load-config
+      imagePullPolicy: IfNotPresent
+      
+      
+      
+        
+        
+        
+        
+        
+    
+      
+    
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: APP_VERSION
+          value: "0.0.4"
+        - name: API_VERSION
+          value: "v1"
+        - name: APP_PREFIX
+          value: "pii/api"
+        - name: AUTHENTICATION_SERVICE_TYPE
+          value: "authf"
+        - name: AUTHF_REDIRECT_URL
+          value: "http://some-domain.com:3002"
+        - name: AUTOLOAD_PURPLE_PIE_SERVER_CONFIG
+          value: "false"
+        - name: DATABASE_TYPE
+          value: "elasticsearch"
+        - name: DOCS_PATH
+          value: "/purple-pie"
+        - name: DOCS_PREFIX
+          value: "docs"
+        - name: ELASTICSEARCH_URL
+          value: "http://elasticsearch-master:9200"
+        - name: HTTP_PORT
+          value: "3000"
+        - name: LOG_LEVELS
+          value: "info,error"
+        - name: PURPLE_PIE_SERVER_CONFIG_PATH
+          value: "/var/app/config/config/server-config.yaml"
+        - name: UI_PREFIX
+          value: "/pii"
+        - name: VAULT_URL
+          value: "http://release-name-vault:8200"
+        
+        - name: PURPLE_PIE_SERVER_CONFIG_HOT_RELOAD
+          value: "false"
+      envFrom:
+                - secretRef:
+                    name: 'release-name-vault-secrets'
+      volumeMounts:
+        
+        
+        - name: server-configs
+          mountPath: /var/app/config/config
+    
+  
+  volumes:
+  
+    
+    
+    
+    
+    - name: server-configs
+      configMap:
+        name: release-name-purple-pie-server-configs
+---
+# Source: purple-pie/charts/vault/templates/tests/server-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-server-test"
+  namespace: default
+  annotations:
+    "helm.sh/hook": test
+spec:
+  
+  containers:
+    - name: release-name-server-test
+      image: hashicorp/vault:1.8.3
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: VAULT_ADDR
+          value: http://release-name-vault.default.svc:8200
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Checking for sealed info in 'vault status' output"
+          ATTEMPTS=10
+          n=0
+          until [ "$n" -ge $ATTEMPTS ]
+          do
+            echo "Attempt" $n...
+            vault status -format yaml | grep -E '^sealed: (true|false)' && break
+            n=$((n+1))
+            sleep 5
+          done
+          if [ $n -ge $ATTEMPTS ]; then
+            echo "timed out looking for sealed info in 'vault status' output"
+            exit 1
+          fi
+
+          exit 0
+
+  restartPolicy: Never

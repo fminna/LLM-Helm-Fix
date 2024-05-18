@@ -1,0 +1,256 @@
+---
+# Source: headscale/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-headscale-config
+  labels:
+    helm.sh/chart: headscale-0.23.0
+    app.kubernetes.io/name: headscale
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.23.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.yaml: |
+    acl_policy_path: ""
+    acme_email: ""
+    acme_url: https://acme-v02.api.letsencrypt.org/directory
+    db_path: /data/db.sqlite
+    db_type: sqlite3
+    derp:
+      auto_update_enabled: true
+      paths: []
+      server:
+        enabled: false
+        region_code: headscale
+        region_id: 999
+        region_name: Headscale Embedded DERP
+        stun_listen_addr: 0.0.0.0:3478
+      update_frequency: 24h
+      urls:
+      - https://controlplane.tailscale.com/derpmap/default
+    disable_check_updates: false
+    dns_config:
+      base_domain: example.com
+      domains: []
+      magic_dns: true
+      nameservers:
+      - 1.1.1.1
+      override_local_dns: true
+    ephemeral_node_inactivity_timeout: 30m
+    grpc_allow_insecure: false
+    grpc_listen_addr: 0.0.0.0:50443
+    ip_prefixes:
+    - fd7a:115c:a1e0::/48
+    - 100.64.0.0/10
+    listen_addr: 0.0.0.0:8080
+    log:
+      format: text
+      level: info
+    logtail:
+      enabled: false
+    metrics_listen_addr: 127.0.0.1:9090
+    node_update_check_interval: 10s
+    noise:
+      private_key_path: /data/noise_private.key
+    private_key_path: /data/private.key
+    randomize_client_port: false
+    server_url: http://127.0.0.1:8080
+    tls_cert_path: ""
+    tls_key_path: ""
+    tls_letsencrypt_cache_dir: /var/lib/headscale/cache
+    tls_letsencrypt_challenge_type: HTTP-01
+    tls_letsencrypt_hostname: ""
+    tls_letsencrypt_listen: :http
+    unix_socket: /var/run/headscale.sock
+    unix_socket_permission: "0770"
+---
+# Source: headscale/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-headscale
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: headscale
+    app.kubernetes.io/version: 0.23.0
+    helm.sh/chart: headscale-0.23.0
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: headscale
+    role: primary
+---
+# Source: headscale/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-headscale-ui
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: headscale
+    app.kubernetes.io/version: 0.23.0
+    helm.sh/chart: headscale-0.23.0
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: headscale
+    role: ui
+---
+# Source: headscale/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-headscale-ui
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: headscale
+    app.kubernetes.io/version: 0.23.0
+    helm.sh/chart: headscale-0.23.0
+    role: ui
+spec:
+  revisionHistoryLimit: 
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: headscale
+      role: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: headscale
+        role: ui
+    spec:
+      
+      serviceAccountName: default
+      automountServiceAccountToken: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      initContainers:
+        []
+      containers:
+        - name: release-name-headscale-ui
+          image: "ghcr.io/gurucomputing/headscale-ui:2023.01.30-beta-1"
+          imagePullPolicy: IfNotPresent
+          
+          env:
+            - name: TZ
+              value: UTC
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          volumeMounts:
+            - name: headscale-config
+              mountPath: /etc/headscale/config.yaml
+              subPath: config.yaml
+          
+      volumes:
+        - name: headscale-config
+          configMap:
+            name: release-name-headscale-config
+---
+# Source: headscale/templates/common.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-headscale
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: headscale
+    app.kubernetes.io/version: 0.23.0
+    helm.sh/chart: headscale-0.23.0
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: headscale
+      role: primary
+  serviceName: release-name-headscale
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: headscale
+        role: primary
+    spec:
+      
+      serviceAccountName: default
+      automountServiceAccountToken: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      initContainers:
+        []
+      containers:
+        - name: release-name-headscale
+          image: "headscale/headscale:0.23.0"
+          imagePullPolicy: IfNotPresent
+          command:
+              
+            - headscale
+            - serve
+          
+          env:
+            - name: TZ
+              value: UTC
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: headscale-config
+              mountPath: /etc/headscale/config.yaml
+              subPath: config.yaml
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 0
+            failureThreshold: 3
+            timeoutSeconds: 1
+            periodSeconds: 10
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 0
+            failureThreshold: 30
+            timeoutSeconds: 1
+            periodSeconds: 5
+      volumes:
+        - name: headscale-config
+          configMap:
+            name: release-name-headscale-config
+  volumeClaimTemplates:

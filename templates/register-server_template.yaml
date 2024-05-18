@@ -1,0 +1,119 @@
+---
+# Source: register-server/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: register-server
+---
+# Source: register-server/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: register-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: register-server
+  namespace: default
+
+# helm install . --debug  --set global.storageType=host --set global.baseUrl=t.vk.vu --set namespace=monitoring --namespace=monitoring
+---
+# Source: register-server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: register-server
+  labels:
+    name: register-server
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    name: register-server
+  sessionAffinity: None
+status:
+  loadBalancer: {}
+---
+# Source: register-server/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: register-server
+  labels:
+    name: register-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: register-server
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: register-server
+    spec:
+      containers:
+      - name: register-server
+        image: "registry.saas.hand-china.com/hap-cloud/register-server:latest"
+        imagePullPolicy: Always
+        env:
+        - name: "KAFKA_ADDRESSES"
+          value: "kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092,kafka-2.kafka-headless.kafka.svc.cluster.local:9092"
+        ports:
+          - name: http
+            containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /eureka/apps/delta
+            port: 8000
+            scheme: HTTP
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 3
+        resources:
+            limits:
+              memory: 500Mi
+            requests:
+              memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: register-server
+      serviceAccountName: register-server
+      terminationGracePeriodSeconds: 30
+---
+# Source: register-server/templates/ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: register-server
+spec:
+  rules:
+  - host: register.alpha.saas.hand-china.com
+    http:
+      paths:
+      - backend:
+          serviceName: register-server
+          servicePort:  8000
+        path: /
+status:
+  loadBalancer:
+    ingress:
+    - {}

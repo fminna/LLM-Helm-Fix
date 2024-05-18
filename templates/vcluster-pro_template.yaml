@@ -1,0 +1,546 @@
+---
+# Source: vcluster-pro/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vc-release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: vcluster-pro/templates/workloadserviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vc-workload-release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: vcluster-pro/templates/coredns.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-coredns
+  namespace: default
+data:
+  coredns.yaml: |-
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: coredns
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+      name: system:coredns
+    rules:
+      - apiGroups:
+          - ""
+        resources:
+          - endpoints
+          - services
+          - pods
+          - namespaces
+        verbs:
+          - list
+          - watch
+      - apiGroups:
+          - discovery.k8s.io
+        resources:
+          - endpointslices
+        verbs:
+          - list
+          - watch
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      annotations:
+        rbac.authorization.kubernetes.io/autoupdate: "true"
+      labels:
+        kubernetes.io/bootstrapping: rbac-defaults
+      name: system:coredns
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:coredns
+    subjects:
+      - kind: ServiceAccount
+        name: coredns
+        namespace: kube-system
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: coredns
+      namespace: kube-system
+    data:
+      Corefile: |-
+        .:1053 {
+            errors {
+                stacktrace
+            }
+            health
+            ready
+            rewrite name regex .*\.nodes\.vcluster\.com kubernetes.default.svc.cluster.local
+            kubernetes cluster.local in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+            }
+            hosts /etc/NodeHosts {
+                ttl 60
+                reload 15s
+                fallthrough
+            }
+            prometheus :9153
+            forward . /etc/resolv.conf
+            cache 30
+            loop
+            loadbalance
+        }
+      
+        import /etc/coredns/custom/*.server
+      NodeHosts: ""
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: coredns
+      namespace: kube-system
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      replicas: 1
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+      selector:
+        matchLabels:
+          k8s-app: kube-dns
+      template:
+        metadata:
+          labels:
+            k8s-app: kube-dns
+        spec:
+          priorityClassName: "system-cluster-critical"
+          serviceAccountName: coredns
+          nodeSelector:
+            kubernetes.io/os: linux
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  k8s-app: kube-dns
+          containers:
+            - name: coredns
+              image: {{.IMAGE}}
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: 1000m
+                  memory: 170Mi
+                requests:
+                  cpu: 3m
+                  memory: 16Mi
+              args: [ "-conf", "/etc/coredns/Corefile" ]
+              volumeMounts:
+                - name: config-volume
+                  mountPath: /etc/coredns
+                  readOnly: true
+                - name: custom-config-volume
+                  mountPath: /etc/coredns/custom
+                  readOnly: true
+              ports:
+                - containerPort: 1053
+                  name: dns
+                  protocol: UDP
+                - containerPort: 1053
+                  name: dns-tcp
+                  protocol: TCP
+                - containerPort: 9153
+                  name: metrics
+                  protocol: TCP
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: {{.RUN_AS_USER}}
+                runAsGroup: {{.RUN_AS_GROUP}}
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              livenessProbe:
+                httpGet:
+                  path: /health
+                  port: 8080
+                  scheme: HTTP
+                initialDelaySeconds: 60
+                periodSeconds: 10
+                timeoutSeconds: 1
+                successThreshold: 1
+                failureThreshold: 3
+              readinessProbe:
+                httpGet:
+                  path: /ready
+                  port: 8181
+                  scheme: HTTP
+                initialDelaySeconds: 0
+                periodSeconds: 2
+                timeoutSeconds: 1
+                successThreshold: 1
+                failureThreshold: 3
+          dnsPolicy: Default
+          volumes:
+            - name: config-volume
+              configMap:
+                name: coredns
+                items:
+                  - key: Corefile
+                    path: Corefile
+                  - key: NodeHosts
+                    path: NodeHosts
+            - name: custom-config-volume
+              configMap:
+                name: coredns-custom
+                optional: true
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: kube-dns
+      namespace: kube-system
+      annotations:
+        prometheus.io/port: "9153"
+        prometheus.io/scrape: "true"
+      labels:
+        k8s-app: kube-dns
+        kubernetes.io/cluster-service: "true"
+        kubernetes.io/name: "CoreDNS"
+    spec:
+      selector:
+        k8s-app: kube-dns
+      type: ClusterIP
+      ports:
+        - name: dns
+          port: 53
+          targetPort: 1053
+          protocol: UDP
+        - name: dns-tcp
+          port: 53
+          targetPort: 1053
+          protocol: TCP
+        - name: metrics
+          port: 9153
+          protocol: TCP
+---
+# Source: vcluster-pro/templates/init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-init-manifests
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  manifests: |-
+    ---
+---
+# Source: vcluster-pro/templates/rbac/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: vc-release-name-v-default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+  - apiGroups: ["cluster.loft.sh", "storage.loft.sh"]
+    resources: ["features", "virtualclusters"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: vcluster-pro/templates/rbac/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: vc-release-name-v-default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+subjects:
+  - kind: ServiceAccount
+    name: vc-release-name
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: vc-release-name-v-default
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: vcluster-pro/templates/rbac/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "pods", "pods/attach", "pods/portforward", "pods/exec", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "patch", "update", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["endpoints", "events", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "replicasets", "deployments"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: vcluster-pro/templates/rbac/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+subjects:
+  - kind: ServiceAccount
+    name: vc-release-name
+    namespace: default
+roleRef:
+  kind: Role
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: vcluster-pro/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+      protocol: TCP
+    - name: kubelet
+      port: 10250
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    app: vcluster
+    release: release-name
+---
+# Source: vcluster-pro/templates/statefulset-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-headless
+  namespace: default
+  labels:
+    app: release-name-vcluster-pro
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+      protocol: TCP
+  clusterIP: None
+  selector:
+    app: vcluster
+    release: "release-name"
+---
+# Source: vcluster-pro/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: vcluster
+    chart: "vcluster-pro-0.2.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vcluster
+      release: release-name
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 5Gi
+  template:
+    metadata:
+      labels:
+        app: vcluster
+        release: release-name
+    spec:
+      terminationGracePeriodSeconds: 10
+      nodeSelector:
+        {}
+      tolerations:
+        []
+      serviceAccountName: vc-release-name
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: coredns
+          configMap:
+            name: release-name-coredns
+        - name: custom-config-volume
+          configMap:
+            name: coredns-custom
+            optional: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsGroup: 0
+        runAsUser: 0
+      containers:
+      - image: rancher/k3s:v1.27.3-k3s1
+        name: vcluster
+        # k3s has a problem running as pid 1 and disabled agents on cgroupv2
+        # nodes as it will try to evacuate the cgroups there. Starting k3s
+        # through a shell makes it non pid 1 and prevents this from happening
+        command:
+          - /bin/sh
+        args:
+          - -c
+          - /bin/k3s
+            server
+            --write-kubeconfig=/data/k3s-config/kube-config.yaml
+            --data-dir=/data
+            --disable=traefik,servicelb,metrics-server,local-storage,coredns
+            --disable-network-policy
+            --disable-agent
+            --disable-cloud-controller
+            --flannel-backend=none
+            --disable-scheduler
+            --kube-controller-manager-arg=controllers=*,-nodeipam,-nodelifecycle,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl
+            --kube-apiserver-arg=endpoint-reconciler-type=none
+            --service-cidr=$(SERVICE_CIDR)
+            && true
+        env:
+          - name: SERVICE_CIDR
+            valueFrom:
+              configMapKeyRef:
+                name: "vc-cidr-release-name"
+                key: cidr
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsGroup: 0
+          runAsUser: 0
+        volumeMounts:
+          - name: config
+            mountPath: /etc/rancher
+          - mountPath: /data
+            name: data
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+      - name: syncer
+        image: "ghcr.io/loft-sh/vcluster-pro:0.2.0"
+        args:
+          - --name=release-name
+          - --kube-config=/data/k3s-config/kube-config.yaml
+          - --service-account=vc-workload-release-name
+          - --kube-config-context-name=my-vcluster
+          - --leader-elect=false          
+          - --sync=-ingressclasses                    
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          failureThreshold: 60
+          initialDelaySeconds: 60
+          periodSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          failureThreshold: 60
+          periodSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsGroup: 0
+          runAsUser: 0
+        env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: VCLUSTER_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: CONFIG
+            value: |-
+              ---
+          - name: VCLUSTER_TELEMETRY_CONFIG
+            value: "{\"disabled\":\"false\",\"instanceCreator\":\"helm\",\"instanceCreatorUID\":\"\"}"
+        volumeMounts:
+          - name: coredns
+            mountPath: /manifests/coredns
+            readOnly: true
+          - name: custom-config-volume
+            mountPath: /etc/coredns/custom
+            readOnly: true
+          - mountPath: /data
+            name: data
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi

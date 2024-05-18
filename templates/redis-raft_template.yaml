@@ -1,0 +1,185 @@
+---
+# Source: redis-raft/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-redis-raft
+  labels:
+    helm.sh/chart: redis-raft-22.5.4
+    app.kubernetes.io/name: redis-raft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.2.6"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: redis-raft/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-raft
+  labels:
+    helm.sh/chart: redis-raft-22.5.4
+    app.kubernetes.io/name: redis-raft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.2.6"
+    app.kubernetes.io/managed-by: Helm
+data:
+  # postStart checks the raft state to see if the node is uninitialized. If it's already been initialized, then preStart
+  # won't perform any tasks. If it hasn't been initialized, then preStart will either init or join an existing cluster
+  # (depending on which node it is).
+  postStart.sh: |
+    sleep 5
+    node_id="1${HOSTNAME##${1}-}"
+    if [[ -n "$(/redis/bin/redis-cli --raw RAFT.INFO | grep "state:uninitialized")" ]]; then
+      if [[ "${node_id}" == "10" ]]; then
+        /redis/bin/redis-cli --raw RAFT.CLUSTER INIT
+      else
+        /redis/bin/redis-cli --raw RAFT.CLUSTER JOIN "${2}"
+      fi
+    fi
+
+  # preStop intentionally does not handle the 0th node to prevent the need to juggle init/join targets. This is done
+  # only for later nodes to handle the case where a cluster _might_ be scaling down. Nodes that are restarting will
+  # rejoin the cluster when they come back up.
+  preStop.sh: |
+    node_id="1${HOSTNAME##${1}-}"
+    if [[ "${node_id}" != "10" ]]; then
+      /redis/bin/redis-cli --raw RAFT.NODE REMOVE "${node_id}"
+    fi
+
+  redis.conf: |
+    
+    port 6379
+    
+    tcp-backlog 511
+    tcp-keepalive 300
+    timeout 0
+    always-show-logo no
+    
+    databases 1
+    save ""
+    dbfilename raft.rdb
+    maxmemory-policy noeviction
+    appendonly no
+    cluster-enabled no
+    
+    dir /redis/data
+    
+    protected-mode no
+---
+# Source: redis-raft/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-raft
+  labels:
+    helm.sh/chart: redis-raft-22.5.4
+    app.kubernetes.io/name: redis-raft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis
+    - port: 9121
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: redis-raft
+    app.kubernetes.io/instance: release-name
+---
+# Source: redis-raft/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-raft
+  labels:
+    helm.sh/chart: redis-raft-22.5.4
+    app.kubernetes.io/name: redis-raft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-redis-raft
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-raft
+      app.kubernetes.io/instance: release-name
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+  template:
+    metadata:
+      annotations:
+        checksum/configmap: 6d08a8068ae34c58c5fc81931a65c60d3aa744e41879a1e7e32641440ca213c3
+      labels:
+        helm.sh/chart: redis-raft-22.5.4
+        app.kubernetes.io/name: redis-raft
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "6.2.6"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: release-name-redis-raft
+      securityContext:
+        {}
+      containers:
+        - name: redis-raft
+          securityContext:
+            {}
+          image: "img.pitz.tech/mya/redis-raft:22.5.0-alpine"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+          args:
+            - |
+              echo $HOSTNAME | \
+                  sed 's:release-name-redis-raft-::g' | \
+                  xargs -I{} env REDIS_RAFT_MODULE_ID=1{} sh docker-entrypoint.sh \
+                  /redis/etc/redis.conf
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            {}
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - /redis/etc/postStart.sh
+                  - release-name-redis-raft
+                  - release-name-redis-raft.default.svc.cluster.local:6379
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - /redis/etc/preStop.sh
+                  - release-name-redis-raft
+          volumeMounts:
+            - mountPath: /redis/etc
+              name: etc
+            - mountPath: /redis/data
+              name: data
+        - name: redis-exporter
+          image: quay.io/oliver006/redis_exporter:v1.35.1
+          ports:
+            - name: metrics
+              containerPort: 9121
+              protocol: TCP
+      volumes:
+        - name: etc
+          configMap:
+            name: release-name-redis-raft

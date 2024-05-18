@@ -1,0 +1,1766 @@
+---
+# Source: dragonfly/charts/mysql/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mysql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+automountServiceAccountToken: true
+secrets:
+  - name: release-name-mysql
+---
+# Source: dragonfly/charts/redis/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: dragonfly/charts/mysql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mysql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  mysql-root-password: "ZHJhZ29uZmx5LXJvb3Q="
+  mysql-password: "ZHJhZ29uZmx5"
+---
+# Source: dragonfly/charts/redis/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  redis-password: "ZHJhZ29uZmx5"
+---
+# Source: dragonfly/charts/mysql/templates/primary/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mysql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+data:
+  my.cnf: |-
+    [mysqld]
+    default_authentication_plugin=mysql_native_password
+    skip-name-resolve
+    explicit_defaults_for_timestamp
+    basedir=/opt/bitnami/mysql
+    plugin_dir=/opt/bitnami/mysql/lib/plugin
+    port=3306
+    socket=/opt/bitnami/mysql/tmp/mysql.sock
+    datadir=/bitnami/mysql/data
+    tmpdir=/opt/bitnami/mysql/tmp
+    max_allowed_packet=16M
+    bind-address=*
+    pid-file=/opt/bitnami/mysql/tmp/mysqld.pid
+    log-error=/opt/bitnami/mysql/logs/mysqld.log
+    character-set-server=UTF8
+    collation-server=utf8_general_ci
+    slow_query_log=0
+    slow_query_log_file=/opt/bitnami/mysql/logs/mysqld.log
+    long_query_time=10.0
+    
+    [client]
+    port=3306
+    socket=/opt/bitnami/mysql/tmp/mysql.sock
+    default-character-set=UTF8
+    plugin_dir=/opt/bitnami/mysql/lib/plugin
+    
+    [manager]
+    port=3306
+    socket=/opt/bitnami/mysql/tmp/mysql.sock
+    pid-file=/opt/bitnami/mysql/tmp/mysqld.pid
+---
+# Source: dragonfly/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: dragonfly/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: dragonfly/charts/redis/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+  start-replica.sh: |
+    #!/bin/bash
+
+    get_port() {
+        hostname="$1"
+        type="$2"
+
+        port_var=$(echo "${hostname^^}_SERVICE_PORT_$type" | sed "s/-/_/g")
+        port=${!port_var}
+
+        if [ -z "$port" ]; then
+            case $type in
+                "SENTINEL")
+                    echo 26379
+                    ;;
+                "REDIS")
+                    echo 6379
+                    ;;
+            esac
+        else
+            echo $port
+        fi
+    }
+
+    get_full_hostname() {
+        hostname="$1"
+        echo "${hostname}.${HEADLESS_SERVICE}"
+    }
+
+    REDISPORT=$(get_port "$HOSTNAME" "REDIS")
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/replica.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/replica.conf /opt/bitnami/redis/etc/replica.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+
+    echo "" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-port $REDISPORT" >> /opt/bitnami/redis/etc/replica.conf
+    echo "replica-announce-ip $(get_full_hostname "$HOSTNAME")" >> /opt/bitnami/redis/etc/replica.conf
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--replicaof" "${REDIS_MASTER_HOST}" "${REDIS_MASTER_PORT_NUMBER}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_MASTER_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/replica.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: dragonfly/templates/dfdaemon/dfdaemon-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dragonfly-dfdaemon
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: dfdaemon
+data:
+  dfget.yaml: |-
+    aliveTime: 0s
+    gcInterval: 1m0s
+    keepStorage: false
+    workHome: 
+    logDir: 
+    cacheDir: 
+    pluginDir: 
+    dataDir: /var/lib/dragonfly
+    console: false
+    health:
+      path: /server/ping
+      tcpListen:
+        port: 40901
+    verbose: false
+    scheduler:
+      manager:
+        enable: true
+        netAddrs:
+        - type: tcp
+          addr: release-name-dragonfly-manager.default.svc.cluster.local:65003
+        refreshInterval: 10m
+      netAddrs:
+      scheduleTimeout: 30s
+      disableAutoBackSource: false
+      seedPeer:
+        clusterID: 1
+        enable: false
+        type: super
+    host:
+      idc: ""
+      location: ""
+    download:
+      calculateDigest: false
+      downloadGRPC:
+        security:
+          insecure: true
+          tlsVerify: true
+        unixListen:
+          socket: ""
+      peerGRPC:
+        security:
+          insecure: true
+        tcpListen:
+          port: 65000
+      perPeerRateLimit: 512Mi
+      prefetch: false
+      totalRateLimit: 1024Mi
+    upload:
+      rateLimit: 1024Mi
+      security:
+        insecure: true
+        tlsVerify: false
+      tcpListen:
+        port: 65002
+    objectStorage:
+      enable: false
+      filter: Expires&Signature&ns
+      maxReplicas: 3
+      security:
+        insecure: true
+        tlsVerify: true
+      tcpListen:
+        port: 65004
+    storage:
+      diskGCThreshold: 50Gi
+      multiplex: true
+      strategy: io.d7y.storage.v2.simple
+      taskExpireTime: 6h
+    proxy:
+      defaultFilter: Expires&Signature&ns
+      defaultTag: 
+      tcpListen:
+        namespace: /run/dragonfly/net
+        port: 65001
+      security:
+        insecure: true
+        tlsVerify: false
+      registryMirror:
+        dynamic: true
+        insecure: false
+        url: https://index.docker.io
+      proxies:
+        - regx: blobs/sha256.*
+    security:
+      autoIssueCert: false
+      caCert: ""
+      certSpec:
+        dnsNames: null
+        ipAddresses: null
+        validityPeriod: 4320h
+      tlsPolicy: prefer
+      tlsVerify: false
+    network:
+      enableIPv6: false
+    announcer:
+      schedulerInterval: 30s
+    networkTopology:
+      enable: false
+      probe:
+        interval: 20m
+---
+# Source: dragonfly/templates/manager/manager-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dragonfly-manager
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: manager
+data:
+  manager.yaml: |-
+    server:
+      rest:
+        addr: :8080
+      grpc:
+        advertiseIP: 
+        port:
+          start: 65003
+          end: 65003
+      workHome: 
+      logDir: 
+      cacheDir: 
+      pluginDir: 
+    auth:
+      jwt:
+        key: ZHJhZ29uZmx5Cg==
+        maxRefresh: 48h
+        realm: Dragonfly
+        timeout: 48h
+    database:
+      mysql:
+        user: dragonfly
+        password: dragonfly
+        host: release-name-mysql.default.svc.cluster.local
+        port: 3306
+        dbname: manager
+        migrate: true
+      redis:
+        addrs:
+        - release-name-redis-master.default.svc.cluster.local:6379
+        password: dragonfly
+    cache:
+      local:
+        size: 200000
+        ttl: 3m
+      redis:
+        ttl: 5m
+    job:
+      preheat:
+        registryTimeout: 1m
+      syncPeers:
+        interval: 24h
+        timeout: 10m
+    objectStorage:
+      accessKey: ""
+      enable: false
+      endpoint: ""
+      name: s3
+      region: ""
+      s3ForcePathStyle: true
+      secretKey: ""
+    security:
+      autoIssueCert: false
+      caCert: ""
+      caKey: ""
+      certSpec:
+        dnsNames:
+        - dragonfly-manager
+        - dragonfly-manager.dragonfly-system.svc
+        - dragonfly-manager.dragonfly-system.svc.cluster.local
+        ipAddresses: null
+        validityPeriod: 87600h
+      tlsPolicy: prefer
+    network:
+      enableIPv6: false
+    metrics:
+      enable: false
+      addr: ":8000"
+    console: false
+    verbose: false
+---
+# Source: dragonfly/templates/scheduler/scheduler-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dragonfly-scheduler
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: scheduler
+data:
+  scheduler.yaml: |-
+    server:
+      advertiseIP: ""
+      advertisePort: 8002
+      cacheDir: ""
+      dataDir: ""
+      listenIP: 0.0.0.0
+      logDir: ""
+      pluginDir: ""
+      port: 8002
+      workHome: ""
+    scheduler:
+      algorithm: default
+      backToSourceCount: 200
+      gc:
+        hostGCInterval: 6h
+        hostTTL: 1h
+        peerGCInterval: 10s
+        peerTTL: 24h
+        pieceDownloadTimeout: 30m
+        taskGCInterval: 30m
+      networkTopology:
+        cache:
+          interval: 5m
+          ttl: 5m
+        collectInterval: 2h
+        probe:
+          count: 10
+          queueLength: 5
+      retryBackToSourceLimit: 5
+      retryInterval: 700ms
+      retryLimit: 7
+    database:
+      redis:
+        addrs:
+        - release-name-redis-master.default.svc.cluster.local:6379
+        password: dragonfly
+    resource:
+      task:
+        downloadTiny:
+          scheme: http
+          timeout: 1m
+          tls:
+            insecureSkipVerify: true
+    dynconfig:
+      refreshInterval: 1m
+      type: manager
+    host:
+      idc: ""
+      location: ""
+    manager:
+      addr: release-name-dragonfly-manager.default.svc.cluster.local:65003
+      schedulerClusterID: 1
+      keepAlive:
+        interval: 5s
+    seedPeer:
+      enable: true
+    job:
+      redis:
+        addrs:
+        - release-name-redis-master.default.svc.cluster.local:6379
+        password: dragonfly
+    storage:
+      bufferSize: 100
+      maxBackups: 10
+      maxSize: 100
+    security:
+      autoIssueCert: false
+      caCert: ""
+      certSpec:
+        dnsNames:
+        - dragonfly-scheduler
+        - dragonfly-scheduler.dragonfly-system.svc
+        - dragonfly-scheduler.dragonfly-system.svc.cluster.local
+        ipAddresses: null
+        validityPeriod: 4320h
+      tlsPolicy: prefer
+      tlsVerify: false
+    network:
+      enableIPv6: false
+    metrics:
+      enable: false
+      addr: ":8000"
+      enableHost: false
+    console: false
+    verbose: false
+---
+# Source: dragonfly/templates/seed-peer/seed-peer-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-dragonfly-seed-peer
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: seed-peer
+data:
+  dfget.yaml: |-
+    aliveTime: 0s
+    gcInterval: 1m0s
+    keepStorage: false
+    workHome: 
+    logDir: 
+    cacheDir: 
+    pluginDir: 
+    dataDir: /var/lib/dragonfly
+    console: false
+    health:
+      path: /server/ping
+      tcpListen:
+        port: 40901
+    verbose: false
+    scheduler:
+      manager:
+        enable: true
+        netAddrs:
+        - type: tcp
+          addr: release-name-dragonfly-manager.default.svc.cluster.local:65003
+        refreshInterval: 10m
+        seedPeer:
+          clusterID: 1
+          enable: true
+          keepAlive:
+            interval: 5s
+          type: super
+      scheduleTimeout: 30s
+      disableAutoBackSource: false
+    host:
+      idc: ""
+      location: ""
+    download:
+      calculateDigest: false
+      downloadGRPC:
+        security:
+          insecure: true
+          tlsVerify: true
+        unixListen:
+          socket: ""
+      peerGRPC:
+        security:
+          insecure: true
+        tcpListen:
+          port: 65000
+      perPeerRateLimit: 1024Mi
+      prefetch: false
+      totalRateLimit: 2048Mi
+    upload:
+      rateLimit: 2048Mi
+      security:
+        insecure: true
+        tlsVerify: false
+      tcpListen:
+        port: 65002
+    storage:
+      diskGCThresholdPercent: 90
+      multiplex: true
+      strategy: io.d7y.storage.v2.simple
+      taskExpireTime: 6h
+    proxy:
+      defaultFilter: Expires&Signature&ns
+      defaultTag: 
+      tcpListen:
+        namespace: /run/dragonfly/net
+        port: 
+      security:
+        insecure: true
+        tlsVerify: false
+      registryMirror:
+        dynamic: true
+        insecure: false
+        url: https://index.docker.io
+      proxies:
+        - regx: blobs/sha256.*
+    objectStorage:
+      enable: false
+      filter: Expires&Signature&ns
+      maxReplicas: 3
+      security:
+        insecure: true
+        tlsVerify: true
+      tcpListen:
+        port: 65004
+    security:
+      autoIssueCert: false
+      caCert: ""
+      certSpec:
+        dnsNames:
+        - dragonfly-seed-peer
+        - dragonfly-seed-peer.dragonfly-system.svc
+        - dragonfly-seed-peer.dragonfly-system.svc.cluster.local
+        ipAddresses: null
+        validityPeriod: 4320h
+      tlsPolicy: prefer
+      tlsVerify: false
+    network:
+      enableIPv6: false
+    announcer:
+      schedulerInterval: 30s
+    networkTopology:
+      enable: false
+      probe:
+        interval: 20m
+---
+# Source: dragonfly/charts/mysql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysql-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+  selector: 
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: dragonfly/charts/mysql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: mysql
+      port: 3306
+      protocol: TCP
+      targetPort: mysql
+      nodePort: null
+  selector: 
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: dragonfly/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+---
+# Source: dragonfly/charts/redis/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: master
+---
+# Source: dragonfly/charts/redis/templates/replicas/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: replica
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: replica
+---
+# Source: dragonfly/templates/manager/manager-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-dragonfly-manager
+  labels:
+    app: dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: manager
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      name: http-rest
+      protocol: TCP
+      targetPort: 8080
+    - port: 65003
+      name: http-grpc
+      protocol: TCP
+      targetPort: 65003
+  selector:
+    app: release-name-dragonfly
+    release: release-name
+    component: manager
+---
+# Source: dragonfly/templates/scheduler/scheduler-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-dragonfly-scheduler
+  labels:
+    app: dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: scheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8002
+      name: http-grpc
+      protocol: TCP
+      targetPort: 8002
+  selector:
+    app: release-name-dragonfly
+    release: release-name
+    component: scheduler
+---
+# Source: dragonfly/templates/dfdaemon/dfdaemon-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-dragonfly-dfdaemon
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: dfdaemon
+  annotations:
+spec:
+  selector:
+    matchLabels:
+      app: release-name-dragonfly
+      component: "dfdaemon"
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name-dragonfly
+        component: "dfdaemon"
+        release: release-name
+      annotations:
+        checksum/config: 5cbadd85c58f42584aa73457596d46fd3142d908ec7fddf524c4ddaec3858814
+    spec:
+      hostNetwork: false
+      hostPID: false
+      containers:
+      - name: dfdaemon
+        image: docker.io/dragonflyoss/dfdaemon:v2.1.44
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: "0"
+              memory: "0"
+        env:
+        ports:
+        - containerPort: 65001
+          protocol: TCP
+        - containerPort: 40901
+          hostPort: 40901
+          hostIP: 127.0.0.1
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65000"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65000"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        - mountPath: /var/log/dragonfly/daemon
+          name: logs
+        - name: run
+          mountPath: /run/dragonfly
+        - name: data
+          mountPath: /var/lib/dragonfly
+        securityContext:
+          capabilities:
+            add:
+            - SYS_ADMIN
+      initContainers:
+      - name: wait-for-scheduler
+        image: docker.io/busybox:latest
+        imagePullPolicy: IfNotPresent
+        command: ['sh', '-c', 'until nslookup release-name-dragonfly-scheduler.default.svc.cluster.local && nc -vz release-name-dragonfly-scheduler.default.svc.cluster.local 8002; do echo waiting for scheduler; sleep 2; done;']
+      - name: mount-netns
+        image: docker.io/dragonflyoss/dfdaemon:v2.1.44
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: "0"
+              memory: "0"
+        # FIXME dfget daemon only need /proc/1/ns/net and CAP_SYS_ADMIN,
+        # but containerd resolves the symbolic of /proc/1/ns/net from v1.5.0.
+        # due to /proc/1/ns/net is not a regular symbolic link, it always failed.
+        # for keeping only CAP_SYS_ADMIN capability, use init container to bind mount only netns to /run/dragonfly/net.
+        # https://github.com/containerd/containerd/blob/v1.5.0/pkg/cri/opts/spec_linux.go#L171.
+        command:
+        - /bin/sh
+        - -cx
+        - |-
+          if [ ! -e "/run/dragonfly/net" ]; then
+            touch /run/dragonfly/net
+          fi
+          i1=$(stat -L -c %i /host/ns/net)
+          i2=$(stat -L -c %i /run/dragonfly/net)
+          if [ "$i1" != "$i2" ]; then
+            /bin/mount -o bind /host/ns/net /run/dragonfly/net
+          fi
+        volumeMounts:
+        - name: hostns
+          mountPath: /host/ns
+        - name: run
+          mountPath: /run/dragonfly
+          # bind mount need Bidirectional to propagate into host.
+          mountPropagation: Bidirectional
+        securityContext:
+          # open /proc/1/ns need privilege permission.
+          privileged: true
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-dragonfly-dfdaemon
+      - name: hostns
+        hostPath:
+          path: /proc/1/ns
+      - name: run
+        hostPath:
+          path: /run/dragonfly
+          type: DirectoryOrCreate
+      - name: data
+        emptyDir: {}
+      - emptyDir: {}
+        name: logs
+---
+# Source: dragonfly/templates/manager/manager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: manager
+  name: release-name-dragonfly-manager
+  annotations:
+spec:
+  strategy:
+    type: RollingUpdate
+  replicas: 3
+  selector:
+    matchLabels:
+      app: release-name-dragonfly
+      component: manager
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name-dragonfly
+        component: manager
+        release: release-name
+      annotations:
+        checksum/config: be59cdafdf612209becf6412057b9cbbc7dfbda2786974daef8e1bb1cfce7691
+    spec:
+      initContainers:
+      - name: wait-for-redis
+        image: docker.io/busybox:latest
+        imagePullPolicy: IfNotPresent
+        command: ['sh', '-c', 'until nslookup release-name-redis-master.default.svc.cluster.local && nc -vz release-name-redis-master.default.svc.cluster.local 6379; do echo waiting for redis; sleep 2; done;']
+      - name: wait-for-mysql
+        image: docker.io/busybox:latest
+        imagePullPolicy: IfNotPresent
+        command: ['sh', '-c', 'until nslookup release-name-mysql.default.svc.cluster.local && nc -vz release-name-mysql.default.svc.cluster.local 3306; do echo waiting for mysql; sleep 2; done;']
+      containers:
+      - name: manager
+        image: docker.io/dragonflyoss/manager:v2.1.44
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: "0"
+              memory: "0"
+        env:
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        - containerPort: 65003
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        - mountPath: /var/log/dragonfly/manager
+          name: logs
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65003"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65003"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-dragonfly-manager
+          items:
+          - key: manager.yaml
+            path: manager.yaml
+      - emptyDir: {}
+        name: logs
+---
+# Source: dragonfly/charts/mysql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mysql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mysql
+    helm.sh/chart: mysql-9.4.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  podManagementPolicy: ""
+  selector:
+    matchLabels: 
+      app.kubernetes.io/name: mysql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  serviceName: release-name-mysql
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/configuration: a8fa101c7e1e5738dea84e4da3a1c8b08c424244d2d10314ba08688b7ca3b7b1
+      labels:
+        app.kubernetes.io/name: mysql
+        helm.sh/chart: mysql-9.4.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: release-name-mysql
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mysql
+                    app.kubernetes.io/instance: release-name
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      containers:
+        - name: mysql
+          image: docker.io/bitnami/mysql:8.0.31-debian-11-r30
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mysql
+                  key: mysql-root-password
+            - name: MYSQL_USER
+              value: "dragonfly"
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-mysql
+                  key: mysql-password
+            - name: MYSQL_DATABASE
+              value: "manager"
+          envFrom:
+          ports:
+            - name: mysql
+              containerPort: 3306
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  password_aux="${MYSQL_ROOT_PASSWORD:-}"
+                  if [[ -f "${MYSQL_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MYSQL_ROOT_PASSWORD_FILE")
+                  fi
+                  mysqladmin status -uroot -p"${password_aux}"
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  password_aux="${MYSQL_ROOT_PASSWORD:-}"
+                  if [[ -f "${MYSQL_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MYSQL_ROOT_PASSWORD_FILE")
+                  fi
+                  mysqladmin status -uroot -p"${password_aux}"
+          startupProbe:
+            failureThreshold: 10
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  password_aux="${MYSQL_ROOT_PASSWORD:-}"
+                  if [[ -f "${MYSQL_ROOT_PASSWORD_FILE:-}" ]]; then
+                      password_aux=$(cat "$MYSQL_ROOT_PASSWORD_FILE")
+                  fi
+                  mysqladmin status -uroot -p"${password_aux}"
+          resources: 
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/mysql
+            - name: config
+              mountPath: /opt/bitnami/mysql/conf/my.cnf
+              subPath: my.cnf
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: 
+          app.kubernetes.io/name: mysql
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/component: primary
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: dragonfly/charts/redis/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: master
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        helm.sh/chart: redis-17.4.3
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 91191a65878d2112da41481ab0dc32646340df8d2f5192ed4875524644c357ed
+        checksum/health: f5e4a9a289a5d72a2ffb17f1a9bc9dee4628149c86debdffc8db395e13c21014
+        checksum/scripts: 1a68d0acb2942f140cad03d3d28dfa73fc7dab9f6455271add5eb781a8f30975
+        checksum/secret: 8ea1c2cc55754e3496037446756485180ef55d7e2a8219b973494d945acf29a1
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-redis
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.0.8-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: redis-tmp-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: dragonfly/charts/redis/templates/replicas/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-replicas
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.4.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: replica
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: replica
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        helm.sh/chart: redis-17.4.3
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: replica
+      annotations:
+        checksum/configmap: 91191a65878d2112da41481ab0dc32646340df8d2f5192ed4875524644c357ed
+        checksum/health: f5e4a9a289a5d72a2ffb17f1a9bc9dee4628149c86debdffc8db395e13c21014
+        checksum/scripts: 1a68d0acb2942f140cad03d3d28dfa73fc7dab9f6455271add5eb781a8f30975
+        checksum/secret: 8ea1c2cc55754e3496037446756485180ef55d7e2a8219b973494d945acf29a1
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-redis
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: replica
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.0.8-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-replica.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: replica
+            - name: REDIS_MASTER_HOST
+              value: release-name-redis-master-0.release-name-redis-headless.default.svc.cluster.local
+            - name: REDIS_MASTER_PORT_NUMBER
+              value: "6379"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          startupProbe:
+            failureThreshold: 22
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: redis
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local_and_master.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local_and_master.sh 1
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: redis-tmp-conf
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/component: replica
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: dragonfly/templates/scheduler/scheduler-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-dragonfly-scheduler
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: scheduler
+  annotations:
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: release-name-dragonfly
+      release: release-name
+      component: scheduler
+  serviceName: scheduler
+  template:
+    metadata:
+      labels:
+        app: release-name-dragonfly
+        release: release-name
+        component: scheduler
+      annotations:
+        checksum/config: 83b81e0e903e2aa45193b2696b393f4334db6891515edfd63b1fb311b2f83f16
+    spec:
+      initContainers:
+      - name: wait-for-manager
+        image: docker.io/busybox:latest
+        imagePullPolicy: IfNotPresent
+        command: ['sh', '-c', 'until nslookup release-name-dragonfly-manager.default.svc.cluster.local && nc -vz release-name-dragonfly-manager.default.svc.cluster.local 8080; do echo waiting for manager; sleep 2; done;']
+      containers:
+      - name: scheduler
+        image: docker.io/dragonflyoss/scheduler:v2.1.44
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            limits:
+              cpu: "4"
+              memory: 8Gi
+            requests:
+              cpu: "0"
+              memory: "0"
+        env:
+        ports:
+        - containerPort: 8002
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        - mountPath: /var/log/dragonfly/scheduler
+          name: logs
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:8002"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:8002"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-dragonfly-scheduler
+          items:
+          - key: scheduler.yaml
+            path: scheduler.yaml
+      - emptyDir: {}
+        name: logs
+---
+# Source: dragonfly/templates/seed-peer/seed-peer-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: release-name-dragonfly
+    chart: dragonfly-1.1.59
+    release: release-name
+    heritage: Helm
+    component: seed-peer
+  name: release-name-dragonfly-seed-peer
+  annotations:
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: release-name-dragonfly
+      component: seed-peer
+      release: release-name
+  serviceName: seed-peer
+  template:
+    metadata:
+      labels:
+        app: release-name-dragonfly
+        component: seed-peer
+        release: release-name
+      annotations:
+        checksum/config: abe58c225bbff3e9078fd7727468e1467045884d75c6c35c583ab52e6a9b1862
+    spec:
+      hostNetwork: false
+      initContainers:
+      - name: wait-for-manager
+        image: docker.io/busybox:latest
+        imagePullPolicy: IfNotPresent
+        command: ['sh', '-c', 'until nslookup release-name-dragonfly-manager.default.svc.cluster.local && nc -vz release-name-dragonfly-manager.default.svc.cluster.local 8080; do echo waiting for manager; sleep 2; done;']
+      containers:
+      - name: seed-peer
+        image: docker.io/dragonflyoss/dfdaemon:v2.1.44
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: "0"
+              memory: "0"
+        env:
+        ports:
+        - containerPort: 65000
+          protocol: TCP
+        - containerPort: 65002
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/dragonfly"
+        - name: storage
+          mountPath: /var/lib/dragonfly
+        - mountPath: /var/log/dragonfly/daemon
+          name: logs
+        readinessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65000"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:65000"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-dragonfly-seed-peer
+          items:
+          - key: dfget.yaml
+            path: dfget.yaml
+      - emptyDir: {}
+        name: logs
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"

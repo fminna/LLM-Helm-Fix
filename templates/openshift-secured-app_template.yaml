@@ -1,0 +1,88 @@
+---
+# Source: openshift-secured-app/templates/service-account.yaml
+# Create a proxy service account and ensure it will use the route "proxy"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: proxy
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"proxy"}}'
+---
+# Source: openshift-secured-app/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  annotations:
+    service.alpha.openshift.io/serving-cert-secret-name: proxy-tls
+spec:
+  ports:
+    - name: proxy
+      port: 443
+      targetPort: 8443
+  selector:
+    app: proxy
+---
+# Source: openshift-secured-app/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-openshift-secured-app
+  labels:
+    helm.sh/chart: openshift-secured-app-0.5.0
+    app.kubernetes.io/name: openshift-secured-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy
+      app.kubernetes.io/name: openshift-secured-app
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: proxy
+        app.kubernetes.io/name: openshift-secured-app
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: proxy
+      
+      volumes:
+        - name: proxy-tls
+          secret:
+            secretName: proxy-tls
+        
+      
+      containers:
+        - name: oauth-proxy
+          image: "quay.io/openshift/origin-oauth-proxy:4.14"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8443
+              name: public
+          args:
+            - --https-address=:8443
+            - --provider=openshift
+            - --openshift-service-account=proxy
+            - --upstream=http://localhost:8080
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret=changeme
+          volumeMounts:
+            - mountPath: /etc/tls/private
+              name: proxy-tls
+---
+# Source: openshift-secured-app/templates/route.yaml
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: proxy
+spec:
+  host: changeme.org
+  to:
+    kind: Service
+    name: proxy
+  tls:
+    termination: reencrypt

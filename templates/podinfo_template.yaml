@@ -1,0 +1,155 @@
+---
+# Source: podinfo/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-podinfo
+  labels:
+    app: podinfo
+    chart: podinfo-6.1.3
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |-
+    # http settings
+    http-client-timeout: 1m
+    http-server-timeout: 30s
+    http-server-shutdown-timeout: 5s
+---
+# Source: podinfo/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-podinfo
+  labels:
+    app: podinfo
+    chart: podinfo-6.1.3
+    release: release-name
+    heritage: Helm
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: release-name-podinfo
+  template:
+    metadata:
+      labels:
+        app: release-name-podinfo
+      annotations:
+        prometheus.io/scrape: 'true'
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: podinfo
+          image: "ghcr.io/stefanprodan/podinfo:6.1.3"
+          imagePullPolicy: IfNotPresent
+          command:
+            - ./podinfo
+            - --port=9898
+            - --level=info
+            - --random-delay=false
+            - --random-error=false
+            - --config-path=/podinfo/config
+          env:
+          - name: PODINFO_UI_COLOR
+            value: "#34577c"
+          ports:
+            - name: http
+              containerPort: 9898
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+              - podcli
+              - check
+              - http
+              - localhost:9898/healthz
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+              - podcli
+              - check
+              - http
+              - localhost:9898/readyz
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+          volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: config
+            mountPath: /podinfo/config
+            readOnly: true
+          resources:
+            limits: null
+            requests:
+              cpu: 100m
+              memory: 32Mi
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: release-name-podinfo
+---
+# Source: podinfo/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-podinfo
+  labels:
+    app: podinfo
+    chart: podinfo-6.1.3
+    release: release-name
+    heritage: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-podinfo
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      targetAverageUtilization: 80
+  - type: Resource
+    resource:
+      name: memory
+      targetAverageValue: 512Mi
+---
+# Source: podinfo/templates/tests/jwt.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-podinfo-jwt-test-1jlp7
+  labels:
+    heritage: Helm
+    release: release-name
+    chart: podinfo-6.1.3
+    app: podinfo
+  annotations:
+    "helm.sh/hook": test-success
+    sidecar.istio.io/inject: "false"
+    linkerd.io/inject: disabled
+    appmesh.k8s.aws/sidecarInjectorWebhook: disabled
+    openservicemesh.io/sidecar-injection: disabled
+spec:
+  containers:
+    - name: tools
+      image: giantswarm/tiny-tools
+      command:
+        - sh
+        - -c
+        - |
+          TOKEN=$(curl -sd 'test' ${PODINFO_SVC}/token | jq -r .token) &&
+          curl -H "Authorization: Bearer ${TOKEN}" ${PODINFO_SVC}/token/validate | grep test
+      env:
+      - name: PODINFO_SVC
+        value: release-name-podinfo:9898
+  restartPolicy: Never

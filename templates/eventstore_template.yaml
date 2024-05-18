@@ -1,0 +1,261 @@
+---
+# Source: eventstore/templates/admin-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-eventstore-admin
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: admin
+data:
+  nginx.conf: |
+    server {
+        listen 2113;
+        # set a variable so nginx will not check if host is available on startup
+        # ref: https://stackoverflow.com/a/43341304/2108162
+        resolver kube-dns.kube-system.svc.cluster.local valid=5s;
+        set $eventstore http://release-name-eventstore.default.svc.cluster.local:2113;
+        location = /_liveness {
+            add_header Content-Type text/plain;
+            return 200 'ok';
+        }
+        location = /_readiness {
+            proxy_pass          $eventstore/stats;
+        }
+        location / {
+            proxy_set_header    X-Real-IP $remote_addr;
+            proxy_set_header    Host      $http_host;
+            proxy_pass          $eventstore;
+        }
+    }
+---
+# Source: eventstore/templates/eventstore-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-eventstore-env
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: database
+data:
+  ## Internal TCP port.
+  EVENTSTORE_INT_TCP_PORT: "1112"
+  ## External TCP port.
+  EVENTSTORE_EXT_TCP_PORT: "1113"
+  ## Internal HTTP port.
+  EVENTSTORE_INT_HTTP_PORT: "2112"
+  ## External HTTP port.
+  EVENTSTORE_EXT_HTTP_PORT: "2113"
+  ## The number of nodes in the cluster. 
+  EVENTSTORE_CLUSTER_SIZE: "1"
+  ## DNS name from which other nodes can be discovered. 
+  EVENTSTORE_CLUSTER_DNS: release-name-eventstore.default.svc.cluster.local
+  ## Port on which nodes should gossip
+  EVENTSTORE_CLUSTER_GOSSIP_PORT: "2112"
+  ## The amount of drift, in ms, between clocks on nodes allowed before gossip is rejected.
+  EVENTSTORE_GOSSIP_ALLOWED_DIFFERENCE_MS: "600000"
+  ## Whether or not to add interface prefixes.
+  EVENTSTORE_ADD_INTERFACE_PREFIXES: "False"
+  ## The prefixes that the internal HTTP server should respond to. 
+  EVENTSTORE_INT_HTTP_PREFIXES: "http://*:2112/"
+  ## The prefixes that the external HTTP server should respond to. 
+  EVENTSTORE_EXT_HTTP_PREFIXES: "http://*:2113/"
+  # Note: changing `Values.eventStoreConfig` won't change the configmap 
+  # checksum and so won't make the pods restart
+---
+# Source: eventstore/templates/admin-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-eventstore-admin
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: admin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: eventstore-admin
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: http
+      protocol: TCP
+      port: 2113
+      targetPort: 2113
+---
+# Source: eventstore/templates/eventstore-service.yaml
+apiVersion: v1  
+kind: Service  
+metadata:  
+  name: release-name-eventstore
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: database
+spec:  
+  selector:
+    app.kubernetes.io/name: eventstore
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: ext-tcp-port
+      protocol: TCP
+      port: 1113
+      targetPort: 1113
+    - name: ext-http-port
+      protocol: TCP
+      port: 2113
+      targetPort: 2113
+  clusterIP: None
+---
+# Source: eventstore/templates/admin-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-eventstore-admin
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: admin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eventstore-admin
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: eventstore-admin
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: admin
+    spec:
+      containers:
+        - name: proxy
+          image: "nginx:latest"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/sbin/nginx","-s","quit"]
+          volumeMounts:
+            - name: config
+              mountPath: "/etc/nginx/conf.d"
+              readOnly: true
+          ports:
+            - containerPort: 2113
+          livenessProbe:
+            httpGet:
+              path: /_liveness
+              port: 2113
+            initialDelaySeconds: 15
+            timeoutSeconds: 1
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /_readiness
+              port: 2113
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-eventstore-admin
+---
+# Source: eventstore/templates/eventstore-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-eventstore
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: eventstore
+    helm.sh/chart: eventstore-0.2.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: database
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eventstore
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  serviceName: release-name-eventstore
+  template:
+    metadata:
+      annotations:
+        checksum/config: e5590f19b5f8dc2efa2cc10425ad640530eb257118c607017410af3b789230f0
+      labels:
+        app.kubernetes.io/name: eventstore
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: database
+    spec:      
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      tolerations:
+        []
+      containers:
+        - name: eventstore
+          image: "eventstore/eventstore:release-4.1.1-hotfix1"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-eventstore-env
+          env: 
+            - name: EVENTSTORE_INT_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: EVENTSTORE_EXT_IP
+              value: 0.0.0.0
+            - name: EVENTSTORE_EXT_IP_ADVERTISE_AS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - containerPort: 1112
+            - containerPort: 1113
+            - containerPort: 2112
+            - containerPort: 2113
+          livenessProbe:
+            httpGet:
+              path: /stats
+              port: 2113
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /stats
+              port: 2113
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+            periodSeconds: 15
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/eventstore
+      volumes:
+        - name: data
+          emptyDir: {}

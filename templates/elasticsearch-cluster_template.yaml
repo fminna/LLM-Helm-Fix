@@ -1,0 +1,133 @@
+---
+# Source: elasticsearch-cluster/templates/elastic-services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-transport
+  labels:
+    helm.sh/chart: elasticsearch-cluster-1.0.0
+    app: es-node
+    instance: release-name
+    app.kubernetes.io/version: "7.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - name: transport
+    port: 9300
+    targetPort: transport
+  selector:
+    app: es-node
+    instance: release-name
+---
+# Source: elasticsearch-cluster/templates/elastic-services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-public
+  labels:
+    helm.sh/chart: elasticsearch-cluster-1.0.0
+    app: es-node
+    instance: release-name
+    app.kubernetes.io/version: "7.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+  selector:
+    app: es-node
+    instance: release-name
+---
+# Source: elasticsearch-cluster/templates/elastic-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: es-node
+  labels:
+    helm.sh/chart: elasticsearch-cluster-1.0.0
+    app: es-node
+    instance: release-name
+    app.kubernetes.io/version: "7.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: es-node
+      instance: release-name
+  serviceName: es-transport
+  updateStrategy:
+    type: RollingUpdate
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: es-node
+        instance: release-name
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - es-node
+            topologyKey: "kubernetes.io/hostname"
+      initContainers:
+      - name: chown
+        image: alpine
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        command: ["chown", "1000:root", "/data"]
+      - name: init-sysctl
+        image: alpine
+        securityContext:
+          privileged: true
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+      containers:
+      - name: es-node
+        image: "docker.elastic.co/elasticsearch/elasticsearch:7.12.0"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 250m
+            memory: 1024Mi
+        env:
+        - name: ES_JAVA_OPTS
+          value: -Xms512m -Xmx512m
+        - name: cluster.name
+          value: es-k8s-cluster
+        - name: discovery.seed_hosts
+          value: es-node-0.es-transport.default.svc.cluster.local,es-node-1.es-transport.default.svc.cluster.local,es-node-2.es-transport.default.svc.cluster.local
+        - name: cluster.initial_master_nodes
+          value: es-node-0,es-node-1,es-node-2
+        - name: xpack.security.transport.ssl.enabled
+          value: "false"
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/elasticsearch/data
+        ports:
+        - name: http
+          containerPort: 9200
+        - name: transport
+          containerPort: 9300
+        livenessProbe:
+          httpGet:
+            path: /_cat/health
+            port: 9200
+          initialDelaySeconds: 50
+          periodSeconds: 10
+      volumes:
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

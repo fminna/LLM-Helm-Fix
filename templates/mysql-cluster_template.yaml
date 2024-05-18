@@ -1,0 +1,435 @@
+---
+# Source: mysql-cluster/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-cluster-config
+data:
+  mysql-cluster.cnf: |
+    [tcp default]
+    SendBufferMemory=2M
+    ReceiveBufferMemory=2M
+
+    [ndbd default]
+    NoOfReplicas=3
+    LockPagesInMainMemory=1
+    DataMemory=256M
+    NoOfFragmentLogFiles=300
+    DataDir=/var/lib/mysql
+    MaxNoOfConcurrentOperations=100000
+    SchedulerSpinTimer=400
+    SchedulerExecutionTimer=100
+    RealTimeScheduler=0
+
+    TimeBetweenGlobalCheckpoints=1000
+    TimeBetweenEpochs=200
+    RedoBuffer=32M
+
+    MaxNoOfTables=1024
+    MaxNoOfOrderedIndexes=256
+
+    MaxNoOfConcurrentScans=500
+    MaxParallelScansPerFragment=500
+
+    [ndb_mgmd]
+    NodeId=1
+    hostname=mysql-mgmd-0.mysql-mgmd
+    datadir=/var/lib/mysql
+
+    [ndb_mgmd]
+    NodeId=2
+    hostname=mysql-mgmd-1.mysql-mgmd
+    datadir=/var/lib/mysql
+
+    [ndbd]
+    NodeId=3
+    hostname=mysql-data-0.mysql-data
+    datadir=/var/lib/mysql
+    LockExecuteThreadToCPU=1
+    LockMaintThreadsToCPU=0
+
+    [ndbd]
+    NodeId=4
+    hostname=mysql-data-1.mysql-data
+    datadir=/var/lib/mysql
+    LockExecuteThreadToCPU=1
+    LockMaintThreadsToCPU=0
+
+    [ndbd]
+    NodeId=5
+    hostname=mysql-data-2.mysql-data
+    datadir=/var/lib/mysql
+    LockExecuteThreadToCPU=1
+    LockMaintThreadsToCPU=0
+
+    [mysqld]
+    NodeId=6
+    hostname=mysql-server-0.mysql-server
+
+    [mysqld]
+    NodeId=7
+    hostname=mysql-server-1.mysql-server
+
+  my.cnf: |
+    [mysqld]
+    ndbcluster
+    ndb-connectstring=mysql-mgmd-0.mysql-mgmd,mysql-mgmd-1.mysql-mgmd
+    performance_schema=OFF
+    max_connections=2000
+
+    [mysql_cluster]
+    ndb-connectstring=mysql-mgmd-0.mysql-mgmd,mysql-mgmd-1.mysql-mgmd
+
+  my-server.cnf: |
+    [mysqld]
+    ndbcluster
+    ndb-connectstring=mysql-mgmd-0.mysql-mgmd,mysql-mgmd-1.mysql-mgmd
+    performance_schema=OFF
+    default_storage_engine=ndbcluster
+    max_connections=2000
+
+    [mysql_cluster]
+    ndb-connectstring=mysql-mgmd-0.mysql-mgmd,mysql-mgmd-1.mysql-mgmd
+
+  root-user.sql: |
+    CREATE USER 'test'@'%' IDENTIFIED WITH mysql_native_password BY 'testpassword';
+    GRANT ALL PRIVILEGES ON *.* TO 'test'@'%' WITH GRANT OPTION;
+    FLUSH PRIVILEGES;
+
+  waitforcurl.sh: |
+    #!/bin/sh
+
+    HOST=$1
+    CURL_EXIT_CODE=$2
+
+    while true
+    do
+    	curl ${HOST}
+    	exit_code=$?
+    	if test "$exit_code" == "${CURL_EXIT_CODE}"; then
+    	   break
+    	fi
+    	echo "exit code = ${exit_code}"
+    	sleep 1
+    done
+---
+# Source: mysql-cluster/templates/services.yaml
+# Management
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-mgmd
+  labels:
+    app: mysql-mgmd
+spec:
+  clusterIP: None
+  ports:
+    - port: 1186
+  selector:
+    app: mysql-mgmd
+---
+# Source: mysql-cluster/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-data
+  labels:
+    app: mysql-data
+spec:
+  clusterIP: None
+  ports:
+    - port: 2202
+  selector:
+    app: mysql-data
+---
+# Source: mysql-cluster/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-server
+  labels:
+    app: mysql-server
+spec:
+  clusterIP: None
+  ports:
+    - port: 3306
+      name: mysql-server
+    - port: 33060
+      name: x-plugin
+  selector:
+    app: mysql-server
+---
+# Source: mysql-cluster/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-host
+  labels:
+    app: mysql-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3306
+  selector:
+    app: mysql-server
+---
+# Source: mysql-cluster/templates/mysql-data.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-data
+spec:
+  selector:
+    matchLabels:
+      app: mysql-data
+  serviceName: mysql-data
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: mysql-data
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mysql-data
+      containers:
+        - name: mysql-data
+          image: "mysql/mysql-cluster:8.0.20"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mysql-data
+              containerPort: 2202
+          volumeMounts:
+            - name: mysql-data-volumeclaim
+              mountPath: /var/lib/mysql
+              subPath: mysql
+            - name: mysql-cluster-config-cluster-cnf
+              mountPath: /etc/mysql-cluster.cnf
+              subPath: mysql-cluster.cnf
+            - name: mysql-cluster-config-my-cnf
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+            - name: waitforcurl
+              mountPath: /waitforcurl.sh
+              subPath: waitforcurl.sh
+          command:
+            - bash
+            - "-c"
+            - |
+              ./waitforcurl.sh mysql-server-0.mysql-server 7
+              ./waitforcurl.sh mysql-server-1.mysql-server 7
+
+              ./waitforcurl.sh mysql-data-0.mysql-data 7
+              ./waitforcurl.sh mysql-data-1.mysql-data 7
+              ./waitforcurl.sh mysql-data-2.mysql-data 7
+
+              ./waitforcurl.sh mysql-mgmd-0.mysql-mgmd 7
+              ./waitforcurl.sh mysql-mgmd-1.mysql-mgmd 7
+
+              ./entrypoint.sh ndbd
+      volumes:
+        - name: mysql-cluster-config-cluster-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: mysql-cluster.cnf
+                path: mysql-cluster.cnf
+        - name: mysql-cluster-config-my-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: my.cnf
+                path: my.cnf
+        - name: waitforcurl
+          configMap:
+            name: mysql-cluster-config
+            defaultMode: 0777
+            items:
+              - key: waitforcurl.sh
+                path: waitforcurl.sh
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data-volumeclaim
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-storage
+        resources:
+          requests:
+            storage: 10Gi
+---
+# Source: mysql-cluster/templates/mysql-management.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-mgmd
+spec:
+  selector:
+    matchLabels:
+      app: mysql-mgmd
+  serviceName: mysql-mgmd
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: mysql-mgmd
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mysql-mgmd
+      containers:
+        - name: mysql-mgmd
+          image: "mysql/mysql-cluster:8.0.20"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mysql-mgmd
+              containerPort: 1186
+          volumeMounts:
+            - name: mysql-cluster-config-cluster-cnf
+              mountPath: /etc/mysql-cluster.cnf
+              subPath: mysql-cluster.cnf
+            - name: mysql-cluster-config-my-cnf
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+            - name: waitforcurl
+              mountPath: /waitforcurl.sh
+              subPath: waitforcurl.sh
+          command:
+            - bash
+            - "-c"
+            - |
+              ./waitforcurl.sh mysql-server-0.mysql-server 7
+              ./waitforcurl.sh mysql-server-1.mysql-server 7
+
+              ./waitforcurl.sh mysql-data-0.mysql-data 7
+              ./waitforcurl.sh mysql-data-1.mysql-data 7
+              ./waitforcurl.sh mysql-data-2.mysql-data 7
+
+              ./waitforcurl.sh mysql-mgmd-0.mysql-mgmd 7
+              ./waitforcurl.sh mysql-mgmd-1.mysql-mgmd 7
+
+              ./entrypoint.sh ndb_mgmd
+      volumes:
+        - name: mysql-cluster-config-cluster-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: mysql-cluster.cnf
+                path: mysql-cluster.cnf
+        - name: mysql-cluster-config-my-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: my.cnf
+                path: my.cnf
+        - name: waitforcurl
+          configMap:
+            name: mysql-cluster-config
+            defaultMode: 0777
+            items:
+              - key: waitforcurl.sh
+                path: waitforcurl.sh
+---
+# Source: mysql-cluster/templates/mysql-server.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-server
+spec:
+  selector:
+    matchLabels:
+      app: mysql-server
+  serviceName: mysql-server
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: mysql-server
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mysql-server
+      containers:
+        - name: mysql-server
+          image: "mysql/mysql-cluster:8.0.20"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mysql-server
+              containerPort: 3306
+            - name: x-plugin
+              containerPort: 33060
+          volumeMounts:
+            - name: mysql-cluster-config-cluster-cnf
+              mountPath: /etc/mysql-cluster.cnf
+              subPath: mysql-cluster.cnf
+            - name: mysql-cluster-config-my-cnf
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+            - name: waitforcurl
+              mountPath: /waitforcurl.sh
+              subPath: waitforcurl.sh
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: 123123
+          command:
+            - bash
+            - "-c"
+            - |
+              ./waitforcurl.sh mysql-server-0.mysql-server 7
+              ./waitforcurl.sh mysql-server-1.mysql-server 7
+
+              ./waitforcurl.sh mysql-data-0.mysql-data 7
+              ./waitforcurl.sh mysql-data-1.mysql-data 7
+              ./waitforcurl.sh mysql-data-2.mysql-data 7
+
+              ./waitforcurl.sh mysql-mgmd-0.mysql-mgmd 7
+              ./waitforcurl.sh mysql-mgmd-1.mysql-mgmd 7
+
+              ./entrypoint.sh mysqld --ssl=0 --user=root
+      volumes:
+        - name: mysql-cluster-config-cluster-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: mysql-cluster.cnf
+                path: mysql-cluster.cnf
+        - name: mysql-cluster-config-my-cnf
+          configMap:
+            name: mysql-cluster-config
+            items:
+              - key: my-server.cnf
+                path: my.cnf
+        - name: waitforcurl
+          configMap:
+            name: mysql-cluster-config
+            defaultMode: 0777
+            items:
+              - key: waitforcurl.sh
+                path: waitforcurl.sh

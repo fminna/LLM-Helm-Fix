@@ -1,0 +1,178 @@
+---
+# Source: helm-csi-driver-nfs/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-driver-nfs-nodeplugin
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: helm-csi-driver-nfs/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-driver-nfs-nodeplugin
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: nfs.csi.k8s.io
+reclaimPolicy: Retain
+parameters:
+  storagepolicyname: "NFS CSI Driver"  # Optional Parameter
+---
+# Source: helm-csi-driver-nfs/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: csi-driver-nfs-nodeplugin
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "update"]
+---
+# Source: helm-csi-driver-nfs/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: csi-driver-nfs-nodeplugin
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: csi-driver-nfs-nodeplugin
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: csi-driver-nfs-nodeplugin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: helm-csi-driver-nfs/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csi-driver-nfs-nodeplugin
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: helm-csi-driver-nfs
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: helm-csi-driver-nfs
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: csi-driver-nfs-nodeplugin
+      securityContext:
+        {}
+      containers:
+        - name: csi-driver-registrar
+          image: "k8s.gcr.io/sig-storage/csi-node-driver-registrar:v1.3.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "rm -rf /registration/nfs.csi.k8s.io /registration/nfs.csi.k8s.io-reg.sock"]
+          args:
+            - "--csi-address=/plugin/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/nfs.csi.k8s.io/csi.sock"
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /plugin
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            {}
+        - name: csi-driver-nfs-nodeplugin
+          image: "registry.keyporttech.com/csi-driver-nfs:2.0.0"
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+              - SYS_ADMIN
+            privileged: true
+          args :
+            - "--nodeid=$(NODE_ID)"
+            - "--endpoint=$(CSI_ENDPOINT)"
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CSI_ENDPOINT
+              value: unix://plugin/csi.sock
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /plugin
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: "Bidirectional"
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/nfs.csi.k8s.io
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+---
+# Source: helm-csi-driver-nfs/templates/driverinfo.yaml
+apiVersion: storage.k8s.io/v1beta1
+kind: CSIDriver
+metadata:
+  name: nfs.csi.k8s.io
+  labels:
+    helm.sh/chart: helm-csi-driver-nfs-0.1.0
+    app.kubernetes.io/name: helm-csi-driver-nfs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  attachRequired: false
+  volumeLifecycleModes:
+  - Persistent
+  podInfoOnMount: true

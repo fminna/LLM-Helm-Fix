@@ -1,0 +1,166 @@
+---
+# Source: syncthing/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name:  release-name-syncthing
+type: Opaque
+data:
+  ui-password: "anVuaXBlckAxMjM="
+---
+# Source: syncthing/templates/sts.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: syncthing
+    helm.sh/chart: syncthing-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: syncthing-headless
+spec:
+  publishNotReadyAddresses: true
+  ports:
+  - name: discovery
+    port: 21027
+    targetPort: 21027
+  - name: file-transfer-udp
+    port: 22000
+    protocol: UDP
+    targetPort: 22000
+  - name: file-transfer-tcp
+    port: 22000
+    protocol: TCP
+    targetPort: 22000
+  selector:
+    app.kubernetes.io/name: syncthing
+    app.kubernetes.io/instance: release-name
+  type:  ClusterIP
+  clusterIP: None
+---
+# Source: syncthing/templates/sts.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/name: syncthing
+    helm.sh/chart: syncthing-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: release-name-syncthing
+spec:
+  replicas: 30
+  serviceName: "syncthing-headless"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syncthing
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syncthing
+        app.kubernetes.io/instance: release-name
+    spec:
+      initContainers:
+      - name: init-syncthing
+        image: busybox
+        imagePullPolicy: "IfNotPresent"
+        command:
+          - /bin/sh
+          - -c
+          - |
+            if [ -d "/var/syncthing/syncthing_config/$HOSTNAME" ]; then
+              echo "[INIT-INFO] - Directory /var/syncthing/syncthing_config/$HOSTNAME is existed"
+              echo "[INIT-INFO] - Coping /var/syncthing/syncthing_config/$HOSTNAME to /var/syncthing/config"
+              /bin/cp -a  /var/syncthing/syncthing_config/$HOSTNAME/* /var/syncthing/config
+            else
+              echo "[INIT-INFO] - Directory /var/syncthing/syncthing_config/$HOSTNAME is not existed. The default configurations will be generated"
+            fi
+        volumeMounts:
+        - name: syncthing-hostpath
+          mountPath: /var/syncthing
+      imagePullSecrets:
+      - name: ghcr-pull-secret
+      containers:
+      - image: busybox
+        imagePullPolicy: "IfNotPresent"
+        command:
+          - /bin/sh
+          - -c
+          - |
+            echo "[SIDECAR-INFO] - Waiting until \"syncthing_config\" folder is created"
+            while [ ! -d /var/syncthing/syncthing_config ]; do sleep 60; done
+            echo "[SIDECAR-INFO] - Folder \"syncthing_config\" is existed"
+            if [ ! -d /var/syncthing/syncthing_config/$HOSTNAME ]; then
+               echo "[SIDECAR-INFO] - Creating /var/syncthing/syncthing_config/$HOSTNAME if it's not existed"
+               mkdir -p /var/syncthing/syncthing_config/$HOSTNAME
+            fi
+            while true; do for i in `ls -A /var/syncthing/config/ | grep -v "index*"`; do cp -a /var/syncthing/config/$i /var/syncthing/syncthing_config/$HOSTNAME; done; sleep 120; done
+        name: sidecar-syncthing
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        volumeMounts:
+        - name: syncthing-hostpath
+          mountPath: /var/syncthing
+      - name: syncthing
+        resources: {}
+        image: svtechnmaa/svtech_syncthing:v1.0.4
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: STGUIAPIKEY
+          valueFrom:
+            secretKeyRef:
+              name:  release-name-syncthing
+              key: ui-password
+        - name: PCAP
+          value: "cap_chown,cap_fowner+ep"
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: HEADLESS_SERVICE_NAME
+          value: "syncthing-headless"
+        - name: LIST_FOLDER
+          value: syncthing_config, repo_automation, csv_output, gitlist, icinga2_plugins, icinga2_conf, icinga2_zones, nagvis_maps, rundeck_backup, rundeck_jsnapy, rundeck_projects, rundeck_var, thruk, icingaweb_conf, snmp-manager-conf, rundeck-server-config, nagvis_auth_db
+        ports:
+        - containerPort: 8384
+          name: http
+          protocol: TCP
+        - containerPort: 21027
+          name: discovery
+          protocol: UDP
+        - containerPort: 20000
+          name: transfertcp
+          protocol: TCP
+        - containerPort: 20000
+          name: transferudp
+          protocol: UDP
+        readinessProbe:
+          httpGet:
+            path: /rest/noauth/health
+            port: 8384
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 3
+          failureThreshold: 10
+        volumeMounts:
+        - name: syncthing-hostpath
+          mountPath: /var/syncthing
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - syncthing
+            topologyKey: kubernetes.io/hostname
+
+      volumes:
+      - name: syncthing-hostpath
+        hostPath:
+          # path: /opt/shared/
+          path: default
+          type: DirectoryOrCreate

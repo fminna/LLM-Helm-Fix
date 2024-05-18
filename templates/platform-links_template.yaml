@@ -1,0 +1,212 @@
+---
+# Source: platform-links/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-platform-links-data
+  namespace: default
+  labels:
+    helm.sh/chart: platform-links-v2024.5.3
+    app.kubernetes.io/name: platform-links
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: platform-links/templates/license-checker-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-platform-links-license-checker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: appscode:license-checker
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: platform-links/templates/license-reader-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-platform-links-license-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: appscode:license-reader
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: platform-links/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-platform-links
+  namespace: default
+  labels:
+    helm.sh/chart: platform-links-v2024.5.3
+    app.kubernetes.io/name: platform-links
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: platform-links
+    app.kubernetes.io/instance: release-name
+---
+# Source: platform-links/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-platform-links
+  namespace: default
+  labels:
+    helm.sh/chart: platform-links-v2024.5.3
+    app.kubernetes.io/name: platform-links
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-links
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-links
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: platform-links
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          image: "ghcr.io/appscode/b3:v2024.5.3"
+          imagePullPolicy: Always
+          args:
+            - links
+          ports:
+            - name: http
+              containerPort: 3006
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            # wait for cert and nats to be ready
+            initialDelaySeconds: 60
+            failureThreshold: 18
+            periodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+          env:
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-platform-links-data
+---
+# Source: platform-links/templates/license.yaml
+# if license file is provided, then create a secret for license
+---
+# Source: platform-links/templates/license-checker-cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appscode:license-checker
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+# Get cluster id
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs: ["get"]
+# Issue license
+- apiGroups:
+  - proxyserver.licenses.appscode.com
+  resources:
+  - licenserequests
+  verbs: ["create"]
+# Detect workload/owner of operator pod
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs: ["get"]
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - replicasets
+  verbs: ["get"]
+# Write events in case of license verification failure
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs: ["get", "list", "create", "patch"]
+---
+# Source: platform-links/templates/license-reader-cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appscode:license-reader
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+# Detect license server endpoint for kubedb addons
+- apiGroups:
+  - apiregistration.k8s.io
+  resources:
+  - apiservices
+  verbs: ["get"]
+- nonResourceURLs:
+  - /appscode/license
+  verbs: ["get"]

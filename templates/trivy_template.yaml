@@ -1,0 +1,201 @@
+---
+# Source: trivy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+---
+# Source: trivy/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  GITHUB_TOKEN: ""
+  TRIVY_TOKEN: ""
+  TRIVY_USERNAME: ""
+  TRIVY_PASSWORD: ""
+---
+# Source: trivy/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  TRIVY_LISTEN: "0.0.0.0:4954"
+  TRIVY_CACHE_DIR: "/home/scanner/.cache/trivy"
+  TRIVY_DEBUG: "false"
+  TRIVY_SKIP_DB_UPDATE: "false"
+  TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"
+---
+# Source: trivy/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+---
+# Source: trivy/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-trivy
+subjects:
+- kind: ServiceAccount
+  name: release-name-trivy
+---
+# Source: trivy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: trivy
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: trivy-http
+      protocol: TCP
+      port: 4954
+      targetPort: 4954
+  sessionAffinity: ClientIP
+---
+# Source: trivy/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-trivy
+  labels:
+    app.kubernetes.io/name: trivy
+    helm.sh/chart: trivy-0.7.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.37.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podManagementPolicy: "Parallel"
+  serviceName: release-name-trivy
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trivy
+      app.kubernetes.io/instance: release-name
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        resources:
+          requests:
+            storage: 5Gi
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: 
+  template:
+    metadata:
+      annotations:
+        checksum/config: 803b4c7bc945b1537edf9d043464388cff8746b30a453543090951c37473b990
+      labels:
+        app.kubernetes.io/name: trivy
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-trivy
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: main
+          image: docker.io/aquasec/trivy:0.37.2
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            privileged: false
+            readOnlyRootFilesystem: true
+          args:
+            - server
+          envFrom:
+            - configMapRef:
+                name: release-name-trivy
+            - secretRef:
+                name: release-name-trivy
+          ports:
+            - name: trivy-http
+              containerPort: 4954
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: trivy-http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /healthz
+              port: trivy-http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp-data
+              readOnly: false
+            - mountPath: /home/scanner/.cache
+              name: data
+              readOnly: false
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+      volumes:
+        - name: tmp-data
+          emptyDir: {}

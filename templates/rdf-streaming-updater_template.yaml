@@ -1,0 +1,406 @@
+---
+# Source: rdf-streaming-updater/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rdf-streaming-updater-release-name-taskmanager
+  labels:
+    app: rdf-streaming-updater
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: rdf-streaming-updater-taskmanager
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: rdf-streaming-updater-jobmanager
+            release: release-name
+      ports:
+        - port: 6122
+          protocol: TCP
+        - port: 6125
+          protocol: TCP
+    - ports:
+      # flink's native prometheus endpoint
+      - port: 9102
+        protocol: TCP
+---
+# Source: rdf-streaming-updater/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rdf-streaming-updater-release-name-jobmanager
+  labels:
+    app: rdf-streaming-updater
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: rdf-streaming-updater-jobmanager
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: rdf-streaming-updater-taskmanager
+            release: release-name
+      ports:
+        - port: 6123
+          protocol: TCP
+        - port: 6124
+          protocol: TCP
+    - ports:
+      # flink's native prometheus endpoint
+      - port: 9102
+        protocol: TCP
+---
+# Source: rdf-streaming-updater/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rdf-streaming-updater-release-name
+  labels:
+    app: rdf-streaming-updater-jobmanager
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+---
+# Source: rdf-streaming-updater/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rdf-streaming-updater-release-name-secret-config
+  labels:
+    app: rdf-streaming-updater
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  swift_api_key: "c29tZV9zZWNyZXRfa2V5"
+---
+# Source: rdf-streaming-updater/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdf-streaming-updater-release-name-flink-config
+  labels:
+    app: rdf-streaming-updater
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+data:
+  flink-conf.yaml: |-
+    
+    
+    # We do not set this value, we use --host from the command line to pass the POD IP
+    # we want the job manager to expose itself as its unique ip so that HA leader election
+    # works properly as opposed to the ClusterIP service name
+    #jobmanager.rpc.address: POD_IP
+    
+    taskmanager.numberOfTaskSlots: 2
+    blob.server.port: 6124
+    jobmanager.rpc.port: 6123
+    taskmanager.rpc.port: 6122
+    queryable-state.proxy.ports: 6125
+    jobmanager.memory.process.size: 600m
+    taskmanager.memory.process.size: 1000m
+    rest.port: 8081
+    parallelism.default: 1
+    metrics.reporters: prom
+    metrics.reporter.prom.class: org.apache.flink.metrics.prometheus.PrometheusReporter
+    metrics.reporter.prom.port: 9102
+    swift.service.thanos-swift.auth.url: https://thanos-swift.discovery.wmnet/auth/v1.0
+    swift.service.thanos-swift.username: wdqs:flink
+    swift.service.thanos-swift.apikey: some_secret_key
+    kubernetes.cluster-id:  flink-cluster
+    kubernetes.namespace: default
+    high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+    high-availability.storageDir: file:///streaming_updater/ha_storage_dir
+    restart-strategy: fixed-delay
+    restart-strategy.fixed-delay.attempts: 10
+  log4j-console.properties: |-
+    # This affects logging for both user code and Flink
+    rootLogger.level = INFO
+    rootLogger.appenderRef.console.ref = ConsoleAppender
+    
+    # Uncomment this if you want to _only_ change Flink's logging
+    #logger.flink.name = org.apache.flink
+    #logger.flink.level = INFO
+    
+    # The following lines keep the log level of common libraries/connectors on
+    # log level INFO. The root logger does not override this. You have to manually
+    # change the log levels here.
+    logger.akka.name = akka
+    logger.akka.level = INFO
+    logger.kafka.name= org.apache.kafka
+    logger.kafka.level = INFO
+    logger.hadoop.name = org.apache.hadoop
+    logger.hadoop.level = INFO
+    logger.zookeeper.name = org.apache.zookeeper
+    logger.zookeeper.level = INFO
+    
+    # Log all infos to the console
+    appender.console.name = ConsoleAppender
+    appender.console.type = CONSOLE
+    appender.console.layout.type = PatternLayout
+    appender.console.layout.pattern = {"@timestamp":"%d{ISO8601}","log.level":"%p","message":"%m","error.stack_trace":"%ex","process.thread.name":"%t","log.logger":"%c","ecs.version":"1.7.0"}%n
+    
+    # Suppress the irrelevant (wrong) warnings from the Netty channel handler
+    logger.netty.name = org.apache.flink.shaded.akka.org.jboss.netty.channel.DefaultChannelPipeline
+    logger.netty.level = OFF
+---
+# Source: rdf-streaming-updater/templates/service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rdf-streaming-updater-release-name
+  labels:
+    app: rdf-streaming-updater-jobmanager
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+# NOTE: Ideally we want to only allow operation on the configmaps created and
+# managed by flink:
+# flink-cluster-dispatcher-leader
+# flink-cluster-resourcemanager-leader
+# flink-cluster-restserver-leader
+# But flink will also create another configmap per job created:
+# flink-cluster-067bbffd59aa3ac690bce6c234e32560-jobmanager-leader
+# where 067bbffd59aa3ac690bce6c234e32560 is the jobid autogenerated at job creation
+# Without having a way to more dynamically apply the rules based on:
+# - a pattern https://github.com/kubernetes/kubernetes/issues/56582
+# - a label selector https://github.com/kubernetes/kubernetes/issues/44703
+# we have to allow these verbs on all configmaps.
+  verbs: ["create", "list", "get", "watch", "delete", "update"]
+---
+# Source: rdf-streaming-updater/templates/service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rdf-streaming-updater-release-name
+  labels:
+    app: rdf-streaming-updater-jobmanager
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+subjects:
+- kind: ServiceAccount
+  name: rdf-streaming-updater-release-name
+roleRef:
+  kind: Role
+  name: rdf-streaming-updater-release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: rdf-streaming-updater/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rdf-streaming-updater-release-name-ui
+  labels:
+    app: rdf-streaming-updater
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: jobmanager-ui
+spec:
+  type: NodePort
+  ports:
+  - name: webui
+    port: 8081
+  selector:
+    app: rdf-streaming-updater-jobmanager
+    release: release-name
+    component: jobmanager
+---
+# Source: rdf-streaming-updater/templates/jobmanager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rdf-streaming-updater-release-name-jobmanager
+  labels:
+    app: rdf-streaming-updater-jobmanager
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+spec:
+  selector:
+    matchLabels:
+      app: rdf-streaming-updater-jobmanager
+      release: release-name
+      component: jobmanager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: rdf-streaming-updater-jobmanager
+        component: jobmanager
+        release: release-name
+      annotations:
+        checksum/secrets: 9faef7806cf6b7cbc2666f4661060c8b32127aa34f81837c679f8b1e2483e7de
+        checksum/log4j-conf: 8ca715a710b9f7d425c13f5f8e714cb3e5468e72b28fd98f118e20bd15118be3
+        checksum/flink-conf: ad4671a6625742ac938b2353d47146c138d55e8dfe887395de3fad6e5d8b2024
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      serviceAccountName: rdf-streaming-updater-release-name
+      containers:
+        # The main application container
+        - name: rdf-streaming-updater-release-name-jobmanager
+          image: "docker-registry.wikimedia.org/wikimedia/wikidata-query-flink-rdf-streaming-updater:latest"
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/flink/bin/jobmanager.sh", "start-foreground", "$(POD_IP)"]
+          ports:
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 6124
+              name: blob-server
+            - containerPort: 8081
+              name: webui
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            tcpSocket:
+              port: 6123
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: SERVICE_IDENTIFIER
+              value: rdf-streaming-updater-release-name
+            - name: SWIFT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rdf-streaming-updater-release-name-secret-config
+                  key: swift_api_key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 700Mi
+            limits:
+              cpu: 200m
+              memory: 800Mi
+          volumeMounts:
+          - name: flink-config-volume
+            mountPath: /opt/flink/conf        
+      volumes:        
+        - name: flink-config-volume
+          configMap:
+            name: rdf-streaming-updater-release-name-flink-config
+            items:
+            - key: flink-conf.yaml
+              path: flink-conf.yaml
+            - key: log4j-console.properties
+              path: log4j-console.properties
+---
+# Source: rdf-streaming-updater/templates/taskmanager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rdf-streaming-updater-release-name-taskmanager
+  labels:
+    app: rdf-streaming-updater-taskmanager
+    chart: rdf-streaming-updater-0.0.7
+    release: release-name
+    heritage: Helm
+    component: taskmanager
+spec:
+  selector:
+    matchLabels:
+      app: rdf-streaming-updater-taskmanager
+      release: release-name
+      component: taskmanager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: rdf-streaming-updater-taskmanager
+        component: taskmanager
+        release: release-name
+      annotations:
+        checksum/secrets: 9faef7806cf6b7cbc2666f4661060c8b32127aa34f81837c679f8b1e2483e7de
+        checksum/log4j-conf: 8ca715a710b9f7d425c13f5f8e714cb3e5468e72b28fd98f118e20bd15118be3
+        checksum/flink-conf: ad4671a6625742ac938b2353d47146c138d55e8dfe887395de3fad6e5d8b2024
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      serviceAccountName: rdf-streaming-updater-release-name
+      containers:
+        # The main application container
+        - name: rdf-streaming-updater-release-name-taskmanager
+          image: "docker-registry.wikimedia.org/wikimedia/wikidata-query-flink-rdf-streaming-updater:latest"
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/flink/bin/taskmanager.sh", "start-foreground"]
+          ports:
+            - containerPort: 6122
+              name: rpc
+            - containerPort: 6125
+              name: query-state
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            tcpSocket:
+              port: 6122
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: rdf-streaming-updater-release-name
+            - name: SWIFT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rdf-streaming-updater-release-name-secret-config
+                  key: swift_api_key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1000Mi
+            limits:
+              cpu: 200m
+              memory: 1100Mi
+          volumeMounts:
+          - name: flink-config-volume
+            mountPath: /opt/flink/conf        
+      volumes:        
+        - name: flink-config-volume
+          configMap:
+            name: rdf-streaming-updater-release-name-flink-config
+            items:
+            - key: flink-conf.yaml
+              path: flink-conf.yaml
+            - key: log4j-console.properties
+              path: log4j-console.properties
+---
+# Source: rdf-streaming-updater/templates/tests/curl-ui.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'rdf-streaming-updater-release-name-curl-ui'
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+  - name: 'rdf-streaming-updater-release-name-curl-ui'
+    image: "docker-registry.wikimedia.org/wmfdebug"
+    imagePullPolicy: IfNotPresent
+    args: ["curl", "http://rdf-streaming-updater-release-name-ui:8081"]
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

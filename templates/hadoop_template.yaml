@@ -1,0 +1,1262 @@
+---
+# Source: hadoop/templates/hdfs-dn-pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hadoop-datanode
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: datanode
+      app.kubernetes.io/instance: release-name
+  minAvailable: 3
+---
+# Source: hadoop/templates/hdfs-nn-pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hadoop-namenode
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: namenode
+      app.kubernetes.io/instance: release-name
+  minAvailable: 1
+---
+# Source: hadoop/templates/yarn-nm-pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hadoop-nodemanager
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: nodemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: nodemanager
+      app.kubernetes.io/instance: release-name
+  minAvailable: 1
+---
+# Source: hadoop/templates/yarn-rm-pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hadoop-resourcemanager
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: resourcemanager
+      app.kubernetes.io/instance: release-name
+  minAvailable: 1
+---
+# Source: hadoop/templates/hadoop-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hadoop-hadoop
+  labels:
+    app.kubernetes.io/name: hadoop
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+data:
+  bootstrap.sh: |-
+    #!/bin/bash
+    
+    : ${HADOOP_HOME:=/opt/hadoop}
+    
+    function update_hadoop_env() {
+      local env_file="$HADOOP_HOME/etc/hadoop/hadoop-env.sh"
+      local env_name="$1"
+      local env_value="$2"
+    
+      if [[ $(grep "^# export $env_name=" "$env_file" | wc -l) -eq 1 ]]; then
+        # If there is a comment, uncomment line with a new environment variable
+        sed -i "s|^# export $env_name=.*|export $env_name=\"$env_value\"|" "$env_file"
+        echo "Updated $env_name in $env_file"
+      else
+        # append the new to end of the file
+        echo "export $env_name=\"$env_value\"" >>"$env_file"
+        echo "Added $env_name to $env_file"
+      fi
+    }
+    
+    # setup the java home if not special
+    [[ -z "$JAVA_HOME" ]] && JAVA_HOME=$(readlink -f /usr/bin/java | sed "s:jre/bin/java::")
+    # replace the java_home in the hadoop-env file
+    update_hadoop_env JAVA_HOME $JAVA_HOME
+    update_hadoop_env HADOOP_COMMON_LIB_NATIVE_DIR ${HADOOP_HOME}/lib/native
+    HADOOP_OPTS+="-Djava.library.path=$HADOOP_HOME/lib/native"
+    update_hadoop_env HADOOP_OPTS "$HADOOP_OPTS"
+    
+    . $HADOOP_HOME/etc/hadoop/hadoop-env.sh
+    
+    # Directory to find config artifacts
+    CONFIG_DIR="/tmp/hadoop-config"
+    
+    # Copy config files from volume mount
+    for f in slaves core-site.xml hdfs-site.xml mapred-site.xml yarn-site.xml httpfs-site.xml; do
+      if [[ -e ${CONFIG_DIR}/$f ]]; then
+        cp ${CONFIG_DIR}/$f $HADOOP_HOME/etc/hadoop/$f
+      else
+        echo "ERROR: Could not find $f in $CONFIG_DIR"
+        exit 1
+      fi
+    done
+    
+    # installing libraries if any - (resource urls added comma separated to the ACP system variable)
+    cd $HADOOP_HOME/share/hadoop/common
+    for cp in ${ACP//,/ }; do
+      echo == $cp
+      curl -LO $cp
+    done
+    cd -
+    
+    if [[ $2 == "namenode" ]]; then
+      mkdir -p /data/dfs/name && chown -R hdfs:hadoop /data/dfs && chmod g+s /data/dfs
+      export HADOOP_LOG_DIR=/var/log/hadoop/hdfs
+      mkdir -p $HADOOP_LOG_DIR && chown -R hdfs:hadoop $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      # format the namenode if not formated
+      [[ ! -f /data/dfs/name/current/VERSION ]] && su hdfs -c "$HADOOP_HOME/bin/hdfs namenode -format -force -nonInteractive"
+      su hdfs -c "$HADOOP_HOME/sbin/hadoop-daemon.sh start namenode"
+    fi
+    
+    if [[ $2 == "datanode" ]]; then
+      [[ ! -d /data/dfs/data ]] && mkdir -p /data/dfs/data && chown -R hdfs:hadoop /data/dfs && chmod g+s /data/dfs
+      export HADOOP_LOG_DIR=/var/log/hadoop/hdfs
+      mkdir -p $HADOOP_LOG_DIR && chown -R hdfs:hadoop $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      #  wait up to 30 seconds for namenode
+      #  (while [[ $count -lt 15 && -z $(curl -sf http://release-name-hadoop-namenode:9870) && -z $(curl -sf http://release-name-hadoop-namenode:50070) ]]; do
+      #    ((count = count + 1))
+      #    echo "Waiting for release-name-hadoop-namenode"
+      #    sleep 2
+      #  done && [[ $count -lt 15 ]])
+      #  [[ $? -ne 0 ]] && echo "Timeout waiting for hdfs namenode, exiting." && exit 1
+    
+      su hdfs -c "$HADOOP_HOME/sbin/hadoop-daemon.sh start datanode"
+    fi
+    
+    # ------------------------------------------------------
+    # Start HttpFs as daemons
+    # ------------------------------------------------------
+    if [[ $2 == "httpfs" ]]; then
+      groupadd -g 998 -r httpfs && useradd -u 998 --shell /bin/bash -M -r -N --groups httpfs --home /var/lib/hadoop/httpfs httpfs
+      export HTTPFS_TEMP=/tmp
+      export HADOOP_LOG_DIR=/var/log/hadoop/httpfs
+      mkdir -p $HADOOP_LOG_DIR && chown -R httpfs:httpfs $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      #  #  wait up to 30 seconds for namenode
+      #  (while [[ $count -lt 15 && -z $(curl -sf http://release-name-hadoop-namenode:9870) && -z $(curl -sf http://release-name-hadoop-namenode:50070) ]]; do
+      #    ((count = count + 1))˜
+      #    echo "Waiting for release-name-hadoop-namenode"
+      #    sleep 2
+      #  done && [[ $count -lt 15 ]])
+      #  [[ $? -ne 0 ]] && echo "Timeout waiting for hdfs namenode, exiting." && exit 1
+    
+      su httpfs -c "$HADOOP_HOME/bin/hdfs --daemon start httpfs"
+    fi
+    
+    # ------------------------------------------------------
+    # Start RESOURCE MANAGER and PROXY SERVER as daemons
+    # ------------------------------------------------------
+    if [[ $2 == "resourcemanager" ]]; then
+      export HADOOP_LOG_DIR=/var/log/hadoop/yarn
+      mkdir -p $HADOOP_LOG_DIR && chown -R yarn:hadoop $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      su yarn -c "$HADOOP_HOME/bin/yarn --loglevel INFO --daemon start resourcemanager"
+      su yarn -c "$HADOOP_HOME/bin/yarn --loglevel INFO --daemon start proxyserver"
+    fi
+    # ------------------------------------------------------
+    # Start NODE MANAGER
+    # ------------------------------------------------------
+    if [[ $2 == "nodemanager" ]]; then
+      mkdir -p /data/yarn && chown -R yarn:hadoop /data/yarn && chmod g+s /data/yarn
+      export HADOOP_LOG_DIR=/var/log/hadoop/yarn
+      mkdir -p $HADOOP_LOG_DIR && chown -R yarn:hadoop $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      # Wait with timeout for resourcemanager
+      #  TMP_URL="http://release-name-hadoop-resourcemanager-hl:8088/ws/v1/cluster/info"
+      #  if timeout 5m bash -c "until curl -sf $TMP_URL; do echo Waiting for $TMP_URL; sleep 5; done"; then
+      su yarn -c "$HADOOP_HOME/bin/yarn nodemanager --loglevel INFO"
+    #  else
+    #    echo "$0: Timeout waiting for $TMP_URL, exiting."
+    #    exit 1
+    #  fi
+    fi
+    # ------------------------------------------------------
+    # Start MapReduce JobHistory Server as daemons
+    # ------------------------------------------------------
+    if [[ $2 == "historyserver" ]]; then
+      export HADOOP_LOG_DIR=/var/log/hadoop/mapred
+      mkdir -p $HADOOP_LOG_DIR && chown -R mapred:hadoop $HADOOP_LOG_DIR && chmod g+s $HADOOP_LOG_DIR
+      #  if timeout 5m bash -c "until nc -vz release-name-hadoop-namenode 9820 -w2; do echo Waiting for namenode; sleep 5; done"; then
+      su mapred -c "$HADOOP_HOME/bin/mapred --loglevel INFO --daemon start historyserver"
+    #  else
+    #    echo "$0: Timeout waiting for namenode, exiting."
+    #    exit 1
+    #  fi
+    fi
+    # ------------------------------------------------------
+    # Tail logfiles for daemonized workloads (parameter -d)
+    # ------------------------------------------------------
+    if [[ $1 == "-d" ]]; then
+      until
+        find ${HADOOP_LOG_DIR} -mmin -1 | egrep -q '.*'
+        echo "$(date): Waiting for logs..."
+      do sleep 2; done
+      tail -F ${HADOOP_LOG_DIR}/* &
+      while true; do sleep 1000; done
+    fi
+    
+    # ------------------------------------------------------
+    # Start bash if requested (parameter -bash)
+    # ------------------------------------------------------
+    if [[ $1 == "-bash" ]]; then
+      /bin/bash
+    fi
+    
+  core-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>fs.defaultFS</name>
+            <value>hdfs://release-name-hadoop-namenode:9820/</value>
+        </property>
+    </configuration>
+  hdfs-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>dfs.datanode.use.datanode.hostname</name>
+            <value>false</value>
+        </property>
+        <property>
+            <name>dfs.client.use.datanode.hostname</name>
+            <value>false</value>
+        </property>
+        <property>
+            <name>dfs.datanode.data.dir</name>
+            <value>file:///data/dfs/data</value>
+            <description>DataNode directory</description>
+        </property>
+    
+        <property>
+            <name>dfs.namenode.name.dir</name>
+            <value>file:///data/dfs/name</value>
+            <description>NameNode directory for namespace and transaction logs storage.</description>
+        </property>
+    
+        <property>
+            <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+            <value>false</value>
+        </property>
+    
+        <!-- Bind to all interfaces -->
+        <property>
+            <name>dfs.namenode.rpc-bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>dfs.namenode.servicerpc-bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <!-- /Bind to all interfaces -->
+        <property>
+            <name>dfs.permissions.enabled</name>
+            <value>false</value>
+        </property>
+        <property>
+            <name>dfs.replication</name>
+            <value>3</value>
+        </property>
+        <property>
+            <name>dfs.webhdfs.enable</name>
+            <value>true</value>
+        </property>
+    
+    </configuration>
+  mapred-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>mapreduce.jobhistory.address</name>
+            <value>release-name-hadoop-historyserver-hl:10020</value>
+        </property>
+    
+        <property>
+            <name>mapreduce.jobhistory.webapp.address</name>
+            <value>release-name-hadoop-historyserver-hl:19888</value>
+        </property>
+    </configuration>
+  yarn-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>yarn.resourcemanager.hostname</name>
+            <value>release-name-hadoop-resourcemanager-hl</value>
+        </property>
+        <!-- Bind to all interfaces -->
+        <property>
+            <name>yarn.resourcemanager.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>yarn.nodemanager.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <property>
+            <name>yarn.timeline-service.bind-host</name>
+            <value>0.0.0.0</value>
+        </property>
+        <!-- /Bind to all interfaces -->
+        <property>
+            <name>yarn.nodemanager.vmem-check-enabled</name>
+            <value>false</value>
+        </property>
+        <property>
+            <name>yarn.nodemanager.aux-services</name>
+            <value>mapreduce_shuffle</value>
+        </property>
+        <property>
+            <name>yarn.nodemanager.aux-services.mapreduce_shuffle.class</name>
+            <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+        </property>
+        <property>
+            <description>List of directories to store localized files in.</description>
+            <name>yarn.nodemanager.local-dirs</name>
+            <value>/data/${user.name}/nm-local-dir</value>
+        </property>
+        <property>
+            <description>Where to store container logs.</description>
+            <name>yarn.nodemanager.log-dirs</name>
+            <value>/var/log/hadoop/yarn/containers</value>
+        </property>
+        <property>
+            <description>Where to aggregate logs to.</description>
+            <name>yarn.nodemanager.remote-app-log-dir</name>
+            <value>/var/log/hadoop/yarn/apps</value>
+        </property>
+        <property>
+            <description>The address for the web proxy as HOST:PORT, if this is not given then the proxy will run as part of the RM.</description>
+            <name>yarn.web-proxy.address</name>
+            <value>1080</value>
+        </property>
+        <property>
+            <description>Whether to enable log aggregation</description>
+            <name>yarn.log-aggregation-enable</name>
+            <value>true</value>
+        </property>
+        <property>
+            <name>yarn.log.server.url</name>
+            <value>http://release-name-hadoop-historyserver-hl:19888/jobhistory/logs</value>
+        </property>
+        <property>
+            <name>yarn.application.classpath</name>
+            <value>
+                /opt/hadoop/etc/hadoop,
+                /opt/hadoop/share/hadoop/common/*,
+                /opt/hadoop/share/hadoop/common/lib/*,
+                /opt/hadoop/share/hadoop/hdfs/*,
+                /opt/hadoop/share/hadoop/hdfs/lib/*,
+                /opt/hadoop/share/hadoop/mapreduce/*,
+                /opt/hadoop/share/hadoop/mapreduce/lib/*,
+                /opt/hadoop/share/hadoop/yarn/*,
+                /opt/hadoop/share/hadoop/yarn/lib/*
+            </value>
+        </property>
+    
+        <!-- 设置RM内存资源配置，两个参数 -->
+        <property>
+            <description>The minimum allocation for every container request at the RM,
+                in MBs. Memory requests lower than this won't take effect,
+                and the specified value will get allocated at minimum.
+            </description>
+            <name>yarn.scheduler.minimum-allocation-mb</name>
+            <value>1024</value>
+        </property>
+        <property>
+            <description>The maximum allocation for every container request at the RM,
+                in MBs. Memory requests higher than this won't take effect,
+                and will get capped to this value.
+            </description>
+            <name>yarn.scheduler.maximum-allocation-mb</name>
+            <value>4096</value>
+        </property>
+    
+        <!-- 前者表示单个节点可用的最大内存，RM中的两个值都不应该超过该值。后者表示虚拟内存率，即占task所用内存的百分比，默认为2.1.-->
+        <property>
+            <description>Amount of physical memory, in MB, that can be allocated
+                for containers.
+            </description>
+            <name>yarn.nodemanager.resource.memory-mb</name>
+            <value>8192</value>
+        </property>
+        <property>
+            <description>Ratio between virtual memory to physical memory when
+                setting memory limits for containers. Container allocations are
+                expressed in terms of physical memory, and virtual memory usage
+                is allowed to exceed this allocation by this ratio.
+            </description>
+            <name>yarn.nodemanager.vmem-pmem-ratio</name>
+            <value>2.1</value>
+        </property>
+        <property>
+            <description>Amount of physical memory, in MB, that can be allocated
+                for containers.
+            </description>
+            <name>yarn.app.mapreduce.am.resource.mb</name>
+            <value>4096</value>
+        </property>
+    </configuration>
+  httpfs-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+    </configuration>
+  httpfs-signature.secret: |-
+    hadoop httpfs secret
+  slaves: |
+    localhost
+---
+# Source: hadoop/templates/hdfs-nn-exporter-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hadoop-namenode-exporter
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+data:
+  config-exporter.yml: |-
+    fsImagePath : '/data/dfs/name/current'
+    skipFileDistributionForGroupStats : false
+    skipFileDistributionForUserStats : false
+    skipFileDistributionForPathStats : false
+    skipFileDistributionForPathSetStats : false
+    fileSizeDistributionBuckets: ['0','1MiB', '32MiB', '64MiB', '128MiB', '1GiB', '10GiB']
+---
+# Source: hadoop/templates/hdfs-dn-svc-headless.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-datanode
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  ports:
+  - name: webhdfs
+    port: 9864
+  - name: webshdfs
+    port: 9865
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: datanode
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/hdfs-nn-exporter-service.yml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-hadoop-namenode-exporter
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec: 
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+  ports:
+  - port: 5556
+    name: metrics
+    targetPort: 5556
+---
+# Source: hadoop/templates/hdfs-nn-svc-headless.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-namenode
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  ports:
+  - name: dfs
+    port: 9820
+    protocol: TCP
+  - name: webhdfs
+    port: 9870
+  - name: webshdfs
+    port: 9871
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/hdfs-nn-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  type: ClusterIP
+  ports:
+  - name: dfs
+    port: 9820
+    protocol: TCP
+  - name: webhdfs
+    port: 9870
+  - name: webshdfs
+    port: 9871
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/httpfs-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-httpfs
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: httpfs
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  ports:
+  - name: httpfs
+    port: 14000
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: httpfs
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/mapred-hs-svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-historyserver-hl
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: historyserver
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 19888
+      protocol: TCP
+      targetPort: 19888
+      name: http
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: historyserver
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/mapred-hs-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-historyserver
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: historyserver
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      protocol: TCP
+      targetPort: 19888
+      name: http
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: historyserver
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/yarn-nm-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-nodemanager
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: nodemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  ports:
+    - port: 8088
+      name: web
+    - port: 8082
+      name: web2
+    - port: 8042
+      name: api
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: nodemanager
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/yarn-rm-svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-resourcemanager-hl
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 8088
+      protocol: TCP
+      targetPort: 8088
+      name: http
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/yarn-rm-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hadoop-resourcemanager
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      protocol: TCP
+      targetPort: 8088
+      name: http
+  selector:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    app.kubernetes.io/instance: release-name
+---
+# Source: hadoop/templates/hdfs-dn-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-datanode
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: datanode
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-datanode
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: datanode
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop
+                  app.kubernetes.io/component: datanode
+                  helm.sh/chart: hadoop-1.0.2
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "3.3.5"
+                  app.kubernetes.io/part-of: hadoop
+      containers:
+      - name: datanode
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+           - "datanode"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 9864
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9864
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /data/dfs
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+      - name: dfs
+        emptyDir: {}
+---
+# Source: hadoop/templates/hdfs-nn-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-namenode
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: namenode
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-namenode
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: namenode
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop
+                  app.kubernetes.io/component: namenode
+                  helm.sh/chart: hadoop-1.0.2
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "3.3.5"
+                  app.kubernetes.io/part-of: hadoop
+      containers:
+      - name: namenode
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "namenode"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 9870
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9870
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /data/dfs
+      - name: namenode-exporter
+        image: "marcelmay/hadoop-hdfs-fsimage-exporter:1.4.7"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - /bin/sh
+        - -c
+        - java $JAVA_OPTS -jar /opt/fsimage-exporter/fsimage-exporter.jar 0.0.0.0 "5556" /exporter/config-exporter.yml
+        ports:
+        - containerPort: 5556
+        resources:
+                    null
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: config-exporter
+          mountPath: /exporter
+        - name: dfs
+          mountPath: /data/dfs
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+      - name: config-exporter
+        configMap:
+          name: release-name-hadoop-namenode-exporter
+      - name: dfs
+        emptyDir: {}
+---
+# Source: hadoop/templates/httpfs-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-httpfs
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: httpfs
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: httpfs
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-namenode
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: httpfs
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      containers:
+      - name: httpfs
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        env:
+          - name: HTTPFS_HTTP_PORT
+            value: "14000"
+          - name: HTTPFS_ADMIN_PORT
+            value: "14001"
+          - name: CATALINA_OPTS
+            value: -Dhttpfs.admin.hostname=0.0.0.0
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "httpfs"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /webhdfs/v1?op=gethomedirectory&user.name=hdfs
+            port: 14000
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+---
+# Source: hadoop/templates/mapred-hs-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-historyserver
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: historyserver
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: historyserver
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-historyserver
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: historyserver
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop
+                  app.kubernetes.io/component: historyserver
+                  helm.sh/chart: hadoop-1.0.2
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "3.3.5"
+                  app.kubernetes.io/part-of: hadoop
+      containers:
+      - name: historyserver
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        ports:
+        - containerPort: 19888
+          name: http
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "historyserver"
+        resources:
+          null
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 19888
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 19888
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+---
+# Source: hadoop/templates/yarn-nm-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-nodemanager
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: nodemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: nodemanager
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-nodemanager
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: nodemanager
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop
+                  app.kubernetes.io/component: nodemanager
+                  helm.sh/chart: hadoop-1.0.2
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "3.3.5"
+                  app.kubernetes.io/part-of: hadoop
+      containers:
+      - name: nodemanager
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        ports:
+        - containerPort: 8088
+          name: web
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "nodemanager"
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4096Mi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /node
+            port: 8042
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+---
+# Source: hadoop/templates/yarn-rm-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hadoop-resourcemanager
+  annotations:
+    checksum/config: 4c9197ac8ff02dd8ec905a55ab3bc884483406351a89b313d4dfac53ad628c36
+  labels:
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: resourcemanager
+    helm.sh/chart: hadoop-1.0.2
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.3.5"
+    app.kubernetes.io/part-of: hadoop
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hadoop
+      app.kubernetes.io/component: resourcemanager
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hadoop-resourcemanager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: resourcemanager
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hadoop
+                  app.kubernetes.io/component: resourcemanager
+                  helm.sh/chart: hadoop-1.0.2
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "3.3.5"
+                  app.kubernetes.io/part-of: hadoop
+      containers:
+      - name: resourcemanager
+        image: "5200710/hadoop:3.3.5"
+        imagePullPolicy: "Always"
+        ports:
+        - containerPort: 8088
+          name: http
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "resourcemanager"
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4096Mi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /ws/v1/cluster/info
+            port: 8088
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hadoop-hadoop
+---
+# Source: hadoop/templates/yarn-rm-ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#

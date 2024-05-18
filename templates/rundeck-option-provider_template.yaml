@@ -1,0 +1,172 @@
+---
+# Source: rundeck-option-provider/templates/configmap-datasources.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rundeck-option-provider-datasources
+  labels:
+    app.kubernetes.io/name: rundeck-option-provider
+    helm.sh/chart: rundeck-option-provider-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "rundeck-option-provider"
+  annotations:
+    helm.sh/hook-weight: "0"
+data:
+  datasources.yml: |-
+    
+    - name: Influxdb
+      type: influxdb
+      host: influxdb
+      port: 8086
+      username: juniper
+      password: juniper@123
+    
+    - name: Livestatus
+      type: livestatus
+      host: icinga2
+      port: 6558
+    
+    - name: Icinga2
+      type: icinga2
+      host: icinga2
+      port: 5665
+      username: icingaAdmin
+      password: icingaAdmin
+    
+    - name: Mariadb
+      type: mariadb
+      host: mariadb
+      port: 3306
+      username: rundeck_option_api
+      password: juniper@123
+    
+    - name: Nagvis
+      type: nagvis
+      host: icinga2
+      port: 6558
+      backend_name: NMS
+      backend_id: NMS
+      backend_type: mklivestatus
+---
+# Source: rundeck-option-provider/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "rundeck-option-provider"
+  labels:
+    app.kubernetes.io/name: rundeck-option-provider
+    helm.sh/chart: rundeck-option-provider-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: rundeckop
+      port: 1111
+      targetPort: rundeckop
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: rundeck-option-provider
+    app.kubernetes.io/instance: release-name
+  sessionAffinity: ClientIP
+---
+# Source: rundeck-option-provider/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-rundeck-option-provider
+  labels:
+    app.kubernetes.io/name: rundeck-option-provider
+    helm.sh/chart: rundeck-option-provider-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: rundeck-option-provider
+  annotations:
+    helm.sh/hook-weight: "0"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rundeck-option-provider
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: rundeck-option-provider
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rundeck-option-provider
+        helm.sh/chart: rundeck-option-provider-1.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: rundeck-option-provider
+    spec:
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: rundeck-option-provider
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      restartPolicy:
+      initContainers:
+        - name: wait-for-init-repo
+          image: docker.io/busybox:1.33
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /bin/sh
+            - -c
+            - |
+                until [ `ls -A /opt/SVTECH-Junos-Automation | grep 'completed' | wc -l` != 0 ];
+                do
+                  echo "Waiting for Init Repo...";
+                  sleep 2;
+                done
+
+          volumeMounts:
+
+      imagePullSecrets:
+      - name: ghcr-pull-secret
+
+      containers:
+        - name: "rundeck-option-provider"
+          image: svtechnmaa/svtech_rundeck_option_provider:v1.1.1
+          imagePullPolicy: "IfNotPresent"
+          # command:
+          #   - /bin/bash
+          #   - -c
+          #   - |
+          #       git config --global --add safe.directory "*"
+          #       chown rundeck-option-provider:rundeck-option-provider /etc/icinga2/zones.d -R
+          #       chmod 777 /etc/icinga2/zones.d -R
+          #       su rundeck-option-provider -c 'git config --global --add safe.directory "*"
+          #                     git config --global user.name rundeck-option-provider && \
+          #                     git config --global user.email rundeck-option-provider@localhost'
+          #       /tini -- /home/rundeck-option-provider/docker-lib/entry.sh
+          env:
+            - name: TZ
+              value: Asia/Ho_Chi_Minh
+
+          ports:
+            - name: "rundeckop"
+              containerPort: 1111
+
+          volumeMounts:
+            - name: "rundeck-option-provider"
+              mountPath: /opt/SVTECH-Junos-Automation/addition_toolkit/rundeck_options_API/datasources.yml
+              subPath: datasources.yml
+
+      volumes:
+        - name: "rundeck-option-provider"
+          configMap:
+            name: release-name-rundeck-option-provider-datasources

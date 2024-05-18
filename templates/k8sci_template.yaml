@@ -1,0 +1,1077 @@
+---
+# Source: k8sci/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-k8sci
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+secrets:
+  - name: "release-name-k8sci-git-auth"
+---
+# Source: k8sci/templates/secrets/pipeline-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-k8sci
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  GITHUB_USER: "b2N0b2NhdA=="
+  GITHUB_TOKEN: "dG9rZW4="
+  GITEA_USER: "Z2l0ZWE="
+  GITEA_TOKEN: "dG9rZW4="
+  slackWebhook: "aHR0cHM6Ly9ob29rcy5zbGFjay5jb20vc2VydmljZXMvVFRUVFRUVFRUVC9CMDAwMDAwMDAwL2IxMjM0NTY3ODkwQUJDREVGMTIzNDU2"
+  webhookSecretToken: "dG9rZW5fdXNlZF9ieV9naWh1Yi9naXRlYQ=="
+---
+# Source: k8sci/templates/service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name:  release-name-k8sci
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: release-name-k8sci
+  namespace: default
+---
+# Source: k8sci/templates/cronJobs/cleaner-cronjob.yaml
+# Copyright 2020 The Tekton Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: "release-name-k8sci-cleaner-cronjob"
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: 12 * * * *
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: "release-name-k8sci"
+          volumes:
+          - name: workspace
+            emptyDir: {}
+          containers:
+          - name: trigger
+            image: gcr.io/tekton-releases/dogfooding/tkn
+            command:
+              - /bin/sh
+            args:
+              - -ce
+              - |
+                set -ex
+                # A safety check, to avoid deleting too much!
+                if [[ 200 -eq 0 || 200 == "" ]]; then
+                  echo "This task cannot be used to delete *all* resources from a cluster" >&2
+                  echo "Please specifcy a value for keep > 0"
+                  exit 1
+                fi
+                # Cleanup pipelineruns first, as this will delete tasksruns too
+                tkn pr delete -n default --keep 200
+                # Keep double the amount of tr, for standalone trs
+                tkn tr delete -n default  --keep 400 #X2
+          restartPolicy: Never
+---
+# Source: k8sci/templates/dashboard-ingress.yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: release-name-k8sci-dashboard
+  namespace: tekton-pipelines
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: "dashboard.chart-example.local"
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: tekton-dashboard
+              servicePort: 9097
+---
+# Source: k8sci/templates/hook-ingress.yaml
+# Copyright 2020 Keyporttech Inc
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: release-name-k8sci
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: "chart-example.local"
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: "el-release-name-k8sci-gh-interceptor"
+              servicePort: 8080
+---
+# Source: k8sci/templates/tasks/gitea-run-command.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: release-name-k8sci-run-command-gitea
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  resources:
+    inputs:
+    - name: git-repo
+      type: git
+  params:
+    - name: org
+    - name: repo
+    - name: git_sha
+    - name: ref
+    - name: image
+    - name: commands
+    - name: statuses
+    - name: htmlurl
+    - name: pipelineName
+    - name: pipelineType
+  results:
+    - name: description
+    - name: output
+  steps:
+    - name: post-pending-status-gitea
+      image: "$(params.image)"
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+
+          # extract the protocol
+          proto="$(echo $(params.htmlurl) | grep :// | sed -e's,^\(.*://\).*,\1,g')"
+
+          # remove the protocol
+          url=$(echo $(params.htmlurl) | sed -e s,$proto,,g)
+
+          # extract the host and port
+          hostport=$(echo $url |  cut -d/ -f1)
+          API_END_POINT=${proto}${hostport}/api/v1
+
+          for status in "${STATUSES[@]}"
+          do
+            :
+            # pending,success,error,failure,warning
+            curl -X POST ${API_END_POINT}/repos/$(params.org)/$(params.repo)/statuses/$(params.git_sha) \
+            -H "accept: application/json" \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Content-Type: application/json" -i -k -d "{\
+              \"context\": \"${status}\",\
+              \"description\": \"pending...\",\
+              \"state\": \"pending\",\
+              \"target_url\": \"chart-example.local/dashboard\"\
+            };"
+          done
+    - name: run
+      image: "$(params.image)"
+      workingDir: "/workspace/git-repo"
+      securityContext:
+        privileged: true
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      - name: GIT-REF
+        value: $(params.ref)
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          set +e;
+          RESULT=0;
+          INDEX=0;
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+          declare -a COMMANDS
+          COMMANDS=($(params.commands))
+          for command in "${COMMANDS[@]}"
+          do
+             :
+             status=${STATUSES[$INDEX]};
+             ${command} &>> /tekton/home/output;
+             RESULT=$?;
+             [ $RESULT -ne 0 ] && [ "$status" != "" ] && echo "failure" > /tekton/home/status/${status} && break
+             [ $RESULT -eq 0 ] && [ "$status" != "" ] && echo "success" > /tekton/home/status/${status}
+             ((INDEX++))
+          done
+          [ $RESULT -eq 0 ] && echo "succeeded." > /tekton/home/description || echo "build failed." > /tekton/home/description;
+          cat /tekton/home/output;
+          exit 0;
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+      - mountPath: /var/lib/docker
+        name: dind-storage
+      - mountPath: /var/run/
+        name: dind-socket
+      - mountPath: /root/.ssh
+        name: ssh-creds
+    - name: post-commit-status-gitea
+      image: "$(params.image)"
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+          # extract the protocol
+          proto="$(echo $(params.htmlurl) | grep :// | sed -e's,^\(.*://\).*,\1,g')"
+
+          # remove the protocol
+          url=$(echo $(params.htmlurl) | sed -e s,$proto,,g)
+
+          # extract the host and port
+          hostport=$(echo $url |  cut -d/ -f1)
+          API_END_POINT=${proto}${hostport}/api/v1
+          for status in "${STATUSES[@]}"
+          do
+            :
+            description="check passed."
+            state=$(cat /tekton/home/status/${status})
+            [ "$state" != "success" ] && description="check did not pass."
+            # pending,success,error,failure,warning
+            [ "$status" != "" ] && curl -X POST ${API_END_POINT}/repos/$(params.org)/$(params.repo)/statuses/$(params.git_sha) \
+            -H "accept: application/json" \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Content-Type: application/json" -i -k -d "{\
+              \"context\": \"$status\",\
+              \"description\": \"$description\",\
+              \"state\": \"$state\",\
+              \"target_url\": \"chart-example.local/dashboard\"\
+            }"
+          done
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+    - name: slack-notify
+      image: "$(params.image)"
+      env:
+        - name: SLACK_WEBHOOK
+          valueFrom:
+            secretKeyRef:
+              name: release-name-k8sci
+              key: slackWebhook
+        - name: PIPELINE_RUN
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
+      workingDir: "/workspace/git-repo"
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a COMMANDS
+          COMMANDS=($(params.commands))
+          export DESCRIPTION=$(cat /tekton/home/description);
+          [ "$DESCRIPTION" != "succeeded." ] && export SYMBOL=":no_entry:" || export SYMBOL=":thumbsup:";
+          export SLACK_TITLE="${SYMBOL} gitea Pipeline: $(params.pipelineName) $(params.pipelineType)\n\nStatus: ${STATUS}\n\nRepo: <$(params.htmlurl)|$(params.org)/$(params.repo)>\n\n<https://dashboard.chart-example.local:<PORT>/#/namespaces/cicd/pipelineruns/${PIPELINE_RUN}|build information>";
+          export SLACK_MESSAGE="$(printf '%s\n' "${COMMANDS[@]}")\n $DESCRIPTION";
+          ## TODO SLACK API too picky with text - figure out how to do a snippet
+          # [ "$STATUS" != "success" ] && export SLACK_MESSAGE="\`\`\`$(cat /tekton/home/output | sed "s/\"/\\\"/g" | sed "s/'//g" | sed "s/\`/\\\`/g" )\`\`\`";
+          PAYLOAD=$( cat <<EOT
+          {
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "$SLACK_TITLE"
+                }
+              },
+              {
+                "type": "divider"
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "$SLACK_MESSAGE"
+                }
+              }
+            ]
+          }
+          EOT
+          );
+          curl -d "$PAYLOAD" -H "Content-Type: application/json" -X POST $SLACK_WEBHOOK
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+  sidecars:
+  - image: docker:18.05-dind
+    name: server
+    securityContext:
+      privileged: true
+    volumeMounts:
+      - mountPath: /var/lib/docker
+        name: dind-storage
+      - mountPath: /var/run/
+        name: dind-socket
+  - image: "$(params.image)"
+    name: init-ssh-creds
+    command:
+      - "sh"
+    args:
+      - "-c"
+      - |
+        cp /secretsDir/*  /root/.ssh
+        mv ~/.ssh/ssh-privatekey ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        mkdir -p /tekton/home/status
+        ssh-keyscan github.com >> ~/.ssh/known_hosts
+    volumeMounts:
+      - mountPath: /root/.ssh
+        name: ssh-creds
+      - mountPath: /secretsDir
+        name: git-auth
+      - mountPath: /tekton/home
+        name: home
+  volumes:
+    - name: home
+      emptyDir: {}
+    - name: dind-storage
+      emptyDir: {}
+    - name: dind-socket
+      emptyDir: {}
+    - name: ssh-creds
+      emptyDir: {}
+    - name: git-auth
+      secret:
+        secretName: "release-name-k8sci-git-auth"
+---
+# Source: k8sci/templates/tasks/github-run-command.yaml
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: release-name-k8sci-run-command-github
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  resources:
+    inputs:
+    - name: git-repo
+      type: git
+  params:
+    - name: org
+    - name: repo
+    - name: git_sha
+    - name: ref
+    - name: image
+    - name: commands
+    - name: statuses
+    - name: htmlurl
+    - name: pipelineName
+    - name: pipelineType
+  results:
+    - name: status
+    - name: description
+    - name: output
+  steps:
+    - name: post-pending-status-github
+      image: "$(params.image)"
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+          for status in "${STATUSES[@]}"
+          do
+            :
+            # pending,success,error,failure
+            # /repos/:owner/:repo/statuses/:sha
+            curl -X POST https://api.github.com/repos/$(params.org)/$(params.repo)/statuses/$(params.git_sha) \
+            -H "accept: application/json" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/json" -i -k -d "{\
+              \"context\": \"$status\",\
+              \"description\": \"pending...\",\
+              \"state\": \"pending\"
+            }"
+          done
+    - name: run
+      image: "$(params.image)"
+      workingDir: "/workspace/git-repo"
+      securityContext:
+        privileged: true
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      - name: COMMANDS
+        value: "$(params.commands)"
+      - name: GIT-REF
+        value: $(params.ref)
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          RESULT=0;
+          INDEX=0;
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+          declare -a COMMANDS
+          COMMANDS=($(params.commands))
+          for command in "${COMMANDS[@]}"
+          do
+             :
+             status=${STATUSES[$INDEX]};
+             ${command} &>> /tekton/home/output;
+             RESULT=$?;
+             [ $RESULT -ne 0 ] && [ "$status" != "" ] && echo "failure" > /tekton/home/status/${status} && break
+             [ $RESULT -eq 0 ] && [ "$status" != "" ] && echo "success" > /tekton/home/status/${status}
+             ((INDEX++))
+          done
+          [ $RESULT -eq 0 ] && echo "succeeded." > /tekton/home/description || echo "build failed." > /tekton/home/description;
+          cat /tekton/home/output;
+          exit 0;
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+      - mountPath: /var/lib/docker
+        name: dind-storage
+      - mountPath: /var/run/
+        name: dind-socket
+      - mountPath: /root/.ssh
+        name: ssh-creds
+    - name: post-commit-status-github
+      image: "$(params.image)"
+      env:
+      - name: GITHUB_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_USER
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITHUB_TOKEN
+      - name: GITEA_USER
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_USER
+      - name: GITEA_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: release-name-k8sci
+            key: GITEA_TOKEN
+      - name: PIPELINE_RUN
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['tekton.dev/pipelineRun']
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a STATUSES
+          STATUSES=($(params.statuses))
+          for status in "${STATUSES[@]}"
+          do
+            :
+            description="check passed."
+            state=$(cat /tekton/home/status/${status})
+            [ "$state" != "success" ] && description="check did not pass."
+
+            # pending,success,error,failure
+            # /repos/:owner/:repo/statuses/:sha
+            curl -X POST https://api.github.com/repos/$(params.org)/$(params.repo)/statuses/$(params.git_sha) \
+            -H "accept: application/json" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/json" -i -k -d "{\
+              \"context\": \"$status\",\
+              \"description\": \"$desription\",\
+              \"state\": \"$state\"
+            }"
+          done
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+    - name: slack-notify
+      image: "$(params.image)"
+      env:
+        - name: SLACK_WEBHOOK
+          valueFrom:
+            secretKeyRef:
+              name: release-name-k8sci
+              key: slackWebhook
+        - name: PIPELINE_RUN
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
+      workingDir: "/workspace/git-repo"
+      command:
+        - "bash"
+      args:
+        - "-cx"
+        - |
+          declare -a COMMANDS
+          COMMANDS=($(params.commands))
+          export DESCRIPTION=$(cat /tekton/home/description);
+          [ "$DESCRIPTION" != "succeeded." ] && export SYMBOL=":no_entry:" || export SYMBOL=":thumbsup:";
+          export SLACK_TITLE="${SYMBOL} github Pipeline: $(params.pipelineName) $(params.pipelineType)\n\nStatus: ${STATUS}\n\nRepo: <$(params.htmlurl)|$(params.org)/$(params.repo)>\n\n<https://dashboard.chart-example.local:<PORT>/#/namespaces/cicd/pipelineruns/${PIPELINE_RUN}|build information>";
+          export SLACK_MESSAGE="$(printf '%s\n' "${COMMANDS[@]}")\n $DESCRIPTION";
+          ## TODO SLACK API too picky with text - figure out how to do a snippet
+          # [ "$STATUS" != "success" ] && export SLACK_MESSAGE="\`\`\`$(cat /tekton/home/output | sed "s/\"/\\\"/g" | sed "s/'//g" | sed "s/\`/\\\`/g" )\`\`\`";
+          PAYLOAD=$( cat <<EOT
+          {
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "$SLACK_TITLE"
+                }
+              },
+              {
+                "type": "divider"
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "$SLACK_MESSAGE"
+                }
+              }
+            ]
+          }
+          EOT
+          );
+          curl -d "$PAYLOAD" -H "Content-Type: application/json" -X POST $SLACK_WEBHOOK
+
+      volumeMounts:
+      - mountPath: /tekton/home
+        name: home
+  sidecars:
+  - image: docker:18.05-dind
+    name: server
+    securityContext:
+      privileged: true
+    volumeMounts:
+      - mountPath: /var/lib/docker
+        name: dind-storage
+      - mountPath: /var/run/
+        name: dind-socket
+  - image: "$(params.image)"
+    name: init-ssh-creds
+    command:
+      - "sh"
+    args:
+      - "-c"
+      - |
+        cp /secretsDir/*  /root/.ssh
+        mv ~/.ssh/ssh-privatekey ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        mkdir -p /tekton/home/status
+        ssh-keyscan github.com >> ~/.ssh/known_hosts
+    volumeMounts:
+      - mountPath: /root/.ssh
+        name: ssh-creds
+      - mountPath: /secretsDir
+        name: git-auth
+      - mountPath: /tekton/home
+        name: home
+  volumes:
+    - name: home
+      emptyDir: {}
+    - name: dind-storage
+      emptyDir: {}
+    - name: dind-socket
+      emptyDir: {}
+    - name: ssh-creds
+      emptyDir: {}
+    - name: git-auth
+      secret:
+        secretName: "release-name-k8sci-git-auth"
+---
+# Source: k8sci/templates/triggerbindings/gitea-pr-trigger-binding.yaml
+apiVersion:  triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: release-name-k8sci-pr-gitea-tb
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.pull_request.head.sha)
+  - name: gitrepositorysshurl
+    value: $(body.repository.ssh_url)
+  - name: contenttype
+    value: $(header.Content-Type)
+  - name: repo
+    value: $(body.repository.name)
+  - name: org
+    value: $(body.repository.owner.login)
+  - name: ref
+    value: $(body.pull_request.head.ref)
+  - name: type
+    value: gitea
+  - name: htmlurl
+    value: $(body.repository.html_url)
+---
+# Source: k8sci/templates/triggerbindings/gitea-push-trigger-binding.yaml
+apiVersion:  triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: release-name-k8sci-push-gitea-tb
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.after)
+  - name: gitrepositorysshurl
+    value: $(body.repository.ssh_url)
+  - name: contenttype
+    value: $(header.Content-Type)
+  - name: repo
+    value: $(body.repository.name)
+  - name: org
+    value: $(body.repository.owner.login)
+  - name: ref
+    value: $(body.ref)
+  - name: type
+    value: gitea
+  - name: htmlurl
+    value: $(body.repository.html_url)
+---
+# Source: k8sci/templates/triggerbindings/github-pr-trigger-binding.yaml
+apiVersion:  triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: release-name-k8sci-pr-github-tb
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.pull_request.head.sha)
+  - name: gitrepositorysshurl
+    value: $(body.pull_request.head.repo.ssh_url)
+  - name: contenttype
+    value: $(header.Content-Type)
+  - name: repo
+    value: $(body.pull_request.base.repo.name)
+  - name: org
+    value: $(body.pull_request.base.repo.owner.login)
+  - name: ref
+    value: $(body.pull_request.head.ref)
+  - name: type
+    value: github
+  - name: htmlurl
+    value: $(body.pull_request.head.repo.html_url)
+---
+# Source: k8sci/templates/triggerbindings/github-push-trigger-binding.yaml
+apiVersion:  triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: release-name-k8sci-push-github-tb
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    value: $(body.head_commit.id)
+  - name: gitrepositorysshurl
+    value: $(body.repository.ssh_url)
+  - name: contenttype
+    value: $(header.Content-Type)
+  - name: repo
+    value: $(body.repository.name)
+  - name: org
+    value: $(body.repository.owner.name)
+  - name: ref
+    value: $(body.ref)
+  - name: type
+    value: github
+  - name: htmlurl
+    value: $(body.repository.html_url)
+---
+# Source: k8sci/templates/triggertemplates/cd-trigger-template.yaml
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: "release-name-k8sci-cd"
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    description: The git revision
+    default: master
+  - name: gitrepositorysshurl
+    description: "The git repo url"
+  - name: org
+    description: "The github/gitea org of the PR"
+  - name: repo
+    description: "The github/gitea repo of the PR"
+  - name: message
+    description: "Notification message text"
+    default: build
+  - name: ref
+    description: "git ref"
+  - name: image
+    description: "run image"
+  - name: ciCommands
+    description: "continuous integration command"
+  - name: ciStatuses
+    description: "continuous integration statuses"
+  - name: cdCommands
+    description: "continuous delivery command"
+  - name: cdStatuses
+    description: "continuous delivery statuses"
+  - name: type
+    description: "type of pipeline: ex gitea/github"
+  - name: htmlurl
+    description: repo url
+  - name: pipelineName
+    description: Name of the pipeline being run
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: cd-
+    spec:
+      serviceAccountName: "release-name-k8sci"
+      pipelineSpec:
+        resources:
+          - name: source-repo
+            type: git
+        tasks:
+          - name: runtask-cd
+            when:
+            - input: "$(tt.params.ref)"
+              operator: in
+              values: ["refs/heads/master", "refs/heads/main"]
+            params:
+              - name: org
+                value: $(tt.params.org)
+              - name: repo
+                value: $(tt.params.repo)
+              - name: git_sha
+                value: $(tt.params.gitrevision)
+              - name: ref
+                value: $(tt.params.ref)
+              - name: image
+                value: $(tt.params.image)
+              - name: commands
+                value: $(tt.params.cdCommands)
+              - name: statuses
+                value: $(tt.params.cdStatuses)
+              - name: htmlurl
+                value: $(tt.params.htmlurl)
+              - name: pipelineType
+                value: "Continuous Deployment"
+              - name: pipelineName
+                value: $(tt.params.pipelineName)
+            resources:
+              inputs:
+                - name: git-repo
+                  resource: source-repo
+            taskRef:
+              name: "release-name-k8sci-run-command-$(tt.params.type)"
+      resources:
+        - name: source-repo
+          resourceSpec:
+            type: git
+            params:
+            - name: revision
+              value: $(tt.params.gitrevision)
+            - name: url
+              value: $(tt.params.gitrepositorysshurl)
+---
+# Source: k8sci/templates/triggertemplates/ci-trigger-template.yaml
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: "release-name-k8sci-ci"
+  labels:
+    helm.sh/chart: k8sci-0.1.13
+    app.kubernetes.io/name: k8sci
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.15.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  params:
+  - name: gitrevision
+    description: The git revision
+    default: master
+  - name: gitrepositorysshurl
+    description: "The git repo url"
+  - name: org
+    description: "The github/gitea org of the PR"
+  - name: repo
+    description: "The github/gitea repo of the PR"
+  - name: message
+    description: "Notification message text"
+    default: build
+  - name: ref
+    description: "git ref"
+  - name: image
+    description: "run image"
+  - name: ciCommands
+    description: "continuous integration command"
+  - name: ciStatuses
+    description: "continuous integration statuses"
+  - name: cdCommands
+    description: "continuous delivery command"
+  - name: cdStatuses
+    description: "continuous delivery statuses"
+  - name: type
+    description: "type of pipeline: ex gitea/github"
+  - name: htmlurl
+    description: repo url
+  - name: pipelineName
+    description: Name of the pipeline being run
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: ci-
+    spec:
+      serviceAccountName: "release-name-k8sci"
+      pipelineSpec:
+        resources:
+          - name: source-repo
+            type: git
+        tasks:
+        - name: runtask-ci
+          when:
+          - input: "$(tt.params.ref)"
+            operator: notin
+            values: ["refs/heads/master", "refs/heads/main"]
+          params:
+            - name: org
+              value: $(tt.params.org)
+            - name: repo
+              value: $(tt.params.repo)
+            - name: git_sha
+              value: $(tt.params.gitrevision)
+            - name: ref
+              value: $(tt.params.ref)
+            - name: image
+              value: $(tt.params.image)
+            - name: commands
+              value: $(tt.params.ciCommands)
+            - name: statuses
+              value: $(tt.params.ciStatuses)
+            - name: htmlurl
+              value: $(tt.params.htmlurl)
+            - name: pipelineType
+              value: "Continuous Intgegration"
+            - name: pipelineName
+              value: $(tt.params.pipelineName)
+          resources:
+            inputs:
+              - name: git-repo
+                resource: source-repo
+          taskRef:
+            name: "release-name-k8sci-run-command-$(tt.params.type)"
+      resources:
+        - name: source-repo
+          resourceSpec:
+            type: git
+            params:
+            - name: revision
+              value: $(tt.params.gitrevision)
+            - name: url
+              value: $(tt.params.gitrepositorysshurl)

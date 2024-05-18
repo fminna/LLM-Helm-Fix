@@ -1,0 +1,309 @@
+---
+# Source: nxrm-ha-aws/templates/namespaces.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusrepo
+---
+# Source: nxrm-ha-aws/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nexus-repository-deployment-sa
+  namespace: nexusrepo
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/nxrm-nexus-role
+---
+# Source: nxrm-ha-aws/templates/nxrm-logback-tasklogfile-override.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nxrm-ha-aws-61.0.3.release-name-logback-tasklogfile-override
+  namespace: nexusrepo
+data:
+  logback-tasklogfile-appender-override.xml: |
+    <included>
+      <appender name="tasklogfile" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <File>${karaf.data}/log/tasks/allTasks.log</File>
+        <filter class="org.sonatype.nexus.pax.logging.TaskLogsFilter" />
+        <Append>true</Append>
+        <encoder class="org.sonatype.nexus.pax.logging.NexusLayoutEncoder">
+          <pattern>%d{"yyyy-MM-dd HH:mm:ss,SSSZ"} %-5p [%thread] %node %mdc{userId:-*SYSTEM} %c - %m%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+          <fileNamePattern>${karaf.data}/log/tasks/allTasks-%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+          <maxHistory>1</maxHistory>
+        </rollingPolicy>
+      </appender>
+    </included>
+---
+# Source: nxrm-ha-aws/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: "nxrm-ha-aws-61.0.3-release-name-ebs-storage"
+  namespace: nexusrepo
+provisioner: ebs.csi.aws.com
+parameters:
+  type: io1
+  fsType: "ext4"
+  iopsPerGB: "10"
+volumeBindingMode: WaitForFirstConsumer
+---
+# Source: nxrm-ha-aws/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nxrm-ha-aws-service
+  namespace: nexusrepo
+  labels:
+    app: nxrm
+spec:
+  type: NodePort
+  selector:
+    app: nxrm
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8081
+---
+# Source: nxrm-ha-aws/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nxrm-ha-aws-61-0-3-nxrm-statefulset
+  namespace: nexusrepo
+  labels:
+    app: nxrm
+spec:
+  replicas: 3
+  serviceName: "nxrm-ha-aws-61-0-3-release-name-nxrm-statefulset"
+  selector:
+    matchLabels:
+      app: nxrm
+  template:
+    metadata:
+      labels:
+        app: nxrm
+    spec:
+      serviceAccountName: nexus-repository-deployment-sa
+      initContainers:
+        # chown nexus-data to 'nexus' user and init log directories/files for a new pod
+        # otherwise the side car containers will crash a couple of times and backoff whilst waiting
+        # for nxrm-app to start and this increases the total start up time.
+        - name: chown-nexusdata-owner-to-nexus-and-init-log-dir
+          image: busybox:1.33.1
+          command: [/bin/sh]
+          args:
+            - -c
+            - >-
+              mkdir -p /nexus-data/etc/logback &&
+              mkdir -p /nexus-data/log/tasks &&
+              mkdir -p /nexus-data/log/audit &&
+              touch -a /nexus-data/log/tasks/allTasks.log &&
+              touch -a /nexus-data/log/audit/audit.log &&
+              touch -a /nexus-data/log/request.log &&
+              chown -R '200:200' /nexus-data
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: nxrm-app
+          image: sonatype/nexus3:3.58.1
+          securityContext:
+            runAsUser: 200
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          resources:
+            
+            limits:
+              cpu: 4
+              memory: 8Gi
+            requests:
+              cpu: 4
+              memory: 8Gi
+          env:
+            - name: DB_NAME
+              value: "nexus"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-db-secret
+                  key: db-password
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-db-secret
+                  key: db-user
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-db-secret
+                  key: db-host
+            - name: NEXUS_SECURITY_INITIAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nxrm-admin-secret
+                  key: nexus-admin-password
+            - name: NEXUS_SECURITY_RANDOMPASSWORD
+              value: "false"
+            - name: INSTALL4J_ADD_VM_PARAMS
+              value: "-Xms2703m -Xmx2703m -Dnexus.licenseFile=/nxrm-secrets/nxrm-license.lic \
+          -Dnexus.datastore.clustered.enabled=true -Djava.util.prefs.userRoot=${NEXUS_DATA}/javaprefs \
+          -Dnexus.datastore.nexus.jdbcUrl=jdbc:postgresql://${DB_HOST}:3306/${DB_NAME} \
+          -Dnexus.datastore.nexus.username=${DB_USER} \
+          -Dnexus.datastore.nexus.password=${DB_PASSWORD}"
+          volumeMounts:
+            - mountPath: /nxrm-secrets
+              name: nxrm-secrets
+            - name: nexus-data
+              mountPath: /nexus-data
+            - name: logback-tasklogfile-override
+              mountPath: /nexus-data/etc/logback/logback-tasklogfile-appender-override.xml
+              subPath: logback-tasklogfile-appender-override.xml
+        - name: request-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/request.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+        - name: audit-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/audit/audit.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+        - name: tasks-log
+          image: busybox:1.33.1
+          args: [/bin/sh, -c, 'tail -n+1 -F /nexus-data/log/tasks/allTasks.log']
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+          resources:
+            
+            limits:
+              cpu: "0.2"
+              memory: 512Mi
+            requests:
+              cpu: "0.1"
+              memory: 256Mi
+      volumes:
+        - name: nxrm-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: nxrm-ha-aws-61.0.3.release-name-secret
+              fsType: ext4
+        - name: logback-tasklogfile-override
+          configMap:
+            name: nxrm-ha-aws-61.0.3.release-name-logback-tasklogfile-override
+            items:
+              - key: logback-tasklogfile-appender-override.xml
+                path: logback-tasklogfile-appender-override.xml
+  volumeClaimTemplates:
+    - metadata:
+        name: nexus-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: "nxrm-ha-aws-61.0.3-release-name-ebs-storage"
+        resources:
+          requests:
+            storage: 100Gi
+---
+# Source: nxrm-ha-aws/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: nexusrepo
+  name: nxrm-ha-aws-61.0.3.release-name-ingress
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/subnets: subnet-1,subnet-2
+    kubernetes.io/ingress.class: alb
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nxrm-ha-aws-service
+                port:
+                  number: 80
+---
+# Source: nxrm-ha-aws/templates/external-dns.yml
+# comment out sa if it was previously created
+---
+# Source: nxrm-ha-aws/templates/namespaces.yaml
+---
+---
+# Source: nxrm-ha-aws/templates/serviceaccount.yaml
+---
+---
+# Source: nxrm-ha-aws/templates/secret.yaml
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  namespace: nexusrepo
+  name: nxrm-ha-aws-61.0.3.release-name-secret
+spec:
+  provider: aws
+  secretObjects:
+  - data:
+    - key: db-user
+      objectName: nxrm-db-user
+    - key: db-password
+      objectName: nxrm-db-password
+    - key: db-host
+      objectName: nxrm-db-host
+    secretName: nxrm-db-secret
+    type: Opaque
+  - data:
+    - key: nexus-admin-password
+      objectName: nxrm-admin-password
+    secretName: nxrm-admin-secret
+    type: Opaque
+  parameters:
+    objects:  |
+        - objectName: "arn:aws:secretsmanager:us-east-1:000000000000:secret:nxrm-nexus-license"
+          objectAlias: "nxrm-license.lic"
+        - objectName: "arn:aws:secretsmanager:us-east-1:000000000000:secret:nxrmrds-cred-nexus"
+          jmesPath:
+            - path: "username"
+              objectAlias: "nxrm-db-user"
+            - path: "password"
+              objectAlias: "nxrm-db-password"
+            - path: "host"
+              objectAlias: "nxrm-db-host"
+        - objectName: "arn:aws:secretsmanager:us-east-1:000000000000:secret:admin-nxrm-password"
+          jmesPath:
+           - path: "admin_nxrm_password"
+             objectAlias: "nxrm-admin-password"

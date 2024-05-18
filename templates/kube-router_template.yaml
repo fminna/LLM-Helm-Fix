@@ -1,0 +1,234 @@
+---
+# Source: kube-router/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kube-router
+  labels:
+    helm.sh/chart: kube-router-1.10.0
+    app.kubernetes.io/name: kube-router
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.6.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: kube-router/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kube-router-cfg
+  labels:
+    helm.sh/chart: kube-router-1.10.0
+    app.kubernetes.io/name: kube-router
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.6.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  cni-conf.json: |
+    {
+      "cniVersion":"0.3.0",
+      "name":"mynet",
+      "plugins":[
+          {
+            "name":"kubernetes",
+            "type":"bridge",
+            "bridge":"kube-bridge",
+            "isDefaultGateway":true,
+            "hairpinMode":true,
+            "ipam":{
+                "type":"host-local"
+            }
+          },
+          {
+            "type":"portmap",
+            "capabilities":{
+                "snat":true,
+                "portMappings":true
+            }
+          }
+      ]
+    }
+---
+# Source: kube-router/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-kube-router
+  labels:
+    helm.sh/chart: kube-router-1.10.0
+    app.kubernetes.io/name: kube-router
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.6.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+    - ""
+    resources:
+      - namespaces
+      - pods
+      - services
+      - nodes
+      - endpoints
+    verbs:
+      - list
+      - get
+      - watch
+  - apiGroups:
+    - "networking.k8s.io"
+    resources:
+      - networkpolicies
+    verbs:
+      - list
+      - get
+      - watch
+  - apiGroups:
+    - extensions
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: kube-router/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-kube-router
+  labels:
+    helm.sh/chart: kube-router-1.10.0
+    app.kubernetes.io/name: kube-router
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.6.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-kube-router
+subjects:
+- kind: ServiceAccount
+  name: release-name-kube-router
+  namespace: default
+---
+# Source: kube-router/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-kube-router
+  labels:
+    helm.sh/chart: kube-router-1.10.0
+    app.kubernetes.io/name: kube-router
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.6.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-router
+      app.kubernetes.io/instance: release-name
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: kube-router-1.10.0
+        app.kubernetes.io/name: kube-router
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "v1.6.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      priorityClassName: system-node-critical
+      serviceAccountName: release-name-kube-router
+      containers:
+      - name: kube-router
+        image: "docker.io/cloudnativelabs/kube-router:v1.6.0"
+        imagePullPolicy: IfNotPresent
+        args:
+        - "--run-router=true"
+        - "--run-firewall=true"
+        - "--run-service-proxy=false"
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: KUBE_ROUTER_CNI_CONF_FILE
+          value: /etc/cni/net.d/10-kuberouter.conflist
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 20244
+          initialDelaySeconds: 10
+          periodSeconds: 3
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - neighbors="$(/usr/local/bin/gobgp neighbor 2>/dev/null | tail -n +2)"; test $(echo
+              "$neighbors" | wc -l) -ge 1; test $(echo "$neighbors" | grep -v ' Establ ' | wc
+              -l) -eq 0
+          initialDelaySeconds: 5
+          periodSeconds: 3
+        resources:
+            limits:
+              cpu: 250m
+              memory: 250Mi
+            requests:
+              cpu: 250m
+              memory: 250Mi
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: cni-conf-dir
+          mountPath: /etc/cni/net.d
+        - name: xtables-lock
+          mountPath: /run/xtables.lock
+          readOnly: false
+      initContainers:
+      - name: configure-cni
+        image: "docker.io/cloudnativelabs/kube-router:v1.6.0"
+        imagePullPolicy: Always
+        command:
+        - /bin/sh
+        - -c
+        - set -e -x;
+          if [ ! -f /etc/cni/net.d/10-kuberouter.conflist ]; then
+            if [ -f /etc/cni/net.d/*.conf ]; then
+              rm -f /etc/cni/net.d/*.conf;
+            fi;
+            TMP=/etc/cni/net.d/.tmp-kuberouter-cfg;
+            cp /etc/kube-router/cni-conf.json ${TMP};
+            mv ${TMP} /etc/cni/net.d/10-kuberouter.conflist;
+          fi;
+        volumeMounts:
+        - mountPath: /etc/cni/net.d
+          name: cni-conf-dir
+        - mountPath: /etc/kube-router
+          name: kube-router-cfg
+      hostNetwork: true
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      volumes:
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: cni-conf-dir
+        hostPath:
+          path: /etc/cni/net.d
+      - name: kube-router-cfg
+        configMap:
+          name: release-name-kube-router-cfg
+      - name: xtables-lock
+        hostPath:
+          path: /run/xtables.lock
+          type: FileOrCreate

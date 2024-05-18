@@ -1,0 +1,178 @@
+---
+# Source: bankroach/templates/configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bankroach
+  labels:
+    
+    helm.sh/chart: bankroach-0.1.1
+    app.kubernetes.io/name: bankroach
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.0.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  NUM_ACCOUNTS: "5"
+  INITIAL_BALANCE: "1000"
+  SCHEDULE_INTERVAL_SECONDS: "5"
+  NUM_WORKERS: "10"
+  ENV: local
+  LOG_LEVEL: info
+---
+# Source: bankroach/templates/podsql.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bankroach-secure-sql-client
+  labels:
+    
+    helm.sh/chart: bankroach-0.1.1
+    app.kubernetes.io/name: bankroach
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.0.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  initContainers:
+    - name: wait-for-cockroachdb
+      image: postgres:9.6.5
+      command:
+        - 'sh'
+        - '-c'
+        - 'until pg_isready -h bankroach-cockroachdb -p 26257; 
+        do echo waiting for cockroachdb; sleep 2; done;'
+  containers:
+    - name: bankroach
+      image: "cockroachdb/cockroach:v21.1.7"
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+      - name: certs
+        mountPath: /certs
+      command:
+        - 'sh'
+        - '-c'
+        - 'while true; do sleep 30; done;'
+  terminationGracePeriodSeconds: 0
+  volumes:
+  - name: certs
+    projected:
+      sources:
+        - secret:
+            name: bankroach-cockroachdb-node
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - secret:
+            name: bankroach-cockroachdb-root
+            items:
+              - key: tls.crt
+                path: client.root.crt
+              - key: tls.key
+                path: client.root.key
+      defaultMode: 256
+---
+# Source: bankroach/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bankroach
+  labels:
+    
+    helm.sh/chart: bankroach-0.1.1
+    app.kubernetes.io/name: bankroach
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.0.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      
+      app.kubernetes.io/name: bankroach
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        
+        app.kubernetes.io/name: bankroach
+        app.kubernetes.io/instance: release-name
+    spec:
+      initContainers:
+        - name: wait-for-cockroachdb
+          image: postgres:9.6.5
+          command:
+            - 'sh'
+            - '-c'
+            - 'until pg_isready -h bankroach-cockroachdb -p 26257; 
+            do echo waiting for cockroachdb; sleep 2; done;'
+      containers:
+        - name: bankroach
+          image: "ghcr.io/mmontes11/bankroach:v0.0.2"
+          imagePullPolicy: IfNotPresent
+          
+          volumeMounts:
+          - name: certs
+            mountPath: /certs
+          
+          envFrom:
+            - configMapRef:
+                name: bankroach
+            - secretRef:
+                name: bankroach
+          
+      
+      volumes:
+      - name: certs
+        projected:
+          sources:
+            - secret:
+                name: bankroach-cockroachdb-node
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            - secret:
+                name: bankroach-cockroachdb-root
+                items:
+                  - key: tls.crt
+                    path: client.root.crt
+                  - key: tls.key
+                    path: client.root.key
+          defaultMode: 256
+---
+# Source: bankroach/templates/crdbcluster.yaml
+apiVersion: crdb.cockroachlabs.com/v1alpha1
+kind: CrdbCluster
+metadata:
+  name: bankroach-cockroachdb
+  labels:
+    
+    helm.sh/chart: bankroach-0.1.1
+    app.kubernetes.io/name: bankroach
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.0.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  
+  image:
+    name: "cockroachdb/cockroach:v21.1.7"
+  
+  dataStore:
+    pvc:
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+        volumeMode: Filesystem
+  
+  resources:
+    
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 1
+      memory: 2Gi
+  
+  tlsEnabled: true
+  nodes: 3

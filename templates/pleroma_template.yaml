@@ -1,0 +1,170 @@
+---
+# Source: pleroma/templates/common.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-pleroma-config
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: pleroma
+    app.kubernetes.io/version: v0.1.4
+    helm.sh/chart: pleroma-0.1.9
+data:
+  config.exs: |+
+    import Config
+    
+    config :pleroma, Pleroma.Web.Endpoint,
+        url: [host: System.get_env("DOMAIN", "localhost"), scheme: "https", port: 443],
+        http: [ip: {0, 0, 0, 0}, port: 4000]
+    
+    config :pleroma, :instance,
+        name: System.get_env("INSTANCE_NAME", "Pleroma"),
+        email: System.get_env("ADMIN_EMAIL"),
+        notify_email: System.get_env("NOTIFY_EMAIL"),
+        limit: 5000,
+        registrations_open: System.get_env("REGISTRATIONS_OPEN", "false") == "true",
+        federating: System.get_env("FEDERATING", "true") == "true",
+        healthcheck: true
+    
+    config :pleroma, :media_proxy,
+        enabled: System.get_env("MEDIA_PROXY_ENABLED", "false") == "true",
+        redirect_on_failure: true,
+        base_url: System.get_env("MEDIA_PROXY_BASE_URL")
+    
+    config :pleroma, Pleroma.Repo,
+        adapter: Ecto.Adapters.Postgres,
+        hostname: System.get_env("DB_HOST"),
+        port: System.get_env("DB_PORT", "5432"),
+        ssl: System.get_env("DB_SSL", "prefer") != "disable",  # cast to bool
+        database: System.get_env("DB_NAME"),
+        username: System.get_env("DB_USER"),
+        password: System.fetch_env!("DB_PASS"),
+        pool_size: 10
+    
+    # Configure web push notifications
+    config :web_push_encryption, :vapid_details, subject: "mailto:#{System.get_env("NOTIFY_EMAIL")}"
+    
+    config :pleroma, :database, rum_enabled: false
+    config :pleroma, :instance, static_dir: "/var/lib/pleroma/static"
+    config :pleroma, Pleroma.Uploaders.Local, uploads: "/var/lib/pleroma/uploads"
+---
+# Source: pleroma/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pleroma
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: pleroma
+    app.kubernetes.io/version: v0.1.4
+    helm.sh/chart: pleroma-0.1.9
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/name: pleroma
+    app.kubernetes.io/instance: release-name
+---
+# Source: pleroma/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pleroma
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: pleroma
+    app.kubernetes.io/version: v0.1.4
+    helm.sh/chart: pleroma-0.1.9
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pleroma
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        
+        checksum/config: 728c95e2b4323e6d263b21eadbcf936b217a3a5c609b6ecb7afe48d16099afbf
+      labels:
+        app.kubernetes.io/name: pleroma
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: default
+      automountServiceAccountToken: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      containers:
+        - name: release-name-pleroma
+          image: "ghcr.io/mjohnson9/docker-pleroma:v0.1.4"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_HOST
+              value: release-name-postgresql
+            - name: DB_NAME
+              value: pleroma
+            - name: DB_PASS
+              value: changeme
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: pleroma
+            - name: DOMAIN
+              value: localhost
+            - name: FEDERATING
+              value: "true"
+            - name: HOME
+              value: /pleroma
+            - name: INSTANCE_NAME
+              value: Pleroma
+            - name: MEDIA_PROXY_ENABLED
+              value: "false"
+            - name: REGISTRATIONS_OPEN
+              value: "false"
+            - name: TZ
+              value: UTC
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /var/lib/pleroma/config.exs
+              subPath: config.exs
+          livenessProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 0
+            failureThreshold: 3
+            timeoutSeconds: 1
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 0
+            failureThreshold: 3
+            timeoutSeconds: 1
+            periodSeconds: 10
+          startupProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 0
+            failureThreshold: 30
+            timeoutSeconds: 1
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: pleroma-config

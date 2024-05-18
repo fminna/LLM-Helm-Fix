@@ -1,0 +1,240 @@
+---
+# Source: teleport-ent-proxy/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teleport-proxy
+      app.kubernetes.io/component: "proxy"
+      app.kubernetes.io/instance: release-name
+  maxUnavailable: 50%
+---
+# Source: teleport-ent-proxy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: teleport-ent-proxy/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  teleport.yaml: ""
+---
+# Source: teleport-ent-proxy/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app: teleport-proxy
+    chart: teleport-ent-proxy-0.4.0
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - users
+  - groups
+  - serviceaccounts
+  verbs:
+  - impersonate
+---
+# Source: teleport-ent-proxy/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app: teleport-proxy
+    chart: teleport-ent-proxy-0.4.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-teleport-proxy
+subjects:
+- kind: ServiceAccount
+  name: release-name-teleport-proxy
+  namespace: default
+---
+# Source: teleport-ent-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+    - port: 443
+      targetPort: 3080
+      protocol: TCP
+      name: portal
+    - port: 3080
+      targetPort: 3080
+      protocol: TCP
+      name: console
+    - port: 3023
+      targetPort: 3023
+      protocol: TCP
+      name: ssh
+    - port: 3024
+      targetPort: 3024
+      protocol: TCP
+      name: tunnels
+    - port: 3026
+      targetPort: 3026
+      protocol: TCP
+      name: kubernetes
+  selector:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: "proxy"
+---
+# Source: teleport-ent-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-teleport-proxy
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50%
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teleport-proxy
+      app.kubernetes.io/component: "proxy"
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: teleport-proxy
+        app.kubernetes.io/component: "proxy"
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      serviceAccountName: release-name-teleport-proxy
+      containers:
+        - name: teleport-proxy
+          image: "quay.io/gravitational/teleport-ent:4.0.9"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --roles=proxy
+            - --diag-addr=0.0.0.0:3000
+          env:
+          # See https://gravitational.com/teleport/docs/admin-guide/#ports
+          ports:
+            - name: ssh
+              containerPort: 3023
+              protocol: TCP
+            - name: tunnels
+              containerPort: 3024
+              protocol: TCP
+            - name: kubernetes
+              containerPort: 3026
+              protocol: TCP
+            - name: console
+              containerPort: 3080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: storage
+              mountPath: "/var/lib/teleport"
+            - mountPath: /etc/teleport
+              name: config
+              readOnly: true
+            - mountPath: /etc/teleport/certs
+              name: certificates
+              readOnly: true
+          resources:
+            {}
+      volumes:
+        - name: storage
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: "release-name-teleport-proxy"
+        - name: certificates
+          secret:
+            secretName: "release-name-teleport-proxy-tls"
+---
+# Source: teleport-ent-proxy/templates/certificate.yaml
+apiVersion: certmanager.k8s.io/v1alpha1
+kind: Certificate
+metadata:
+  name: release-name-teleport-proxy
+  namespace: teleport
+  labels:
+    app.kubernetes.io/name: teleport-proxy
+    app.kubernetes.io/component: "proxy"
+    helm.sh/chart: teleport-ent-proxy-0.4.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  secretName: "release-name-teleport-proxy-tls"
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  commonName: ''
+  acme:
+    config:
+    - http01:
+        ingressClass: secondary
+      domains:
+      - ''

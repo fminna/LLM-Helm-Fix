@@ -1,0 +1,1125 @@
+---
+# Source: pretix/charts/postgresql/templates/primary/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+    app.kubernetes.io/component: primary
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+    - ports:
+        - port: 5432
+---
+# Source: pretix/charts/redis/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+    # Allow inbound connections
+    - ports:
+        - port: 6379
+---
+# Source: pretix/charts/postgresql/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+automountServiceAccountToken: false
+---
+# Source: pretix/charts/redis/templates/master/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: false
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+---
+# Source: pretix/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+type: Opaque
+data:
+  postgres-password: "c3VwZXJzZWN1cmVhZG1pbnBhc3N3b3Jk"
+  password: "cHJldGl4"
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: pretix/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: pretix/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: pretix/charts/redis/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--protected-mode" "no")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: pretix/templates/pretix-data-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-pretix-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: pretix/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+    app.kubernetes.io/component: primary
+  annotations:
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: pretix/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: pretix/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+---
+# Source: pretix/charts/redis/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master
+---
+# Source: pretix/templates/pretix-web-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pretix
+  labels:
+    helm.sh/chart: pretix-2024.4.0
+    app.kubernetes.io/name: pretix
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - name: "8000"
+      port: 8000
+      targetPort: 80
+  selector:
+    app: release-name-pretix
+    service: web
+---
+# Source: pretix/templates/pretix-web-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pretix-web
+  labels:
+    app: release-name-pretix
+    service: web
+    helm.sh/chart: pretix-2024.4.0
+    app.kubernetes.io/name: pretix
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-pretix
+      service: web
+  template:
+    metadata:
+      labels:
+        app: release-name-pretix
+        service: web
+    spec:
+      containers:
+      - name: pretix-web
+        image: pretix/standalone:2024.4.0
+        imagePullPolicy: IfNotPresent
+        imagePullSecrets:
+        command: ["pretix"]
+        args: ["web"]
+        env:
+        - name: AUTOMIGRATE # Migrations are handled by helm hooks in pretix-migrate.yaml
+          value: "skip"
+        - name: PRETIX_CELERY_BACKEND
+          value: "redis://pretix-redis-master/1"
+        - name: PRETIX_CELERY_BROKER
+          value: "redis://pretix-redis-master/2"
+        - name: PRETIX_DATABASE_BACKEND
+          value: "postgresql"
+        - name: PRETIX_DATABASE_HOST
+          value: "pretix-postgresql"
+        - name: PRETIX_DATABASE_NAME
+          value: "pretix"
+        - name: PRETIX_DATABASE_PASSWORD
+          value: "pretix"
+        - name: PRETIX_DATABASE_USER
+          value: "pretix"
+        - name: PRETIX_MAIL_FROM
+          value: "test@example.com"
+        - name: PRETIX_MAIL_HOST
+          value: 
+        - name: PRETIX_MAIL_PASSWORD
+          value: 
+        - name: PRETIX_MAIL_PORT
+          value: "587"
+        - name: PRETIX_MAIL_TLS
+          value: "true"
+        - name: PRETIX_MAIL_USER
+          value: 
+        - name: PRETIX_PRETIX_CURRENCY
+          value: "EUR"
+        - name: PRETIX_PRETIX_DATADIR
+          value: "/data"
+        - name: PRETIX_PRETIX_INSTANCE_NAME
+          value: "Pretix Helm"
+        - name: PRETIX_PRETIX_TRUST_X_FORWARDED_FOR
+          value: "true"
+        - name: PRETIX_PRETIX_TRUST_X_FORWARDED_PROTO
+          value: "true"
+        - name: PRETIX_PRETIX_URL
+          value: "http://localhost"
+        - name: PRETIX_REDIS_LOCATION
+          value: "redis://pretix-redis-master/0"
+        - name: PRETIX_REDIS_SESSIONS
+          value: "true"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: pretix-data
+          mountPath: /data
+      volumes:
+      - name: pretix-data
+        persistentVolumeClaim:
+          claimName: release-name-pretix-data
+---
+# Source: pretix/templates/pretix-worker-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pretix-worker
+  labels:
+    app: release-name-pretix
+    service: worker
+    helm.sh/chart: pretix-2024.4.0
+    app.kubernetes.io/name: pretix
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-pretix
+      service: worker
+  template:
+    metadata:
+      labels:
+        app: release-name-pretix
+        service: worker
+    spec:
+      containers:
+      - name: pretix-worker
+        image: pretix/standalone:2024.4.0
+        imagePullPolicy: IfNotPresent
+        imagePullSecrets:
+        command: ["pretix"]
+        args: ["taskworker"]
+        env:
+        - name: AUTOMIGRATE # Migrations are handled by helm hooks in pretix-migrate.yaml
+          value: "skip"
+        - name: PRETIX_CELERY_BACKEND
+          value: "redis://pretix-redis-master/1"
+        - name: PRETIX_CELERY_BROKER
+          value: "redis://pretix-redis-master/2"
+        - name: PRETIX_DATABASE_BACKEND
+          value: "postgresql"
+        - name: PRETIX_DATABASE_HOST
+          value: "pretix-postgresql"
+        - name: PRETIX_DATABASE_NAME
+          value: "pretix"
+        - name: PRETIX_DATABASE_PASSWORD
+          value: "pretix"
+        - name: PRETIX_DATABASE_USER
+          value: "pretix"
+        - name: PRETIX_MAIL_FROM
+          value: "test@example.com"
+        - name: PRETIX_MAIL_HOST
+          value: 
+        - name: PRETIX_MAIL_PASSWORD
+          value: 
+        - name: PRETIX_MAIL_PORT
+          value: "587"
+        - name: PRETIX_MAIL_TLS
+          value: "true"
+        - name: PRETIX_MAIL_USER
+          value: 
+        - name: PRETIX_PRETIX_CURRENCY
+          value: "EUR"
+        - name: PRETIX_PRETIX_DATADIR
+          value: "/data"
+        - name: PRETIX_PRETIX_INSTANCE_NAME
+          value: "Pretix Helm"
+        - name: PRETIX_PRETIX_TRUST_X_FORWARDED_FOR
+          value: "true"
+        - name: PRETIX_PRETIX_TRUST_X_FORWARDED_PROTO
+          value: "true"
+        - name: PRETIX_PRETIX_URL
+          value: "http://localhost"
+        - name: PRETIX_REDIS_LOCATION
+          value: "redis://pretix-redis-master/0"
+        - name: PRETIX_REDIS_SESSIONS
+          value: "true"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: pretix-data
+          mountPath: /data
+      volumes:
+      - name: pretix-data
+        persistentVolumeClaim:
+          claimName: release-name-pretix-data
+---
+# Source: pretix/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.2.0
+    helm.sh/chart: postgresql-15.1.2
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/version: 16.2.0
+        helm.sh/chart: postgresql-15.1.2
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: release-name-postgresql
+      
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:16.2.0-debian-12-r8
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "pretix"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: password
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "pretix"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "pretix" -d "dbname=pretix" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "pretix" -d "dbname=pretix" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 1024Mi
+              memory: 192Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          volumeMounts:
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+            - name: empty-dir
+              mountPath: /opt/bitnami/postgresql/conf
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /opt/bitnami/postgresql/tmp
+              subPath: app-tmp-dir
+            - name: empty-dir
+              mountPath: /opt/bitnami/postgresql/logs
+              subPath: app-logs-dir
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: empty-dir
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: pretix/charts/redis/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.4
+    helm.sh/chart: redis-19.0.1
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: master
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/version: 7.2.4
+        helm.sh/chart: redis-19.0.1
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 86bcc953bb473748a3d3dc60b7c11f34e60c93519234d4c37f42e22ada559d47
+        checksum/health: aff24913d801436ea469d8d374b2ddb3ec4c43ee7ab24663d5f8ff1a1b6991a9
+        checksum/scripts: 43cdf68c28f3abe25ce017a82f74dbf2437d1900fd69df51a55a3edf6193d141
+        checksum/secret: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      serviceAccountName: release-name-redis-master
+      automountServiceAccountToken: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.2.4-debian-12-r9
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 1024Mi
+              memory: 192Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: empty-dir
+              mountPath: /opt/bitnami/redis/etc/
+              subPath: app-conf-dir
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: empty-dir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: pretix/templates/pretix-cron.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-pretix-cron
+  labels:
+    helm.sh/chart: pretix-2024.4.0
+    app.kubernetes.io/name: pretix
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+            restartPolicy: OnFailure
+            volumes:
+            - name: pretix-data
+              persistentVolumeClaim:
+                claimName: release-name-pretix-data
+            containers:
+            - name: pretix-cron
+              image: pretix/standalone:2024.4.0
+              imagePullPolicy: IfNotPresent
+              imagePullSecrets:
+              command: ["pretix"]
+              args: ["cron"]
+              volumeMounts:
+              - name: pretix-data
+                mountPath: /data
+              env:
+              - name: PRETIX_CELERY_BACKEND
+                value: "redis://pretix-redis-master/1"
+              - name: PRETIX_CELERY_BROKER
+                value: "redis://pretix-redis-master/2"
+              - name: PRETIX_DATABASE_BACKEND
+                value: "postgresql"
+              - name: PRETIX_DATABASE_HOST
+                value: "pretix-postgresql"
+              - name: PRETIX_DATABASE_NAME
+                value: "pretix"
+              - name: PRETIX_DATABASE_PASSWORD
+                value: "pretix"
+              - name: PRETIX_DATABASE_USER
+                value: "pretix"
+              - name: PRETIX_MAIL_FROM
+                value: "test@example.com"
+              - name: PRETIX_MAIL_HOST
+                value: 
+              - name: PRETIX_MAIL_PASSWORD
+                value: 
+              - name: PRETIX_MAIL_PORT
+                value: "587"
+              - name: PRETIX_MAIL_TLS
+                value: "true"
+              - name: PRETIX_MAIL_USER
+                value: 
+              - name: PRETIX_PRETIX_CURRENCY
+                value: "EUR"
+              - name: PRETIX_PRETIX_DATADIR
+                value: "/data"
+              - name: PRETIX_PRETIX_INSTANCE_NAME
+                value: "Pretix Helm"
+              - name: PRETIX_PRETIX_TRUST_X_FORWARDED_FOR
+                value: "true"
+              - name: PRETIX_PRETIX_TRUST_X_FORWARDED_PROTO
+                value: "true"
+              - name: PRETIX_PRETIX_URL
+                value: "http://localhost"
+              - name: PRETIX_REDIS_LOCATION
+                value: "redis://pretix-redis-master/0"
+              - name: PRETIX_REDIS_SESSIONS
+                value: "true"
+---
+# Source: pretix/templates/pretix-migrate.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-pretix-migrate
+  labels:
+    helm.sh/chart: pretix-2024.4.0
+    app.kubernetes.io/name: pretix
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.4.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: hook-succeeded
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+      - name: pretix-data
+        persistentVolumeClaim:
+          claimName: release-name-pretix-data
+      containers:
+      - name: pretix-migrate
+        image: pretix/standalone:2024.4.0
+        imagePullPolicy: IfNotPresent
+        imagePullSecrets:
+        command: ["pretix"]
+        args: ["migrate"]
+        volumeMounts:
+        - name: pretix-data
+          mountPath: /data
+        env:
+            - name: PRETIX_CELERY_BACKEND
+              value: "redis://pretix-redis-master/1"
+            - name: PRETIX_CELERY_BROKER
+              value: "redis://pretix-redis-master/2"
+            - name: PRETIX_DATABASE_BACKEND
+              value: "postgresql"
+            - name: PRETIX_DATABASE_HOST
+              value: "pretix-postgresql"
+            - name: PRETIX_DATABASE_NAME
+              value: "pretix"
+            - name: PRETIX_DATABASE_PASSWORD
+              value: "pretix"
+            - name: PRETIX_DATABASE_USER
+              value: "pretix"
+            - name: PRETIX_MAIL_FROM
+              value: "test@example.com"
+            - name: PRETIX_MAIL_HOST
+              value: 
+            - name: PRETIX_MAIL_PASSWORD
+              value: 
+            - name: PRETIX_MAIL_PORT
+              value: "587"
+            - name: PRETIX_MAIL_TLS
+              value: "true"
+            - name: PRETIX_MAIL_USER
+              value: 
+            - name: PRETIX_PRETIX_CURRENCY
+              value: "EUR"
+            - name: PRETIX_PRETIX_DATADIR
+              value: "/data"
+            - name: PRETIX_PRETIX_INSTANCE_NAME
+              value: "Pretix Helm"
+            - name: PRETIX_PRETIX_TRUST_X_FORWARDED_FOR
+              value: "true"
+            - name: PRETIX_PRETIX_TRUST_X_FORWARDED_PROTO
+              value: "true"
+            - name: PRETIX_PRETIX_URL
+              value: "http://localhost"
+            - name: PRETIX_REDIS_LOCATION
+              value: "redis://pretix-redis-master/0"
+            - name: PRETIX_REDIS_SESSIONS
+              value: "true"

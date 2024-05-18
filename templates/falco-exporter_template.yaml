@@ -1,0 +1,141 @@
+---
+# Source: falco-exporter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-falco-exporter
+  labels:
+    app.kubernetes.io/name: falco-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.8.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: falco-exporter-0.11.0
+  namespace: default
+---
+# Source: falco-exporter/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-falco-exporter
+  annotations:
+    prometheus.io/port: "9376"
+    prometheus.io/scrape: "true"
+  labels:
+    app.kubernetes.io/name: falco-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.8.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: falco-exporter-0.11.0
+  namespace: default
+spec:
+  clusterIP: None
+  type: ClusterIP
+  ports:
+    - port: 9376
+      targetPort: 9376
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: falco-exporter
+    app.kubernetes.io/instance: release-name
+---
+# Source: falco-exporter/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-falco-exporter
+  labels:
+    app.kubernetes.io/name: falco-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.8.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: falco-exporter-0.11.0
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falco-exporter
+      app.kubernetes.io/instance: release-name
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: falco-exporter
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-falco-exporter
+      securityContext:
+        {}
+      containers:
+        - name: falco-exporter
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          image: "docker.io/falcosecurity/falco-exporter:0.8.3"
+          imagePullPolicy: IfNotPresent
+          args:
+            - /usr/bin/falco-exporter
+            - --client-socket=unix:///run/falco/falco.sock
+            - --timeout=2m
+            - --listen-address=0.0.0.0:9376
+          ports:
+            - name: metrics
+              containerPort: 9376
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+            periodSeconds: 15          
+            httpGet:
+              path: /liveness
+              port: 19376
+          readinessProbe:
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+            periodSeconds: 15
+            httpGet:
+              path: /readiness
+              port: 19376
+          resources:
+            {}
+          volumeMounts:
+            - mountPath: /run/falco
+              name: falco-socket-dir
+              readOnly: true
+      volumes:
+        - name: falco-socket-dir
+          hostPath:
+            path: /run/falco
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+---
+# Source: falco-exporter/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-falco-exporter-test-connection"
+  labels:
+    app.kubernetes.io/name: falco-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.8.3"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: falco-exporter-0.11.0
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-falco-exporter:9376/metrics']
+  restartPolicy: Never

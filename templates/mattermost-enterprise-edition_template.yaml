@@ -1,0 +1,1309 @@
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/post-install-prometheus-metrics-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "release-name-minio"
+  namespace: "default"
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  accesskey: "bWF0dGVybW9zdGFkbWlu"
+  secretkey: "bWF0dGVybW9zdGFkbWlu"
+---
+# Source: mattermost-enterprise-edition/charts/mysqlha/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mysqlha
+  labels:
+    app: release-name-mysqlha
+    chart: "mysqlha-2.0.0"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  mysql-root-password:  "cm9vdHBhc3N3ZA=="
+  mysql-password: "cGFzc3dk"
+  mysql-replication-password: "eDBsdDE4R3B1ZGZo"
+---
+# Source: mattermost-enterprise-edition/templates/secret-mattermost-dbsecret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mattermost-enterprise-edition-mattermost-dbsecret
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+type: Opaque
+data:
+  mattermost.dbsecret: bXlzcWw6Ly9tbXVzZXI6cGFzc3dkQHRjcChyZWxlYXNlLW5hbWUtbXlzcWxoYS0wLnJlbGVhc2UtbmFtZS1teXNxbGhhOjMzMDYpL21hdHRlcm1vc3Q/Y2hhcnNldD11dGY4bWI0LHV0ZjgmcmVhZFRpbWVvdXQ9MzBzJndyaXRlVGltZW91dD0zMHM=
+---
+# Source: mattermost-enterprise-edition/templates/secret-mattermost-license.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-mattermost-enterprise-edition-mattermost-license
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+type: Opaque
+data:
+  mattermost.mattermost-license: "VEhJUyBTVFJJTkcgU0hPVUxEIEJFIFJFUExBQ0VEIFdJVEggVEhFIENPTlRFTlRTIE9GIFlPVVIgTElDRU5TRSBGSUxF"
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+data:
+  initialize: |-
+    #!/bin/sh
+    set -e ; # Have script exit in the event of a failed command.
+    MC_CONFIG_DIR="/etc/minio/mc/"
+    MC="/usr/bin/mc --config-dir ${MC_CONFIG_DIR}"
+    
+    # connectToMinio
+    # Use a check-sleep-check loop to wait for Minio service to be available
+    connectToMinio() {
+      SCHEME=$1
+      ATTEMPTS=0 ; LIMIT=29 ; # Allow 30 attempts
+      set -e ; # fail if we can't read the keys.
+      ACCESS=$(cat /config/accesskey) ; SECRET=$(cat /config/secretkey) ;
+      set +e ; # The connections to minio are allowed to fail.
+      echo "Connecting to Minio server: $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT" ;
+      MC_COMMAND="${MC} config host add myminio $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT $ACCESS $SECRET" ;
+      $MC_COMMAND ;
+      STATUS=$? ;
+      until [ $STATUS = 0 ]
+      do
+        ATTEMPTS=`expr $ATTEMPTS + 1` ;
+        echo \"Failed attempts: $ATTEMPTS\" ;
+        if [ $ATTEMPTS -gt $LIMIT ]; then
+          exit 1 ;
+        fi ;
+        sleep 2 ; # 1 second intervals between attempts
+        $MC_COMMAND ;
+        STATUS=$? ;
+      done ;
+      set -e ; # reset `e` as active
+      return 0
+    }
+    
+    # checkBucketExists ($bucket)
+    # Check if the bucket exists, by using the exit code of `mc ls`
+    checkBucketExists() {
+      BUCKET=$1
+      CMD=$(${MC} ls myminio/$BUCKET > /dev/null 2>&1)
+      return $?
+    }
+    
+    # createBucket ($bucket, $policy, $purge)
+    # Ensure bucket exists, purging if asked to
+    createBucket() {
+      BUCKET=$1
+      POLICY=$2
+      PURGE=$3
+    
+      # Purge the bucket, if set & exists
+      # Since PURGE is user input, check explicitly for `true`
+      if [ $PURGE = true ]; then
+        if checkBucketExists $BUCKET ; then
+          echo "Purging bucket '$BUCKET'."
+          set +e ; # don't exit if this fails
+          ${MC} rm -r --force myminio/$BUCKET
+          set -e ; # reset `e` as active
+        else
+          echo "Bucket '$BUCKET' does not exist, skipping purge."
+        fi
+      fi
+    
+      # Create the bucket if it does not exist
+      if ! checkBucketExists $BUCKET ; then
+        echo "Creating bucket '$BUCKET'"
+        ${MC} mb myminio/$BUCKET
+      else
+        echo "Bucket '$BUCKET' already exists."
+      fi
+    
+      # At this point, the bucket should exist, skip checking for existence
+      # Set policy on the bucket
+      echo "Setting policy of bucket '$BUCKET' to '$POLICY'."
+      ${MC} policy set $POLICY myminio/$BUCKET
+    }
+    
+    # Try connecting to Minio instance
+    scheme=http
+    connectToMinio $scheme
+    # Create the bucket
+    createBucket bucket none false
+---
+# Source: mattermost-enterprise-edition/charts/mysqlha/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mysqlha
+  labels:
+    app: release-name-mysqlha
+    chart: "mysqlha-2.0.0"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  master.cnf: |
+    [mysqld]
+    log-bin
+    skip_name_resolve
+    max_connections = 300
+  slave.cnf: |
+    [mysqld]
+    super-read-only
+    skip_name_resolve
+    slave_parallel_workers = 100
+    slave_parallel_type = LOGICAL_CLOCK
+    max_connections = 300
+  server-id.cnf: |
+    [mysqld]
+    server-id=@@SERVER_ID@@
+  create-replication-user.sh: |-
+    #!/bin/bash
+    set -e
+
+    mysql -h 127.0.0.1 --verbose -e "CREATE USER IF NOT EXISTS '${MYSQL_REPLICATION_USER}' IDENTIFIED BY '${MYSQL_REPLICATION_PASSWORD}';"
+    mysql -h 127.0.0.1 --verbose -e "GRANT PROCESS, RELOAD, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '${MYSQL_REPLICATION_USER}';"
+    mysql -h 127.0.0.1 --verbose -e "FLUSH PRIVILEGES;"
+---
+# Source: mattermost-enterprise-edition/templates/configmap-mattermost-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mattermost-enterprise-edition-init-config-json
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+data:
+  config.json: |
+    {
+        "ServiceSettings": {
+            "SiteURL": "http://mattermost.example.com",
+            "LicenseFileLocation": "/mattermost/mattermost.mattermost-license",
+            "ListenAddress": ":8065",
+            "ConnectionSecurity": "",
+            "TLSCertFile": "",
+            "TLSKeyFile": "",
+            "UseLetsEncrypt": false,
+            "LetsEncryptCertificateCacheFile": "./config/letsencrypt.cache",
+            "Forward80To443": false,
+            "ReadTimeout": 300,
+            "WriteTimeout": 300,
+            "MaximumLoginAttempts": 10,
+            "GoroutineHealthThreshold": -1,
+            "GoogleDeveloperKey": "",
+            "EnableOAuthServiceProvider": false,
+            "EnableIncomingWebhooks": true,
+            "EnableOutgoingWebhooks": true,
+            "EnableCommands": true,
+            "EnableOnlyAdminIntegrations": false,
+            "EnablePostUsernameOverride": false,
+            "EnablePostIconOverride": false,
+            "EnableLinkPreviews": true,
+            "EnableTesting": false,
+            "EnableDeveloper": false,
+            "EnableSecurityFixAlert": true,
+            "EnableInsecureOutgoingConnections": false,
+            "EnableMultifactorAuthentication": false,
+            "EnforceMultifactorAuthentication": false,
+            "AllowCorsFrom": "",
+            "SessionLengthWebInDays": 30,
+            "SessionLengthMobileInDays": 30,
+            "SessionLengthSSOInDays": 30,
+            "SessionCacheInMinutes": 10,
+            "WebsocketSecurePort": 443,
+            "WebsocketPort": 80,
+            "WebserverMode": "gzip",
+            "EnableCustomEmoji": true,
+            "RestrictCustomEmojiCreation": "all",
+            "RestrictPostDelete": "all",
+            "AllowEditPost": "always",
+            "PostEditTimeLimit": 300,
+            "TimeBetweenUserTypingUpdatesMilliseconds": 5000,
+            "EnablePostSearch": true,
+            "EnableUserTypingMessages": true,
+            "EnableUserStatuses": true,
+            "ClusterLogTimeoutMilliseconds": 2000
+        },
+        "ElasticsearchSettings": {
+            "ConnectionUrl": "",
+            "Username": "",
+            "Password": "",
+            "EnableIndexing": false,
+            "EnableSearching": false,
+            "Sniff": true
+        },
+        "TeamSettings": {
+            "SiteName": "Mattermost",
+            "MaxUsersPerTeam": 50000,
+            "EnableTeamCreation": true,
+            "EnableUserCreation": true,
+            "EnableOpenServer": true,
+            "RestrictCreationToDomains": "",
+            "EnableCustomBrand": false,
+            "CustomBrandText": "",
+            "CustomDescriptionText": "",
+            "RestrictDirectMessage": "any",
+            "RestrictTeamInvite": "all",
+            "RestrictPublicChannelManagement": "all",
+            "RestrictPrivateChannelManagement": "all",
+            "RestrictPublicChannelCreation": "all",
+            "RestrictPrivateChannelCreation": "all",
+            "RestrictPublicChannelDeletion": "all",
+            "RestrictPrivateChannelDeletion": "all",
+            "RestrictPrivateChannelManageMembers": "all",
+            "UserStatusAwayTimeout": 300,
+            "MaxChannelsPerTeam": 50000,
+            "MaxNotificationsPerChannel": 1000
+        },
+        "SqlSettings": {
+            "DriverName": "mysql",
+            "DataSource": "mmuser:passwd@tcp(release-name-mysqlha-0.release-name-mysqlha:3306)/mattermost?charset=utf8mb4,utf8&readTimeout=30s&writeTimeout=30s",
+            "DataSourceReplicas": ["mmuser:passwd@tcp(release-name-mysqlha-readonly:3306)/mattermost?charset=utf8mb4,utf8&readTimeout=30s&writeTimeout=30s"],
+            "DataSourceSearchReplicas": [],
+            "MaxIdleConns": 20,
+            "MaxOpenConns": 35,
+            "Trace": false,
+            "AtRestEncryptKey": "ztw77hwWDpEIwLRJS1WdhPbzrMLQxmtv",
+            "QueryTimeout": 30
+        },
+        "LogSettings": {
+            "EnableConsole": true,
+            "ConsoleLevel": "INFO",
+            "EnableFile": true,
+            "FileLevel": "INFO",
+            "FileFormat": "",
+            "FileLocation": "",
+            "EnableWebhookDebugging": true,
+            "EnableDiagnostics": true
+        },
+        "PasswordSettings": {
+            "MinimumLength": 5,
+            "Lowercase": false,
+            "Number": false,
+            "Uppercase": false,
+            "Symbol": false
+        },
+        "FileSettings": {
+            "EnableFileAttachments": true,
+            "MaxFileSize": 52428800,
+            "DriverName": "amazons3",
+            "Directory": "./data/",
+            "EnablePublicLink": false,
+            "PublicLinkSalt": "y8nB0xMYHzQbz6jZrg5x2O3dLmEWT1yb",
+            "ThumbnailWidth": 120,
+            "ThumbnailHeight": 100,
+            "PreviewWidth": 1024,
+            "PreviewHeight": 0,
+            "ProfileWidth": 128,
+            "ProfileHeight": 128,
+            "InitialFont": "luximbi.ttf",
+            "AmazonS3AccessKeyId": "mattermostadmin",
+            "AmazonS3SecretAccessKey": "mattermostadmin",
+            "AmazonS3Bucket": "bucket",
+            "AmazonS3Region": "",
+            "AmazonS3Endpoint": "release-name-minio:9000",
+            "AmazonS3SSL": false,
+            "AmazonS3SignV2": false
+        },
+        "EmailSettings": {
+            "EnableSignUpWithEmail": true,
+            "EnableSignInWithEmail": true,
+            "EnableSignInWithUsername": true,
+            "SendEmailNotifications": false,
+            "RequireEmailVerification": false,
+            "FeedbackName": "",
+            "FeedbackEmail": "test@example.com",
+            "FeedbackOrganization": "",
+            "SMTPUsername": "",
+            "SMTPPassword": "",
+            "SMTPServer": "",
+            "SMTPPort": "",
+            "ConnectionSecurity": "",
+            "InviteSalt": "xv99aSCrY5v1HNFg015f1ZE3jyyXYkBN",
+            "SendPushNotifications": true,
+            "PushNotificationServer": "https://push.mattermost.com",
+            "PushNotificationContents": "generic",
+            "EnableEmailBatching": false,
+            "EmailBatchingBufferSize": 256,
+            "EmailBatchingInterval": 30,
+            "SkipServerCertificateVerification": false
+        },
+        "RateLimitSettings": {
+            "Enable": false,
+            "PerSec": 10,
+            "MaxBurst": 100,
+            "MemoryStoreSize": 10000,
+            "VaryByRemoteAddr": true,
+            "VaryByHeader": ""
+        },
+        "PrivacySettings": {
+            "ShowEmailAddress": true,
+            "ShowFullName": true
+        },
+        "SupportSettings": {
+            "TermsOfServiceLink": "https://about.mattermost.com/default-terms/",
+            "PrivacyPolicyLink": "https://about.mattermost.com/default-privacy-policy/",
+            "AboutLink": "https://about.mattermost.com/default-about/",
+            "HelpLink": "https://about.mattermost.com/default-help/",
+            "ReportAProblemLink": "https://about.mattermost.com/default-report-a-problem/",
+            "SupportEmail": "feedback@mattermost.com"
+        },
+        "AnnouncementSettings": {
+            "EnableBanner": false,
+            "BannerText": "",
+            "BannerColor": "#f2a93b",
+            "BannerTextColor": "#333333",
+            "AllowBannerDismissal": true
+        },
+        "GitLabSettings": {
+            "Enable": false,
+            "Secret": "",
+            "Id": "",
+            "Scope": "",
+            "AuthEndpoint": "",
+            "TokenEndpoint": "",
+            "UserApiEndpoint": ""
+        },
+        "GoogleSettings": {
+            "Enable": false,
+            "Secret": "",
+            "Id": "",
+            "Scope": "profile email",
+            "AuthEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+            "TokenEndpoint": "https://www.googleapis.com/oauth2/v4/token",
+            "UserApiEndpoint": "https://www.googleapis.com/plus/v1/people/me"
+        },
+        "Office365Settings": {
+            "Enable": false,
+            "Secret": "",
+            "Id": "",
+            "Scope": "User.Read",
+            "AuthEndpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            "TokenEndpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "UserApiEndpoint": "https://graph.microsoft.com/v1.0/me"
+        },
+        "LdapSettings": {
+            "Enable": false,
+            "LdapServer": "",
+            "LdapPort": 389,
+            "ConnectionSecurity": "",
+            "BaseDN": "",
+            "BindUsername": "",
+            "BindPassword": "",
+            "UserFilter": "",
+            "FirstNameAttribute": "",
+            "LastNameAttribute": "",
+            "EmailAttribute": "",
+            "UsernameAttribute": "",
+            "NicknameAttribute": "",
+            "IdAttribute": "",
+            "PositionAttribute": "",
+            "SyncIntervalMinutes": 60,
+            "SkipCertificateVerification": false,
+            "QueryTimeout": 60,
+            "MaxPageSize": 0,
+            "LoginFieldName": ""
+        },
+        "ComplianceSettings": {
+            "Enable": false,
+            "Directory": "./data/",
+            "EnableDaily": false
+        },
+        "LocalizationSettings": {
+            "DefaultServerLocale": "en",
+            "DefaultClientLocale": "en",
+            "AvailableLocales": ""
+        },
+        "SamlSettings": {
+            "Enable": false,
+            "Verify": true,
+            "Encrypt": true,
+            "IdpUrl": "",
+            "IdpDescriptorUrl": "",
+            "AssertionConsumerServiceURL": "",
+            "IdpCertificateFile": "",
+            "PublicCertificateFile": "",
+            "PrivateKeyFile": "",
+            "FirstNameAttribute": "",
+            "LastNameAttribute": "",
+            "EmailAttribute": "",
+            "UsernameAttribute": "",
+            "NicknameAttribute": "",
+            "LocaleAttribute": "",
+            "PositionAttribute": "",
+            "LoginButtonText": "With SAML"
+        },
+        "NativeAppSettings": {
+            "AppDownloadLink": "https://about.mattermost.com/downloads/",
+            "AndroidAppDownloadLink": "https://about.mattermost.com/mattermost-android-app/",
+            "IosAppDownloadLink": "https://about.mattermost.com/mattermost-ios-app/"
+        },
+        "ClusterSettings": {
+            "Enable": true,
+            "ClusterName": "release-name-cluster",
+            "OverrideHostname": "",
+            "UseIpAddress": true,
+            "UseExperimentalGossip": true,
+            "ReadOnlyConfig": false,
+            "GossipPort": 8074,
+            "StreamingPort": 8075
+        },
+        "MetricsSettings": {
+            "Enable": true,
+            "BlockProfileRate": 0,
+            "ListenAddress": ":8067"
+        },
+        "AnalyticsSettings": {
+            "MaxUsersForStatistics": 2500
+        },
+        "WebrtcSettings": {
+            "Enable": false,
+            "GatewayWebsocketUrl": "",
+            "GatewayAdminUrl": "",
+            "GatewayAdminSecret": "",
+            "StunURI": "",
+            "TurnURI": "",
+            "TurnUsername": "",
+            "TurnSharedKey": ""
+        },
+        "PluginSettings": {
+            "Enable": true,
+            "EnableUploads": true,
+            "Directory": "./plugins",
+            "ClientDirectory": "./client/plugins",
+            "Plugins": {},
+            "PluginStates": {}
+        },
+        "DataRetentionSettings": {
+            "Enable": false
+        },
+        "JobSettings": {
+            "RunJobs": false,
+            "RunScheduler": false
+        }
+    }
+---
+# Source: mattermost-enterprise-edition/templates/tests/mattermost-app-config-test.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mattermost-enterprise-edition-app-tests
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: mattermost-enterprise-edition-2.6.52
+data:
+  run.sh: |-
+    #!/usr/bin/env bats
+    @test "Testing Mattermost is accessible" {
+      url="http://release-name-mattermost-enterprise-edition.default.svc.cluster.local:8065"
+      code=$(wget --server-response --spider --timeout 10 --tries 1 ${url} 2>&1 | awk '/^  HTTP/{print $2}')
+      [ "$code" == "200" ]
+    }
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/post-install-prometheus-metrics-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+    resourceNames:
+      - release-name-minio-prometheus
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+  - apiGroups:
+      - monitoring.coreos.com
+    resources:
+      - servicemonitors
+    verbs:
+      - get
+    resourceNames:
+      - release-name-minio
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/post-install-prometheus-metrics-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-minio-update-prometheus-secret
+subjects:
+  - kind: ServiceAccount
+    name: release-name-minio-update-prometheus-secret
+    namespace: default
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9000
+      protocol: TCP
+      targetPort: 9000
+  selector:
+    app: minio
+    release: release-name
+---
+# Source: mattermost-enterprise-edition/charts/mysqlha/templates/svc.yaml
+# Headless service for stable DNS entries of StatefulSet members.
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysqlha
+  labels:
+    app: release-name-mysqlha
+    chart: "mysqlha-2.0.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  ports:
+  - name: release-name-mysqlha
+    port: 3306
+  clusterIP: None
+  selector:
+    app: release-name-mysqlha
+---
+# Source: mattermost-enterprise-edition/charts/mysqlha/templates/svc.yaml
+# Client service for connecting to any MySQL instance for reads.
+# For writes, you must instead connect to the master: mysql-0.mysql.
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysqlha-readonly
+  labels:
+    app: release-name-mysqlha
+    chart: "mysqlha-2.0.0"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  ports:
+  - name: release-name-mysqlha
+    port: 3306
+  selector:
+    app: release-name-mysqlha
+---
+# Source: mattermost-enterprise-edition/templates/service-mattermost-app.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mattermost-enterprise-edition
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+spec:
+  selector:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+  type: ClusterIP
+  ports:
+  - port: 8065
+    targetPort: 8065
+    protocol: TCP
+    name: mattermost-app
+  - port: 8067
+    targetPort: 8067
+    protocol: TCP
+    name: mattermost-app-metrics
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: minio
+      release: release-name
+  template:
+    metadata:
+      name: release-name-minio
+      labels:
+        app: minio
+        release: release-name
+      annotations:
+        rollme: "XvKOq"
+        checksum/secrets: 3624b2eb3991bf6d448975901cf03a6356c6846349ed20819c1dd5bac6cf5f94
+        checksum/config: 562c93aa892b9b623fc1f5b6c58fa16ab7ecc92b9d00ba2249e7ce472a763a9d
+    spec:
+      serviceAccountName: "release-name-minio"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: "minio/minio:RELEASE.2019-05-14T23-57-45Z"
+          imagePullPolicy: IfNotPresent
+          command: [ "/bin/sh",
+          "-ce",
+          "/usr/bin/docker-entrypoint.sh minio -S /etc/minio/certs/ server /export" ]
+          volumeMounts:
+            - name: export
+              mountPath: /export
+          ports:
+            - name: http
+              containerPort: 9000
+          env:
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-minio
+                  key: accesskey
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-minio
+                  key: secretkey
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: export
+          persistentVolumeClaim:
+            claimName: release-name-minio
+        - name: minio-user
+          secret:
+            secretName: release-name-minio
+---
+# Source: mattermost-enterprise-edition/templates/deployment-mattermost-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mattermost-enterprise-edition
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-enterprise-edition
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mattermost-enterprise-edition
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: server
+        helm.sh/chart: mattermost-enterprise-edition-2.6.52
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8067"
+        prometheus.io/path: "/metrics"
+    spec:
+      initContainers:
+      - name: init-mysql
+        image: "appropriate/curl:latest"
+        imagePullPolicy: IfNotPresent
+        command: [
+          "sh",
+          "-c",
+          "until curl --max-time 5 http://release-name-mysqlha-readonly:3306; do echo waiting for release-name-mysqlha; sleep 5; done;"]
+      containers:
+      - name: mattermost-enterprise-edition
+        image: "mattermost/mattermost-enterprise-edition:9.7.3@sha256:1f563d090e73cb039052662b335b9a44cdf2892ba48f4a4ecf62ff38ee968e41"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8065
+          name: api
+        - containerPort: 8067
+          name: metrics
+        - containerPort: 8075
+          name: cluster
+        - containerPort: 8074
+          name: gossip
+        env:
+        - name: MM_CONFIG
+          valueFrom:
+            secretKeyRef:
+              name: 
+              key: 
+        - name: MM_SERVICESETTINGS_SITEURL
+          value: "http://mattermost.example.com"
+        - name: MM_SERVICESETTINGS_LISTENADDRESS
+          value: ":8065"
+        - name: MM_SERVICESETTINGS_ENABLELINKPREVIEWS
+          value: "true"
+        - name: MM_SERVICESETTINGS_ENABLECUSTOMEMOJI
+          value: "true"
+        - name: MM_FILESETTINGS_DRIVERNAME
+          value: "amazons3"
+        - name: MM_FILESETTINGS_AMAZONS3ACCESSKEYID
+          value: "mattermostadmin"
+        - name: MM_FILESETTINGS_AMAZONS3SECRETACCESSKEY
+          value: "mattermostadmin"
+        - name: MM_FILESETTINGS_AMAZONS3BUCKET
+          value: "bucket"
+        - name: MM_FILESETTINGS_AMAZONS3ENDPOINT
+          value: "release-name-minio:9000"
+        - name: MM_FILESETTINGS_AMAZONS3SSL
+          value: "false"
+        - name: MM_JOBSETTINGS_RUNJOBS
+          value: "false"
+        - name: MM_JOBSETTINGS_RUNSCHEDULER
+          value: "false"
+        livenessProbe:
+          initialDelaySeconds: 90
+          timeoutSeconds: 5
+          periodSeconds: 15
+          httpGet:
+            path: /api/v4/system/ping
+            port: 8065
+        readinessProbe:
+          initialDelaySeconds: 15
+          timeoutSeconds: 5
+          periodSeconds: 15
+          httpGet:
+            path: /api/v4/system/ping
+            port: 8065
+        volumeMounts:
+        - mountPath: /mattermost/mattermost.mattermost-license
+          name: mattermost-license
+          subPath: mattermost.mattermost-license
+        - mountPath: /mattermost/plugins/
+          name: mattermost-plugins
+        - mountPath: /mattermost/client/plugins/
+          name: mattermost-plugins-client
+        resources:
+          {}
+      volumes:
+      - name: mattermost-plugins
+        emptyDir: {}
+      - name: mattermost-plugins-client
+        emptyDir: {}
+      - name: mattermost-config
+        emptyDir: {}
+      - name: mattermost-license
+        secret:
+          secretName: release-name-mattermost-enterprise-edition-mattermost-license
+---
+# Source: mattermost-enterprise-edition/templates/deployment-mattermost-jobserver.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mattermost-enterprise-edition-jobserver
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: jobserver
+    helm.sh/chart:  mattermost-enterprise-edition-2.6.52
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate: null
+    type: Recreate
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-enterprise-edition
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/component: jobserver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mattermost-enterprise-edition
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: jobserver
+        helm.sh/chart: mattermost-enterprise-edition-2.6.52
+      annotations:
+    spec:
+      initContainers:
+      - name: "init-mattermost-app"
+        image: "appropriate/curl:latest"
+        imagePullPolicy: IfNotPresent
+        command: [
+          "sh",
+          "-c",
+          "until curl --max-time 5 http://release-name-mattermost-enterprise-edition.default:8065/api/v4/system/ping ; do echo waiting for Mattermost App come up; sleep 5; done; echo init-mattermost-app finished"
+        ]
+      containers:
+      - name: mattermost-enterprise-edition-jobserver
+        image: "mattermost/mattermost-enterprise-edition:9.7.3@sha256:1f563d090e73cb039052662b335b9a44cdf2892ba48f4a4ecf62ff38ee968e41"
+        imagePullPolicy: IfNotPresent
+        command: ["mattermost", "jobserver"]
+        env:
+        - name: MM_CONFIG
+          valueFrom:
+            secretKeyRef:
+              name: 
+              key: 
+        volumeMounts:
+        - mountPath: /mattermost/mattermost.mattermost-license
+          name: mattermost-license
+          subPath: mattermost.mattermost-license
+      volumes:
+      - name: mattermost-license
+        secret:
+          secretName: release-name-mattermost-enterprise-edition-mattermost-license
+---
+# Source: mattermost-enterprise-edition/charts/mysqlha/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mysqlha
+  labels:
+    app: release-name-mysqlha
+    chart: "mysqlha-2.0.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  selector:
+    matchLabels:
+      app: release-name-mysqlha
+      release: release-name
+  serviceName: release-name-mysqlha
+  replicas: 2
+  selector:
+    matchLabels:
+      app: release-name-mysqlha
+  template:
+    metadata:
+      labels:
+        app: release-name-mysqlha
+        release: release-name
+    spec:
+      initContainers:
+      - name: clone-mysql
+        image: gcr.io/google-samples/xtrabackup:1.0
+        imagePullPolicy: "IfNotPresent"
+        command:
+          - bash
+          - "-c"
+          - |
+            set -ex
+            # Skip the clone on master (ordinal index 0).
+            [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+            ordinal=${BASH_REMATCH[1]}
+            [[ $ordinal -eq 0 ]] && exit 0
+
+            # If data already exists, delete and proceed to clone.
+            [[ -d /var/lib/mysql/mysql ]] && rm -fr /var/lib/mysql/*
+
+            # Clone data from previous peer.
+            ncat --recv-only release-name-mysqlha-$(($ordinal-1)).release-name-mysqlha 3307 | xbstream -x -C /var/lib/mysql
+            # Prepare the backup.
+            xtrabackup --prepare --user=${MYSQL_REPLICATION_USER} --password=${MYSQL_REPLICATION_PASSWORD} --target-dir=/var/lib/mysql
+        env:
+        - name: MYSQL_REPLICATION_USER
+          value: repl
+        - name: MYSQL_REPLICATION_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-replication-password
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+      - name: init-mysql
+        image: mysql:5.7.29
+        imagePullPolicy: "IfNotPresent"
+        command: ["/bin/bash"]
+        args:
+          - "-c"
+          - |
+            set -ex
+            # Generate mysql server-id from pod ordinal index.
+            [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+            ordinal=${BASH_REMATCH[1]}
+            # Copy server-id.conf adding offset to avoid reserved server-id=0 value.
+            cat /mnt/config-map/server-id.cnf | sed s/@@SERVER_ID@@/$((100 + $ordinal))/g > /mnt/conf.d/server-id.cnf
+            # Copy appropriate conf.d files from config-map to config mount.
+            if [[ $ordinal -eq 0 ]]; then
+              cp -f /mnt/config-map/master.cnf /mnt/conf.d/
+            else
+              cp -f /mnt/config-map/slave.cnf /mnt/conf.d/
+            fi
+            # Copy replication user script
+            if [[ $ordinal -eq 0 ]]; then
+              cp -f /mnt/config-map/create-replication-user.sh /mnt/scripts/create-replication-user.sh
+              chmod 700 /mnt/scripts/create-replication-user.sh
+            fi
+        volumeMounts:
+          - name: conf
+            mountPath: /mnt/conf.d
+          - name: config-map
+            mountPath: /mnt/config-map
+          - name: scripts
+            mountPath: /mnt/scripts
+      containers:
+      - name: mysql
+        image: mysql:5.7.29
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: MYSQL_DATABASE
+          value: "mattermost"
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-root-password
+        - name: MYSQL_REPLICATION_USER
+          value: repl
+        - name: MYSQL_REPLICATION_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-replication-password
+        
+        - name: MYSQL_USER
+          value: "mmuser"
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-password
+        
+        ports:
+        - name: mysql
+          containerPort: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - "-c"
+            - mysqladmin ping -h 127.0.0.1 -u root -p${MYSQL_ROOT_PASSWORD}
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            # Check we can execute queries over TCP (skip-networking is off).
+            command:
+            - /bin/sh
+            - "-c"
+            - MYSQL_PWD="${MYSQL_ROOT_PASSWORD}"
+            - mysql -h 127.0.0.1 -u root -e "SELECT 1"
+          initialDelaySeconds: 10
+          timeoutSeconds: 1
+      - name: xtrabackup
+        image: gcr.io/google-samples/xtrabackup:1.0
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: MYSQL_PWD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-root-password
+        - name: MYSQL_REPLICATION_USER
+          value: repl
+        - name: MYSQL_REPLICATION_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-mysqlha
+              key: mysql-replication-password
+        ports:
+        - name: xtrabackup
+          containerPort: 3307
+        command: ["/bin/bash"]
+        args:
+          - "-c"
+          - |
+            set -ex
+
+            echo "Waiting for mysqld to be ready (accepting connections)"
+            until mysql -h 127.0.0.1 -e "SELECT 1"; do sleep 5; done
+
+            # Create replication user
+            cd /mnt/scripts
+            # file exists and is not empty with -s
+            if [[ -s create-replication-user.sh  ]]; then
+              ls -la
+              ./create-replication-user.sh
+            fi
+
+            cd /var/lib/mysql
+            # Determine binlog position of cloned data, if any.
+            if [[ -f xtrabackup_slave_info ]]; then
+              # XtraBackup already generated a partial "CHANGE MASTER TO" query
+              # because we're cloning from an existing slave.
+              cp xtrabackup_slave_info change_master_to.sql.in
+            elif [[ -f xtrabackup_binlog_info ]]; then
+              # We're cloning directly from master. Parse binlog position.
+              [[ $(cat xtrabackup_binlog_info) =~ ^(.*?)[[:space:]]+(.*?)$ ]] || exit 1
+              echo "CHANGE MASTER TO MASTER_LOG_FILE='${BASH_REMATCH[1]}',\
+                    MASTER_LOG_POS=${BASH_REMATCH[2]}" > change_master_to.sql.in
+            fi
+
+            # Check if we need to complete a clone by starting replication.
+            if [[ -f change_master_to.sql.in ]]; then
+
+              # In case of container restart, attempt this at-most-once.
+              cp change_master_to.sql.in change_master_to.sql.orig
+              mysql -h 127.0.0.1 --verbose<<EOF
+              STOP SLAVE IO_THREAD;
+              $(<change_master_to.sql.orig),
+              MASTER_HOST='release-name-mysqlha-0.release-name-mysqlha',
+              MASTER_USER='${MYSQL_REPLICATION_USER}',
+              MASTER_PASSWORD='${MYSQL_REPLICATION_PASSWORD}',
+              MASTER_CONNECT_RETRY=10;
+              START SLAVE;
+            EOF
+            fi
+
+            # Start a server to send backups when requested by peers.
+            exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
+              "xtrabackup --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=${MYSQL_REPLICATION_USER} --password=${MYSQL_REPLICATION_PASSWORD}"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        - name: scripts
+          mountPath: /mnt/scripts
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+      volumes:
+      - name: conf
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: release-name-mysqlha
+      - name: scripts
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      annotations:
+    spec:
+      accessModes:
+      - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "10Gi"
+---
+# Source: mattermost-enterprise-edition/templates/tests/mattermost-app-test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-mattermost-enterprise-edition-app-test-u0tcx"
+  labels:
+    app.kubernetes.io/name: mattermost-enterprise-edition
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: mattermost-enterprise-edition-2.6.52
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+  - name: release-name-app-test
+    image: bats/bats:v1.1.0
+    imagePullPolicy: Always
+    command: ["/opt/bats/bin/bats", "-t", "/tests/run.sh"]
+    volumeMounts:
+    - mountPath: /tests
+      name: tests
+      readOnly: true
+    - mountPath: /tools
+      name: tools
+  volumes:
+  - name: tests
+    configMap:
+      name: release-name-mattermost-enterprise-edition-app-tests
+  - name: tools
+    emptyDir: {}
+  restartPolicy: Never
+---
+# Source: mattermost-enterprise-edition/charts/minio/templates/post-install-create-bucket-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-minio-make-bucket-job
+  labels:
+    app: minio-make-bucket-job
+    chart: minio-5.0.26
+    release: release-name
+    heritage: Helm
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      labels:
+        app: minio-job
+        release: release-name
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: minio-configuration
+          projected:
+            sources:
+            - configMap:
+                name: release-name-minio
+            - secret:
+                name: release-name-minio
+      serviceAccountName: "release-name-minio"
+      containers:
+      - name: minio-mc
+        image: "minio/mc:RELEASE.2020-04-25T00-43-23Z"
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "/config/initialize"]
+        env:
+          - name: MINIO_ENDPOINT
+            value: release-name-minio
+          - name: MINIO_PORT
+            value: "9000"
+        volumeMounts:
+          - name: minio-configuration
+            mountPath: /config
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi

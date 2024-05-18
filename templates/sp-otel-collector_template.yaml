@@ -1,0 +1,234 @@
+---
+# Source: sp-otel-collector/templates/secret.yaml
+apiVersion: v1
+data:
+  # we should do it with iteration through value secrets and keep encrypted this file 
+  # honeycomb_dev_token: -----
+  # honeycomb_stage_token: -----
+  # honeycomb_token: -----
+  # signalfx_default: -----
+  # ssh_private_key: -----
+kind: Secret
+metadata:
+  labels:
+    app: sp-otel-collector
+  name: sp-otel-collector-secret
+---
+# Source: sp-otel-collector/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sp-otel-collector-config
+data:
+    config.yaml: |
+      exporters:
+        logging:
+          loglevel: info
+        otlp/dev:
+          endpoint: https://api.honeycomb.io:443
+          headers:
+            x-honeycomb-team: ${HONEYCOMB_API_DEV_TOKEN}
+        otlp/stage:
+          endpoint: https://api.honeycomb.io:443
+          headers:
+            x-honeycomb-team: ${HONEYCOMB_API_STAGE_TOKEN}
+        otlphttp:
+          endpoint: https://api.honeycomb.io:443
+          headers:
+            x-honeycomb-team: ${HONEYCOMB_API_TOKEN}
+        sapm:
+          access_token: ${SIGNALFX_DEFAULT}
+          endpoint: "https://ingest.us1.signalfx.com/v2/trace"
+        signalfx:
+          endpoint: "https://api.signalfx.com/v2/traces"
+          access_token: ${SIGNALFX_DEFAULT}
+          realm: "us1"
+          api_url: "https://api.us1.signalfx.com"
+      extensions:
+        health_check: {}
+        memory_ballast:
+          size_in_percentage: 40
+      processors:
+        batch: {}
+        memory_limiter:
+          check_interval: 2s
+          limit_mib: 512
+          spike_limit_percentage: 128
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+              max_recv_msg_size_mib: 999999999
+            http:
+              endpoint: 0.0.0.0:4318
+        otlp/dev:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4319
+              max_recv_msg_size_mib: 999999999
+            http:
+              endpoint: 0.0.0.0:4320
+        otlp/stage:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4321
+              max_recv_msg_size_mib: 999999999
+            http:
+              endpoint: 0.0.0.0:4322
+      service:
+        extensions:
+        - health_check
+        - memory_ballast
+        pipelines:
+          logs:
+            exporters:
+            - logging
+            processors:
+            - memory_limiter
+            - batch
+            receivers:
+            - otlp
+            - otlp/dev
+            - otlp/stage
+          traces:
+            exporters:
+            - logging
+            - otlphttp
+            - sapm
+            - signalfx
+            processors:
+            - memory_limiter
+            - batch
+            receivers:
+            - otlp
+          traces/dev:
+            exporters:
+            - logging
+            - otlp/dev
+            - sapm
+            - signalfx
+            processors:
+            - memory_limiter
+            - batch
+            receivers:
+            - otlp/dev
+          traces/stage:
+            exporters:
+            - logging
+            - otlp/stage
+            - sapm
+            - signalfx
+            processors:
+            - memory_limiter
+            - batch
+            receivers:
+            - otlp/stage
+---
+# Source: sp-otel-collector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: sp-otel-collector-service
+  labels:
+    app: sp-otel-collector
+spec:
+  selector:
+    app: sp-otel-collector
+  ports:
+   - name: otlp-grpc
+     protocol: TCP
+     port: 4317
+     targetPort: 4317
+   - name: otlp-grpc-dev
+     protocol: TCP
+     port: 4319
+     targetPort: 4319
+   - name: otlp-http-dev
+     protocol: TCP
+     port: 4320
+     targetPort: 4320
+   - name: otlp-http
+     protocol: TCP
+     port: 4318
+     targetPort: 4318
+   - name: otlp-grpc-stage
+     protocol: TCP
+     port: 4321
+     targetPort: 4321
+   - name: otlp-http-stage
+     protocol: TCP
+     port: 4322
+     targetPort: 4322
+---
+# Source: sp-otel-collector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sp-otel-collector-deployment
+  labels:
+    app: sp-otel-collector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sp-otel-collector
+  template:
+    metadata:
+      labels:
+        app: sp-otel-collector
+    spec:
+      containers:
+        - name: sp-otel-collector
+          image: quay.io/geored/spmm-collector-contrib:1.0.0
+          args:
+            - "--config=/etc/otel/collector/config.yaml"
+          ports:
+           - name:  otlp-grpc
+             containerPort:  4317
+           - name:  otlp-grpc-dev
+             containerPort:  4319
+           - name:  otlp-http-dev
+             containerPort:  4320
+           - name:  otlp-http
+             containerPort:  4318
+           - name:  otlp-grpc-stage
+             containerPort:  4321
+           - name:  otlp-http-stage
+             containerPort:  4322
+          env:
+           - name: HONEYCOMB_API_TOKEN
+             valueFrom:
+               secretKeyRef:
+                 name: sp-otel-collector-env
+                 key: honeycomb_prod_token
+           - name: HONEYCOMB_API_DEV_TOKEN
+             valueFrom:
+               secretKeyRef:
+                 name: sp-otel-collector-env
+                 key: honeycomb_dev_token
+           - name: HONEYCOMB_API_STAGE_TOKEN
+             valueFrom:
+               secretKeyRef:
+                 name: sp-otel-collector-env
+                 key: honeycomb_stage_token
+           - name: SIGNALFX_ACCESS_TOKEN
+             valueFrom:
+               secretKeyRef:
+                 name: sp-otel-collector-env
+                 key: signalfx_default
+          volumeMounts:
+            - name: sp-otel-collector-config
+              mountPath: /etc/otel/collector/config.yaml
+              subPath: config.yaml
+            - name: sp-otel-collector-ca-bundle
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-bundle.crt
+      volumes:
+        - name: sp-otel-collector-config
+          configMap:
+            name: sp-otel-collector-config
+        - name: sp-otel-collector-ca-bundle"
+          configMap:
+            name: sp-otel-collector-ca-bundle"
+            defaultMode: 420

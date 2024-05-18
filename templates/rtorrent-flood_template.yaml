@@ -1,0 +1,161 @@
+---
+# Source: rtorrent-flood/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rtorrent-flood-config
+  labels:
+    helm.sh/chart: rtorrent-flood-9.4.2
+    app.kubernetes.io/name: rtorrent-flood
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+data:
+  .rtorrent.rc: |
+    session.use_lock.set = no
+    method.insert = cfg.basedir,  private|const|string, (cat,(fs.homedir),"/.local/share/rtorrent/")
+    method.insert = cfg.download, private|const|string, (cat,"/downloads/","download/")
+    method.insert = cfg.logs,     private|const|string, (cat,(cfg.download),"log/")
+    method.insert = cfg.logfile,  private|const|string, (cat,(cfg.logs),"rtorrent-",(system.time),".log")
+    method.insert = cfg.session,  private|const|string, (cat,(cfg.basedir),".session/")
+    method.insert = cfg.watch,    private|const|string, (cat,(cfg.download),"watch/")
+    fs.mkdir.recursive = (cat,(cfg.basedir))
+    fs.mkdir = (cat,(cfg.download))
+    fs.mkdir = (cat,(cfg.logs))
+    fs.mkdir = (cat,(cfg.session))
+    fs.mkdir = (cat,(cfg.watch))
+    fs.mkdir = (cat,(cfg.watch),"/load")
+    fs.mkdir = (cat,(cfg.watch),"/start")
+    schedule2 = watch_load, 11, 10, ((load.verbose, (cat, (cfg.watch), "load/*.torrent")))
+    schedule2 = watch_start, 10, 10, ((load.start_verbose, (cat, (cfg.watch), "start/*.torrent")))
+    dht.add_bootstrap = dht.transmissionbt.com:6881
+    dht.add_bootstrap = dht.libtorrent.org:25401
+    throttle.max_uploads.set = 100
+    throttle.max_uploads.global.set = 250
+    throttle.min_peers.normal.set = 20
+    throttle.max_peers.normal.set = 60
+    throttle.min_peers.seed.set = 30
+    throttle.max_peers.seed.set = 80
+    trackers.numwant.set = 80
+    network.port_range.set = 6881-6881
+    network.max_open_files.set = 600
+    network.max_open_sockets.set = 300
+    pieces.memory.max.set = 1800M
+    session.path.set = (cat, (cfg.session))
+    directory.default.set = (cat, (cfg.download))
+    log.execute = (cat, (cfg.logs), "execute.log")
+    encoding.add = utf8
+    system.daemon.set = true
+    system.umask.set = 0002
+    system.cwd.set = (directory.default)
+    network.http.max_open.set = 50
+    network.http.dns_cache_timeout.set = 25
+    network.scgi.open_local = (cat,(cfg.basedir),rtorrent.sock)
+    print = (cat, "Logging to ", (cfg.logfile))
+    log.open_file = "log", (cfg.logfile)
+    log.add_output = "info", "log"
+---
+# Source: rtorrent-flood/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rtorrent-flood
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: rtorrent-flood
+    app.kubernetes.io/version: latest
+    helm.sh/chart: rtorrent-flood-9.4.2
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3000
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/name: rtorrent-flood
+    app.kubernetes.io/instance: release-name
+---
+# Source: rtorrent-flood/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-rtorrent-flood
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: rtorrent-flood
+    app.kubernetes.io/version: latest
+    helm.sh/chart: rtorrent-flood-9.4.2
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rtorrent-flood
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rtorrent-flood
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: default
+      automountServiceAccountToken: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      containers:
+        - name: release-name-rtorrent-flood
+          image: "jesec/rtorrent-flood:latest@sha256:f0c894ec459e52d85bc69685247ddbd8e8fcf3709b50bf8ee8b0df3bf69b7b49"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLOOD_OPTION_ALLOWEDPATH
+              value: /downloads
+            - name: FLOOD_OPTION_HOST
+              value: 0.0.0.0
+            - name: FLOOD_OPTION_PORT
+              value: "3000"
+            - name: FLOOD_OPTION_RTORRENT
+              value: "true"
+            - name: HOME
+              value: /config
+            - name: TZ
+              value: UTC
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          volumeMounts:
+            - name: rtorrent-flood-config
+              mountPath: /config/.rtorrent.rc
+              subPath: .rtorrent.rc
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 0
+            failureThreshold: 3
+            timeoutSeconds: 1
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 0
+            failureThreshold: 3
+            timeoutSeconds: 1
+            periodSeconds: 10
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 0
+            failureThreshold: 30
+            timeoutSeconds: 1
+            periodSeconds: 5
+      volumes:
+        - name: rtorrent-flood-config
+          configMap:
+            name: release-name-rtorrent-flood-config

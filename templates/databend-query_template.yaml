@@ -1,0 +1,224 @@
+---
+# Source: databend-query/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-databend-query
+  labels:
+    helm.sh/chart: databend-query-0.8.3
+    app.kubernetes.io/name: databend-query
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.279"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: databend-query/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-databend-query
+  labels:
+    helm.sh/chart: databend-query-0.8.3
+    app.kubernetes.io/name: databend-query
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.279"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.toml: |-
+    # databend query config
+    [query]
+      max_active_sessions = 256
+      wait_timeout_mills = 5000
+
+      tenant_id = "release-name"
+      cluster_id = "default"
+
+      management_mode = false
+      jwt_key_file = ""
+
+      max_server_memory_usage = 0
+      max_memory_limit_enabled = false
+
+    [log]
+      [log.file]
+        on = false
+        level = "INFO"
+        dir = "/var/log/databend"
+      [log.stderr]
+        on = true
+        level = "WARN"
+
+    [meta]
+      endpoints = ["databend-meta-0.databend-meta.databend-meta.svc:9191","databend-meta-1.databend-meta.databend-meta.svc:9191","databend-meta-2.databend-meta.databend-meta.svc:9191",]
+      username = "root"
+      password = "root"
+      client_timeout_in_second = 60
+
+    [storage]
+      type = "s3"
+      allow_insecure = false
+      [storage.s3]
+        access_key_id = ""
+        bucket = "databend"
+        enable_virtual_host_style = false
+        endpoint_url = "https://s3.amazonaws.com"
+        secret_access_key = ""
+---
+# Source: databend-query/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-databend-query
+  labels:
+    helm.sh/chart: databend-query-0.8.3
+    app.kubernetes.io/name: databend-query
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.279"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: admin
+      protocol: TCP
+      name: admin
+    - port: 8124
+      targetPort: ckhttp
+      protocol: TCP
+      name: ckhttp
+    - port: 9090
+      targetPort: flight
+      protocol: TCP
+      name: flight
+    - port: 8900
+      targetPort: flightsql
+      protocol: TCP
+      name: flightsql
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 7070
+      targetPort: metric
+      protocol: TCP
+      name: metric
+    - port: 3307
+      targetPort: mysql
+      protocol: TCP
+      name: mysql
+  selector:
+    app.kubernetes.io/name: databend-query
+    app.kubernetes.io/instance: release-name
+    statefulset.kubernetes.io/pod-name: release-name-databend-query-0
+---
+# Source: databend-query/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-databend-query
+  labels:
+    helm.sh/chart: databend-query-0.8.3
+    app.kubernetes.io/name: databend-query
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.279"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-databend-query
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: databend-query
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 2d8e93a315f0f28fa1a982944a62729354213cd846a486c060456af69c77bf4c
+      labels:
+        app.kubernetes.io/name: databend-query
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-databend-query
+      securityContext:
+        {}
+      initContainers:
+      containers:
+        - name: databend-query
+          command:
+            - /databend-query
+            - -c
+            - /etc/databend-query/config.toml
+          securityContext:
+            {}
+          image: "datafuselabs/databend-query:v1.2.279"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: admin
+              containerPort: 8080
+            - name: ckhttp
+              containerPort: 8124
+            - name: flight
+              containerPort: 9090
+            - name: flightsql
+              containerPort: 8900
+            - name: http
+              containerPort: 8000
+            - name: metric
+              containerPort: 7070
+            - name: mysql
+              containerPort: 3307
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: admin
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            {}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: QUERY_METRIC_API_ADDRESS
+              value: "$(POD_IP):7070"
+            - name: QUERY_ADMIN_API_ADDRESS
+              value: "$(POD_IP):8080"
+            - name: QUERY_FLIGHT_API_ADDRESS
+              value: "$(POD_IP):9090"
+            - name: QUERY_HTTP_HANDLER_HOST
+              value: 0.0.0.0
+            - name: QUERY_HTTP_HANDLER_PORT
+              value: "8000"
+            - name: QUERY_FLIGHT_SQL_HANDLER_HOST
+              value: 0.0.0.0
+            - name: QUERY_FLIGHT_SQL_HANDLER_PORT
+              value: "8900"
+            - name: QUERY_MYSQL_HANDLER_HOST
+              value: 0.0.0.0
+            - name: QUERY_MYSQL_HANDLER_PORT
+              value: "3307"
+            - name: QUERY_CLICKHOUSE_HTTP_HANDLER_HOST
+              value: 0.0.0.0
+            - name: QUERY_CLICKHOUSE_HTTP_HANDLER_PORT
+              value: "8124"
+          volumeMounts:
+            - name: config
+              # Note: subPath volume mount will not receive ConfigMap update.
+              mountPath: /etc/databend-query
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-databend-query

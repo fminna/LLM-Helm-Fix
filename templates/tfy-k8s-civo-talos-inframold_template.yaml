@@ -1,0 +1,1016 @@
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/grafana.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "grafana"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: grafana
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: tfy-grafana
+    repoURL: https://truefoundry.github.io/infra-charts/
+    targetRevision: 0.1.4
+    helm:
+      values: |
+        # Host for the grafana dashboard
+        host: <to_be_provided>
+        grafana:
+            # Username for grafana dashboard
+            adminUser: <to_be_provided>
+            # Password for grafana dashboard
+            adminPassword: <to_be_provided>
+            
+            
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/keda.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "keda"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  ignoreDifferences:
+  - group: apiregistration.k8s.io
+    kind: APIService
+    jsonPointers:
+      - /spec/insecureSkipTLSVerify
+  destination:
+    namespace: keda
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: keda
+    repoURL: "https://kedacore.github.io/charts"
+    targetRevision: 2.13.2
+    helm:
+      values: |
+        resources:
+          operator:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          metricServer:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+        prometheus:
+          operator:
+            enabled: true
+      
+      
+  syncPolicy:
+    automated: { }
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/loki.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "loki"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  ignoreDifferences:
+    - jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.kind
+        - .spec.volumeClaimTemplates[]?.apiVersion
+      kind: StatefulSet
+      group: apps
+  destination:
+    namespace: loki
+    server: "https://kubernetes.default.svc"
+  source:
+    repoURL: https://truefoundry.github.io/infra-charts/
+    targetRevision: 0.1.1
+    chart: tfy-loki
+    helm:
+      values: |-
+        loki:
+          enabled: true
+          loki:
+            extraMemberlistConfig:
+              bind_addr:
+                - ${POD_IP}
+          singleBinary:
+            extraEnv:
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+            extraArgs:
+              - -print-config-stderr
+              - -config.expand-env=true
+            
+            
+        promtail:
+          enabled: true
+  project: tfy-apps
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/notebook-controller.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: notebook-controller
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "notebook-controller"
+    truefoundry.com/infra-migration-tag: "1001"
+spec:
+  ignoreDifferences:
+    - group: rbac.authorization.k8s.io
+      jqPathExpressions:
+        - .rules
+      kind: ClusterRole
+  destination:
+    namespace: nb-ctl-system
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    targetRevision: 0.3.6-rc.5
+    repoURL: https://truefoundry.github.io/infra-charts/
+    chart: tfy-notebook-controller
+    helm:
+      values: |-
+        
+        defaultStorageClass: civo-volume
+        
+        
+        
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/prometheus.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "prometheus"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  project: tfy-apps
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    - group: monitoring.coreos.com
+      jqPathExpressions:
+        - .spec.endpoints[]?.relabelings[]?.action
+      kind: ServiceMonitor
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: prometheus
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+  source:
+    repoURL: "https://prometheus-community.github.io/helm-charts"
+    targetRevision: 55.8.1
+    chart: kube-prometheus-stack
+    helm:
+      values: |
+        coreDns:
+          enabled: false
+        grafana:
+          enabled: false
+        kubelet:
+          enabled: true
+          serviceMonitor:
+            probes: false
+            metricRelabelings:
+              - regex: name
+                action: labeldrop
+              - regex: metrics_path
+                action: labeldrop
+              - regex: endpoint
+                action: labeldrop
+              - regex: instance
+                action: labeldrop
+              - regex: (container_(.+)|kubelet_volume_(.+))
+                action: keep
+                sourceLabels:
+                  - __name__
+            cAdvisorMetricRelabelings:
+              - regex: container_blkio_device_usage_total
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: container_cpu_(cfs_throttled_seconds_total|load_average_10s|system_seconds_total|user_seconds_total)
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: container_fs_(io_current|io_time_seconds_total|io_time_weighted_seconds_total|reads_merged_total|sector_reads_total|sector_writes_total|writes_merged_total)
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: container_memory_(mapped_file|swap)
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: container_(file_descriptors|tasks_state|threads_max)
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: container_spec.*
+                action: drop
+                sourceLabels:
+                  - __name__
+              - regex: .+;
+                action: drop
+                sourceLabels:
+                  - id
+                  - pod
+              - regex: id
+                action: labeldrop
+              - regex: name
+                action: labeldrop
+              - regex: metrics_path
+                action: labeldrop
+              - regex: endpoint
+                action: labeldrop
+              - regex: instance
+                action: labeldrop
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+        prometheus:
+          prometheusSpec:
+            resources:
+              limits:
+                cpu: 2
+                memory: 10Gi
+              requests:
+                cpu: 400m
+                memory: 2Gi
+            retention: 30d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  resources:
+                    requests:
+                      storage: 20Gi
+                  accessModes:
+                    - ReadWriteOnce
+            retentionSize: 18GB
+            enableAdminAPI: true
+            
+            
+            additionalScrapeConfigs:
+              - scheme: http
+                job_name: keda
+                honor_labels: true
+                metrics_path: /metrics
+                dns_sd_configs:
+                  - port: 8080
+                    type: A
+                    names:
+                      - keda-operator.keda
+                scrape_timeout: 10s
+                scrape_interval: 10s
+                metric_relabel_configs:
+                  - regex: >-
+                      (keda_metrics_(.+)|workqueue_(.+)|go_(.+)|controller_(.+)|process_(.+))
+                    action: drop
+                    source_labels:
+                      - __name__
+                  - regex: >-
+                      (keda_build_info|keda_resource_totals|keda_internal_scale_loop_latency|keda_trigger_totals|keda_scaled_object_errors|keda_scaler_metrics_latency|keda_scaler_errors|keda_scaler_errors_total|keda_scaled_object_errors|keda_scaler_active)
+                    action: drop
+                    source_labels:
+                      - __name__
+              - job_name: "envoy-stats"
+                kubernetes_sd_configs:
+                  - role: pod
+                metrics_path: "/stats/prometheus"
+                relabel_configs:
+                  - regex: .*-envoy-prom
+                    action: keep
+                    source_labels:
+                      - __meta_kubernetes_pod_container_port_name
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+                  - source_labels: [__meta_kubernetes_pod_container_name]
+                    target_label: container
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+                  - source_labels: [__meta_kubernetes_pod_node_name]
+                    action: replace
+                    target_label: node
+                metric_relabel_configs:
+                  - source_labels: [ __name__ ]
+                    action: drop
+                    regex: envoy_(.+)
+                  - source_labels: [ __name__ ]
+                    action: drop
+                    regex: (istio_response_bytes_bucket|istio_request_bytes_bucket|istio_request_bytes_count|istio_response_bytes_count)
+              - job_name: "kubernetes-pods"
+                kubernetes_sd_configs:
+                  - role: pod
+                relabel_configs:
+                  - action: drop
+                    source_labels: [__meta_kubernetes_namespace]
+                    regex: (istio-system|cert-manager|kube-system)
+                  - action: drop
+                    source_labels: [__meta_kubernetes_pod_container_init]
+                    regex: true
+                  - source_labels:
+                      [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                    action: keep
+                    regex: true
+                  - source_labels:
+                      [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+                    action: replace
+                    target_label: __scheme__
+                    regex: (https?)
+                  - source_labels:
+                      [__meta_kubernetes_pod_annotation_prometheus_io_path]
+                    action: replace
+                    target_label: __metrics_path__
+                    regex: (.+)
+                  - source_labels:
+                      [
+                        __address__,
+                        __meta_kubernetes_pod_annotation_prometheus_io_port,
+                      ]
+                    action: replace
+                    target_label: __address__
+                    regex: ([^:]+)(?::\d+)?;(\d+)
+                    replacement: $1:$2
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+                  - source_labels: [__meta_kubernetes_pod_container_name]
+                    target_label: container
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+                  - source_labels: [__meta_kubernetes_pod_node_name]
+                    action: replace
+                    target_label: node
+                  - target_label: label_truefoundry_com_application_id
+                    source_labels:
+                      - __meta_kubernetes_pod_label_truefoundry_com_application_id
+              - job_name: argo-workflows
+                static_configs:
+                  - targets:
+                      - argo-workflows-workflow-controller.argo-workflows.svc.cluster.local:8080
+              
+              - job_name: gpu-metrics
+                scrape_interval: 15s
+                scrape_timeout: 10s
+                metrics_path: /metrics
+                scheme: http
+                kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names:
+                    - tfy-gpu-operator
+                relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_node_name]
+                  action: replace
+                  target_label: kubernetes_node
+              
+              
+              - scheme: http
+                job_name: kubecost
+                honor_labels: true
+                metrics_path: /metrics
+                dns_sd_configs:
+                  - port: 9003
+                    type: A
+                    names:
+                      - kubecost-cost-analyzer.kubecost
+                scrape_timeout: 60s
+                scrape_interval: 1m
+          serviceMonitor:
+            selfMonitor: false
+        alertmanager:
+          enabled: false
+        nodeExporter:
+          enabled: true
+        kubeApiServer:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kube-state-metrics:
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+              ephemeral-storage: 256Mi
+          
+          
+          prometheus:
+            monitor:
+              enabled: true
+              metricRelabelings:
+               - regex: ([;]*)([a-z-_A-Z]+)([;]*)
+                 action: replace
+                 separator: ;
+                 replacement: ${2}
+                 targetLabel: capacity_type
+                 sourceLabels:
+                   - label_karpenter_sh_capacity_type
+                   - label_eks_amazonaws_com_capacity_type
+                   - label_kubernetes_azure_com_scalesetpriority
+                   - label_cloud_google_com_gke_provisioning
+               - regex: (.+)
+                 action: lowercase
+                 targetLabel: capacity_type
+                 sourceLabels:
+                   - capacity_type
+               - regex: (.+)
+                 action: replace
+                 targetLabel: instance_type
+                 sourceLabels:
+                   - label_node_kubernetes_io_instance_type
+          metricLabelsAllowlist:
+            - pods=[truefoundry.com/application,truefoundry.com/component-type,truefoundry.com/component]
+            - nodes=[karpenter.sh/capacity-type,eks.amazonaws.com/capacityType,kubernetes.azure.com/scalesetpriority,cloud.google.com/gke-provisioning,node.kubernetes.io/instance-type]
+        prometheusOperator:
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+              ephemeral-storage: 256Mi
+          
+          
+          serviceMonitor:
+            selfMonitor: false
+        kubeControllerManager:
+          enabled: false
+        prometheus-node-exporter:
+          extraArgs:
+            - --web.disable-exporter-metrics
+            - --collector.disable-defaults
+            - --collector.cpu
+            - --collector.meminfo
+            - --collector.filesystem
+            - --collector.stat
+            - --collector.time
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+          resources:
+            limits:
+              cpu: 100m
+              memory: 100Mi
+            requests:
+              cpu: 50m
+              memory: 30Mi
+          prometheus:
+            monitor:
+              interval: 30s
+              relabelings:
+                - regex: (.+)
+                  targetLabel: node
+                  sourceLabels:
+                    - __meta_kubernetes_endpoint_node_name
+            serviceMonitor:
+              selfMonitor: false
+        additionalPrometheusRulesMap:
+          rule-name:
+            groups:
+              - name: CPU
+                rules:
+                  - expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m]))
+                    record: cluster:cpu_usage:rate5m
+                  - expr: rate(container_cpu_usage_seconds_total{container!=""}[5m])
+                    record: cluster:cpu_usage_nosum:rate5m
+                  - expr: >-
+                      avg(irate(container_cpu_usage_seconds_total{container!="POD",
+                      container!=""}[5m])) by (container,pod,namespace)
+                    record: kubecost_container_cpu_usage_irate
+                  - expr: >-
+                      sum(container_memory_working_set_bytes{container!="POD",container!=""})
+                      by (container,pod,namespace)
+                    record: kubecost_container_memory_working_set_bytes
+                  - expr: >-
+                      sum(container_memory_working_set_bytes{container!="POD",container!=""})
+                    record: kubecost_cluster_memory_working_set_bytes
+              - name: Savings
+                rules:
+                  - expr: >-
+                      sum(avg(kube_pod_owner{owner_kind!="DaemonSet"}) by (pod) *
+                      sum(container_cpu_allocation) by (pod))
+                    labels:
+                      daemonset: 'false'
+                    record: kubecost_savings_cpu_allocation
+                  - expr: >-
+                      sum(avg(kube_pod_owner{owner_kind="DaemonSet"}) by (pod) *
+                      sum(container_cpu_allocation) by (pod)) / sum(kube_node_info)
+                    labels:
+                      daemonset: 'true'
+                    record: kubecost_savings_cpu_allocation
+                  - expr: >-
+                      sum(avg(kube_pod_owner{owner_kind!="DaemonSet"}) by (pod) *
+                      sum(container_memory_allocation_bytes) by (pod))
+                    labels:
+                      daemonset: 'false'
+                    record: kubecost_savings_memory_allocation_bytes
+                  - expr: >-
+                      sum(avg(kube_pod_owner{owner_kind="DaemonSet"}) by (pod) *
+                      sum(container_memory_allocation_bytes) by (pod)) /
+                      sum(kube_node_info)
+                    labels:
+                      daemonset: 'true'
+                    record: kubecost_savings_memory_allocation_bytes
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/tfy-agent.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tfy-agent
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "tfy-agent"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: tfy-agent
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    targetRevision: 0.2.22
+    repoURL: https://truefoundry.github.io/infra-charts/
+    chart: tfy-agent
+    helm:
+      values: |
+        config:
+          clusterToken: 
+          tenantName: 
+          controlPlaneURL: 
+        
+        
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/tfy-gpu-operator.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tfy-gpu-operator
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "tfy-gpu-operator"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: tfy-gpu-operator
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    repoURL: https://truefoundry.github.io/infra-charts/
+    chart: tfy-gpu-operator
+    targetRevision: 0.1.15-rc.5
+    helm:
+      values: |-
+        clusterType:
+          civoTalos: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    retry:
+      limit: 5
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - FailOnSharedResource=true
+      - ApplyOutOfSyncOnly=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/tfy-apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tfy-apps
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-20"
+spec:
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  destinations:
+  - namespace: '*'
+    server: '*'
+  sourceRepos:
+  - '*'
+  sourceNamespaces:
+  - "*"
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/argo-rollouts.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-rollout
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "argo-rollout"
+    truefoundry.com/infra-migration-tag: "1000"
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-18"
+spec:
+  destination:
+    namespace: argo-rollouts
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: argo-rollouts
+    repoURL: https://argoproj.github.io/argo-helm
+    targetRevision: 2.35.1
+    helm:
+      values: |
+        controller:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/argo-workflows.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-workflows
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "argo-workflows"
+    truefoundry.com/infra-migration-tag: "1000"
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-19"
+spec:
+  destination:
+    namespace: argo-workflows
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: argo-workflows
+    repoURL: "https://argoproj.github.io/argo-helm"
+    targetRevision: 0.41.1
+    helm:
+      values: |
+        controller:
+          workflowDefaults:
+            spec:
+              activeDeadlineSeconds: 432000
+              ttlStrategy:
+                secondsAfterCompletion: 3600
+          metricsConfig:
+            enabled: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+        executor:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+        server:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/argocd.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-20"
+  labels:
+    truefoundry.com/infra-component: "argocd"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    chart: argo-cd
+    repoURL: https://argoproj.github.io/argo-helm
+    targetRevision: 6.7.10
+    helm:
+      values: |
+        applicationSet:
+          enabled: false
+        notifications:
+          enabled: false
+        dex:
+          enabled: false
+        configs:
+          cm:
+            resource.customizations.ignoreDifferences.storage.k8s.io_CSIDriver: |
+              jqPathExpressions:
+              - '.spec.seLinuxMount'
+        server:
+          extraArgs:
+            - --insecure
+            - '--application-namespaces="*"'
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+        controller:
+          extraArgs:
+            - '--application-namespaces="*"'
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+        redis:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+        repoServer:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          
+          
+  syncPolicy:
+    automated: { }
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/istio/istio-base.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-base
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-16"
+  labels:
+    truefoundry.com/infra-component: "istio-base"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: istio-system
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: base
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    targetRevision: 1.21.1
+    helm:
+      values: ""
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/istio/istio-discovery.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-discovery
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-15"
+  labels:
+    truefoundry.com/infra-component: "istio-discovery"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  ignoreDifferences:
+    - group: apps
+      jqPathExpressions:
+        - .spec.template.spec.containers[]?.env[]?.valueFrom.resourceFieldRef.divisor
+      kind: Deployment
+  destination:
+    namespace: istio-system
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: istiod
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    targetRevision: 1.21.1
+    helm:
+      values: |
+        pilot:          
+          autoscaleEnabled: true
+          autoscaleMin: 2
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+          
+          
+        global:
+          hub: gcr.io/istio-release
+          tag: 1.21.1-distroless
+
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/istio/tfy-istio-ingress.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tfy-istio-ingress
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  labels:
+    truefoundry.com/infra-component: "tfy-istio-ingress"
+    truefoundry.com/infra-migration-tag: "1000"
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-15"
+spec:
+  destination:
+    namespace: istio-system
+    server: https://kubernetes.default.svc
+  project: tfy-apps
+  source:
+    chart: tfy-istio-ingress
+    repoURL: https://truefoundry.github.io/infra-charts/
+    targetRevision: 0.1.3
+    helm:
+      values: |
+        
+        
+        
+        tfyGateway:
+          name: 'tfy-wildcard'
+          spec:
+            selector:
+              istio: 'tfy-istio-ingress'
+            servers:
+              - hosts:
+                - "*"
+                port:
+                  name: http-tfy-wildcard
+                  number: 80
+                  protocol: HTTP
+                tls:
+                  
+                  httpsRedirect: true
+                  
+              - hosts: 
+                - "*"
+                port:
+                  name: https-tfy-wildcard
+                  number: 443
+                  protocol: HTTP
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+# Source: tfy-k8s-civo-talos-inframold/templates/metrics-server.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metrics-server
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "-20"
+  labels:
+    truefoundry.com/infra-component: "metrics-server"
+    truefoundry.com/infra-migration-tag: "1000"
+spec:
+  destination:
+    namespace: kube-system
+    server: 'https://kubernetes.default.svc'
+  source:
+    repoURL: 'https://kubernetes-sigs.github.io/metrics-server/'
+    targetRevision: 3.12.1
+    chart: metrics-server
+    helm:
+      values: |-
+        podAnnotations:
+          "cluster-autoscaler.kubernetes.io/safe-to-evict": "true"
+        replicas: 2
+        resources:
+          limits:
+            cpu: 50m
+            memory: 100Mi
+          requests:
+            cpu: 10m
+            memory: 50Mi
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+        containerPort: 4443
+        args:
+          - '--kubelet-insecure-tls'
+        tolerations:
+          - key: "dedicated"
+            operator: "Equal"
+            value: "reserved-supercluster"
+            effect: "NoSchedule"
+  project: tfy-apps
+  syncPolicy:
+    automated: {}

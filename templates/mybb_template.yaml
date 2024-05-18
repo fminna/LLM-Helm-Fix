@@ -1,0 +1,339 @@
+---
+# Source: mybb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mybb
+  labels:
+    helm.sh/chart: mybb-0.1.0
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: mybb/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.6.4
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  postgresql-password: "Zm9vYmFy"
+---
+# Source: mybb/templates/nginx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mybb-nginx-config
+  labels:
+    helm.sh/chart: mybb-0.1.0
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8"
+    app.kubernetes.io/managed-by: Helm
+data:
+  nginx.conf: |
+    upstream mybb {
+        server localhost:9000 weight=5;
+    }
+    server {
+        listen 80;
+        root /var/www/html;
+        index index.html index.php;
+        location / {
+            try_files $uri $uri/ /index.php?$args;
+        }
+        location ~ inc/ {
+            internal;
+        }
+        location ~ ^/(images|cache|jscripts|uploads)/ {
+            access_log off;
+        }
+        location ~ \.php$ {
+            try_files $uri =404;
+            fastcgi_split_path_info ^(.+\.php)(/.+)$;
+            fastcgi_pass mybb;
+            fastcgi_index index.php;
+            include fastcgi_params;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_param PATH_INFO $fastcgi_path_info;
+        }
+    }
+---
+# Source: mybb/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app: postgresql
+    chart: postgresql-8.6.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+---
+# Source: mybb/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.6.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+    role: master
+---
+# Source: mybb/templates/headless-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mybb-headless
+  labels:
+    helm.sh/chart: mybb-0.1.0
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+---
+# Source: mybb/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mybb
+  labels:
+    helm.sh/chart: mybb-0.1.0
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+---
+# Source: mybb/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.6.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: postgresql
+      release: "release-name"
+      role: master
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app: postgresql
+        chart: postgresql-8.6.4
+        release: "release-name"
+        heritage: "Helm"
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+        # - name: do-something
+        #   image: busybox
+        #   command: ['do', 'something']
+        
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.7.0-debian-10-r26
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "mybb"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "mybb"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "mybb" -d "mybb" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "mybb" -d "mybb" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: mybb/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mybb
+  labels:
+    helm.sh/chart: mybb-0.1.0
+    app.kubernetes.io/name: mybb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-mybb-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mybb
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mybb
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-mybb
+      securityContext:
+        {}
+      containers:
+        - name: mybb
+          securityContext:
+            {}
+          image: "mybb/mybb:1.8"
+          imagePullPolicy: Always
+          resources:
+            {}
+          volumeMounts:
+          - mountPath: /var/www/html
+            name: html
+        - name: nginx
+          securityContext:
+            {}
+          image: "nginx:1.17"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+          - mountPath: /var/www/html
+            name: html
+          - mountPath: /etc/nginx/conf.d
+            name: nginx-config
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: release-name-mybb-nginx-config
+      - name: mybb-config
+        configMap:
+          name: release-name-mybb-config
+  volumeClaimTemplates:
+  - metadata:
+      name: html
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "standard"
+      resources:
+        requests:
+          storage: 1Gi

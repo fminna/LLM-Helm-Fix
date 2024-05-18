@@ -1,0 +1,641 @@
+---
+# Source: influxdb-enterprise/templates/data-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-influxdb-enterprise-data
+  labels:
+    app.kubernetes.io/component: data
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  influxdb.conf: |+
+    bind-address = ":8088"
+    reporting-disabled = false
+
+    [http]
+    
+    auth-enabled = true
+    
+
+    
+    https-enabled = true
+
+    https-certificate = "/var/run/secrets/tls/tls.crt"
+    https-private-key = "/var/run/secrets/tls/tls.key"
+
+    
+
+    
+    flux-enabled = true
+    
+
+    [enterprise]
+      
+
+    [cluster]
+    
+    https-enabled = true
+
+    https-certificate = "/var/run/secrets/tls/tls.crt"
+    https-private-key = "/var/run/secrets/tls/tls.key"
+
+    
+    https-insecure-tls = true
+    
+    
+
+    [meta]
+      dir = "/var/lib/influxdb/meta"
+
+      
+      meta-tls-enabled = true
+
+      
+      meta-insecure-tls = true
+      
+
+      
+
+    [hinted-handoff]
+      dir = "/var/lib/influxdb/hh"
+
+    [data]
+      dir = "/var/lib/influxdb/data"
+      wal-dir = "/var/lib/influxdb/wal"
+
+  entrypoint.pl: |+
+
+    #!/usr/bin/env perl
+    $ENV{INFLUXDB_HOSTNAME} = `hostname -f`;
+    $ENV{INFLUXDB_HOSTNAME} =~ s/\n$//;
+
+    
+
+
+    $pid = fork();
+
+    # Inside this conditional is our child process, which
+    # will return `influxd-meta`
+    if($pid == 0) {
+      exec('influxd') or die("Failed to execute influxd: $!\n");
+    }
+
+    $SIG{HUP} = sub { kill 'HUP', $pid };
+    $SIG{TERM} = sub { kill 'TERM', $pid };
+    $SIG{KILL} = sub { kill 'KILL', $pid };
+
+    # Register data node with meta leader
+    
+    my $protocol = "https";
+    
+    my $meta_service = $ENV{RELEASE_NAME} . "-meta";
+
+    # We're not going to define an exit strategy for failure here.
+    # This should be handled by the probes on the pods
+    while (true) {
+      # There's no LWP/Simple available in our images, so forking out to curl 😥
+      print "\n\n\nREGISTER WITH META SERVICE\n\n\n";
+      $exit_code = system('curl', '-k', '-XPOST', '--silent', '--fail', '--retry', '5', '--retry-delay', '0', "-Faddr=$ENV{INFLUXDB_HOSTNAME}:8088", "$protocol://$meta_service:8091/add-data");
+      # $exit_code = system('curl', '-k', '-XPOST', '-v', '--silent', '--fail', '--retry', '5', '--retry-delay', '0', "-Faddr=$ENV{INFLUXDB_HOSTNAME}:8088", "$protocol://$meta_service:8091/add-data");
+
+
+      if ($exit_code == 0) {
+        $| = 1;
+        last;
+      }
+      print "\n\n\nFailed: $!\n\n\n";
+      $| = 1;
+
+      exit 255
+    }
+
+    waitpid($pid, 0);
+    exit $?
+---
+# Source: influxdb-enterprise/templates/meta-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-influxdb-enterprise-meta
+  labels:
+    app.kubernetes.io/component: meta
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  influxdb-meta.conf: |+
+    bind-address = ":8091"
+    reporting-disabled = false
+
+    [enterprise]
+      
+
+    [meta]
+      dir = "/var/lib/influxdb/meta"
+
+      
+      https-enabled = true
+
+      https-certificate = "/var/run/secrets/tls/tls.crt"
+      https-private-key = "/var/run/secrets/tls/tls.key"
+
+      
+      https-insecure-tls = true
+      
+
+      
+
+      
+      data-use-tls = true
+
+      
+      data-insecure-tls = true
+      
+
+      
+
+  entrypoint.pl: |+
+    #!/usr/bin/env perl
+    $ENV{INFLUXDB_HOSTNAME} = `hostname -f`;
+    $ENV{INFLUXDB_HOSTNAME} =~ s/\n$//;
+
+    
+
+
+    $pid = fork();
+
+
+    # Inside this conditional is our child process, which
+    # will return `influxd-meta`
+    if($pid == 0) {
+      exec('influxd-meta') or die("Failed to execute influxd-meta: $!\n");
+    }
+
+    $SIG{HUP} = sub { kill 'HUP', $pid };
+    $SIG{TERM} = sub { kill 'TERM', $pid };
+    $SIG{KILL} = sub { kill 'KILL', $pid };
+
+    # Register meta node
+    my $meta_leader = $ENV{INFLUXDB_HOSTNAME};
+    $meta_leader =~ s/-[0-9]+./-0./;
+
+    # We're not going to define an exit strategy for failure here.
+    # This should be handled by the probes on the pods
+    while (true) {
+      if($meta_leader eq $ENV{INFLUXDB_HOSTNAME}) {
+        system('influxd-ctl', '-bind-tls','-k', 'add-meta', "$ENV{INFLUXDB_HOSTNAME}:8091");
+      } else {
+        system('influxd-ctl', '-bind-tls','-k', 'join', "$meta_leader:8091");
+      }
+
+      if ($? == 0) {
+          last;
+      }
+
+      # Wait a few seconds and try again
+      # Maybe we should implement some rudamentary backoff
+      sleep(2);
+    }
+
+    waitpid($pid, 0);
+    exit $?
+---
+# Source: influxdb-enterprise/templates/data-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-influxdb-enterprise-data
+  labels:
+    influxdb.influxdata.com/component: data
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - port: 8086
+    protocol: TCP
+    name: http
+  - port: 8088
+    protocol: TCP
+    name: rpc
+  - port: 2003
+    # Graphite supports TCP and UDP,
+    # so this should __maybe__ be configurable
+    # Though most use TCP
+    protocol: TCP
+    name: graphite
+  - port: 4242
+    protocol: TCP
+    name: opentsdb
+    # LoadBalancer service type only allows for one protocol
+    # disbaling UDP ports
+  - port: 25826
+    protocol: UDP
+    name: collectd
+  - port: 8089
+    protocol: UDP
+    name: udp
+  selector:
+    influxdb.influxdata.com/component: data
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+---
+# Source: influxdb-enterprise/templates/meta-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-influxdb-enterprise-meta
+  labels:
+    influxdb.influxdata.com/component: meta
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - port: 8089
+    protocol: TCP
+    name: raft
+  - port: 8091
+    protocol: TCP
+    name: http
+  selector:
+    influxdb.influxdata.com/component: meta
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+---
+# Source: influxdb-enterprise/templates/data-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-influxdb-enterprise-data
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  podManagementPolicy: Parallel
+  serviceName: release-name-influxdb-enterprise-data
+  selector:
+    matchLabels:
+      influxdb.influxdata.com/component: data
+      app.kubernetes.io/name: influxdb-enterprise
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        influxdb.influxdata.com/component: data
+        app.kubernetes.io/name: influxdb-enterprise
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        null
+      serviceAccountName: default
+      volumes:
+      
+      - name: release-name-influxdb-enterprise-data-data
+        emptyDir: {}
+      
+      - name: config
+        configMap:
+          name: release-name-influxdb-enterprise-data
+      - name: tls
+        secret:
+          secretName: release-name-influxdb-enterprise-data-tls
+          
+      
+      
+      containers:
+        - name: influxdb-enterprise
+          command:
+          - "/usr/bin/perl"
+          args:
+          - "/etc/influxdb/entrypoint.pl"
+          securityContext:
+            null          
+          image: "influxdb:1.10.0-data"
+          imagePullPolicy: 
+          env:
+          - name: RELEASE_NAME
+            value: release-name-influxdb-enterprise
+          ports:
+            - name: http
+              containerPort: 8086
+              protocol: TCP
+            - name: raft
+              containerPort: 8088
+              protocol: TCP
+            - name: udp
+              containerPort: 8089
+              protocol: UDP
+            - name: graphite
+              containerPort: 2003
+              protocol: TCP
+            - name: opentsdb
+              containerPort: 4242
+              protocol: TCP
+            - name: collectd
+              containerPort: 25826
+              protocol: UDP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+              scheme: HTTPS
+          readinessProbe:
+            initialDelaySeconds: 30
+            httpGet:
+              path: /ping
+              port: http
+              scheme: HTTPS
+          volumeMounts:
+          - name: config
+            mountPath: /etc/influxdb
+          - name: release-name-influxdb-enterprise-data-data
+            mountPath: /var/lib/influxdb
+          - name: tls
+            mountPath: /var/run/secrets/tls/
+          
+          
+          resources:
+            null
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: influxdb.influxdata.com/component
+                  operator: In
+                  values:
+                  - data
+              topologyKey: kubernetes.io/hostname
+            weight: 1
+---
+# Source: influxdb-enterprise/templates/meta-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-influxdb-enterprise-meta
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  podManagementPolicy: Parallel
+  serviceName: release-name-influxdb-enterprise-meta
+  selector:
+    matchLabels:
+      influxdb.influxdata.com/component: meta
+      app.kubernetes.io/name: influxdb-enterprise
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        influxdb.influxdata.com/component: meta
+        app.kubernetes.io/name: influxdb-enterprise
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        null
+      serviceAccountName: default
+      volumes:
+      
+      - name: release-name-influxdb-enterprise-meta-data
+        emptyDir: {}
+      
+      - name: config
+        configMap:
+          name: release-name-influxdb-enterprise-meta
+      - name: tls
+        secret:
+          secretName: release-name-influxdb-enterprise-meta-tls
+          
+      
+      
+      containers:
+        - name: influxdb-enterprise
+          command:
+          - "/usr/bin/perl"
+          args:
+          - "/etc/influxdb/entrypoint.pl"
+          securityContext:
+            null          
+          image: "influxdb:1.10.0-meta"
+          imagePullPolicy: 
+          env:
+            - name: INFLUXDB_META_INTERNAL_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-shared-secret
+                  key: secret
+          ports:
+            - name: http
+              containerPort: 8091
+              protocol: TCP
+            - name: raft
+              containerPort: 8089
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+              scheme: HTTPS
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+              scheme: HTTPS
+          volumeMounts:
+          - name: config
+            mountPath: /etc/influxdb
+          - name: release-name-influxdb-enterprise-meta-data
+            mountPath: /var/lib/influxdb
+          - name: tls
+            mountPath: /var/run/secrets/tls/
+          
+          
+          resources:
+            null
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: influxdb.influxdata.com/component
+                  operator: In
+                  values:
+                  - meta
+              topologyKey: kubernetes.io/hostname
+            weight: 1
+---
+# Source: influxdb-enterprise/templates/data-certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-influxdb-enterprise-data
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+
+  dnsNames:
+  - release-name-influxdb-enterprise-data
+  - release-name-influxdb-enterprise-data.default.svc
+  - release-name-influxdb-enterprise-data-0.release-name-influxdb-enterprise-data
+  - release-name-influxdb-enterprise-data-0.release-name-influxdb-enterprise-data.default
+  - release-name-influxdb-enterprise-data-0.release-name-influxdb-enterprise-data.default.svc
+  
+  
+  isCA: true
+  issuerRef:
+    kind: Issuer
+    name: release-name-influxdb-enterprise
+  secretName: release-name-influxdb-enterprise-data-tls
+---
+# Source: influxdb-enterprise/templates/meta-certmanager.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-influxdb-enterprise-meta
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  
+  dnsNames:
+  - release-name-influxdb-enterprise-meta
+  - release-name-influxdb-enterprise-meta.default.svc
+  - release-name-influxdb-enterprise-meta-0.release-name-influxdb-enterprise-meta
+  - release-name-influxdb-enterprise-meta-0.release-name-influxdb-enterprise-meta.default
+  - release-name-influxdb-enterprise-meta-0.release-name-influxdb-enterprise-meta.default.svc
+  
+    
+  isCA: true
+  issuerRef:
+    kind: Issuer
+    name: release-name-influxdb-enterprise
+  secretName: release-name-influxdb-enterprise-meta-tls
+---
+# Source: influxdb-enterprise/templates/certmanager-issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: release-name-influxdb-enterprise
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selfSigned: {}
+---
+# Source: influxdb-enterprise/templates/bootstrap-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-influxdb-enterprise-bootstrap
+  labels:
+    helm.sh/chart: influxdb-enterprise-0.1.22
+    app.kubernetes.io/name: influxdb-enterprise
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.10.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: influxdb-enterprise
+        app.kubernetes.io/instance: release-name
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: default
+      # Consider this a middleware of setup components.
+      # Each is executed in-order until all of theme complete successfully.
+      # This means that each command must be idempotent.
+      initContainers:
+      - name: auth        
+        image: "influxdb:1.10.0-data"
+        imagePullPolicy: 
+        # Exposing these environment variables makes this command idempotent
+        # as even if the authentication has been setup, we can still execute the command
+        # and it won't error as nothing has changed
+        env:
+        - name: INFLUX_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-auth
+              key: "username"
+        - name: INFLUX_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-auth
+              key: "password"
+        command:
+          - influx
+        args:
+          - -ssl
+          - -unsafeSsl
+        
+        
+          - -host
+          - release-name-influxdb-enterprise-data
+          - -execute
+          - CREATE USER $(INFLUX_USERNAME) WITH PASSWORD '$(INFLUX_PASSWORD)' WITH ALL PRIVILEGES
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
+          limits:
+            cpu: 100m
+            memory: 50Mi
+      
+      containers:
+      - name: success        
+        image: "influxdb:1.10.0-data"
+        imagePullPolicy: 
+        command:
+          - echo
+        args:
+          - "Bootstrap Success"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
+          limits:
+            cpu: 100m
+            memory: 50Mi

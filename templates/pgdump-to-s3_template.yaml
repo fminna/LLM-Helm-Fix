@@ -1,0 +1,128 @@
+---
+# Source: pgdump-to-s3/templates/dp.yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name:  release-name-pgdump-to-s3
+  labels:
+    app.kubernetes.io/name: pgdump-to-s3
+    app.kubernetes.io/instance: release-name
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgdump-to-s3
+      app.kubernetes.io/instance: release-name
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgdump-to-s3
+        app.kubernetes.io/instance: release-name
+    spec:
+      volumes:
+        - name: config
+          secret:
+            secretName: release-name-pgdump-to-s3-s3
+      imagePullSecrets:
+        - name: release-name-pgdump-to-s3-ghcr
+      containers:
+        - name:  release-name-pgdump-to-s3
+          image: ghcr.io/ducksify/pgdump-to-s3
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name:  release-name-pgdump-to-s3-db
+          volumeMounts:
+            - mountPath: /config
+              name: config
+---
+# Source: pgdump-to-s3/templates/secrets-db.yaml
+apiVersion: external-secrets.io/v1alpha1
+kind: ExternalSecret
+metadata:
+  name: release-name-pgdump-to-s3-db
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: secretstore-sample
+    kind: SecretStore
+
+  target:
+    name: release-name-pgdump-to-s3-db
+  data:
+  - secretKey: PORT
+    remoteRef:
+      key: exoscale/postgres
+      property: PORT
+  - secretKey: USER
+    remoteRef:
+      key: exoscale/postgres
+      property: USER
+  - secretKey: PASSWORD
+    remoteRef:
+      key: exoscale/postgres
+      property: PASSWORD
+  - secretKey: HOST
+    remoteRef:
+      key: exoscale/postgres
+      property: HOST
+---
+# Source: pgdump-to-s3/templates/secrets-s3.yaml
+apiVersion: external-secrets.io/v1alpha1
+kind: ExternalSecret
+metadata:
+  name: release-name-pgdump-to-s3-s3
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: secretstore-sample
+    kind: SecretStore
+  target:
+    name: release-name-pgdump-to-s3-s3
+    # this is how the Kind=Secret will look like
+    template:
+      type: Opaque
+      data:
+        configs3.conf: |
+          [default]
+          host_base = sos-eu-west-3.exo.io
+          host_bucket = sos://backup-postgres.sos-eu-west-3.exo.io
+          access_key = {{ .access_key | toString }}
+          secret_key = {{ .secret_key | toString }}
+          use_https = True
+    
+
+  data:
+  - secretKey: secret_key
+    remoteRef:
+      key: exoscale/backups3
+      property: secret_key
+  - secretKey: access_key
+    remoteRef:
+      key: exoscale/backups3
+      property: access_key
+---
+# Source: pgdump-to-s3/templates/secretstore-aws.yaml
+apiVersion: external-secrets.io/v1alpha1
+kind: SecretStore
+metadata:
+  name: secretstore-sample
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: eu-central-1
+      auth:
+        secretRef:
+          accessKeyIDSecretRef:
+            name: awssm-secret
+            key: access-key
+          secretAccessKeySecretRef:
+            name: awssm-secret
+            key: secret-access-key

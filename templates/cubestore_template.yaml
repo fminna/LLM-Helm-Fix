@@ -1,0 +1,321 @@
+---
+# Source: cubestore/templates/router/configmap-statsd-mapping.yml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: cubestore-metrics-mapping
+  labels:
+    helm.sh/chart: cubestore-0.11.0
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.34.56"
+    app.kubernetes.io/managed-by: Helm
+data:
+  statsd.mappingConf: |
+    mappings:
+      - match: ".+"
+        match_type: regex
+        name: "$0"
+        labels:
+          statsd_metric_name: "$0"
+---
+# Source: cubestore/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-cubestore-remote-storage
+  labels:
+    app.kubernetes.io/component: remote-storage
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - "ReadWriteMany"
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: cubestore/templates/router/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cubestore-router
+  labels:
+    app.kubernetes.io/component: router
+    helm.sh/chart: cubestore-0.11.0
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.34.56"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - name: http
+      port: 3030
+      targetPort: http
+    - name: meta
+      port: 9999
+      targetPort: meta
+    - name: http-metrics
+      port: 9102
+      targetPort: http-metrics
+  selector:
+    app.kubernetes.io/component: router
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+---
+# Source: cubestore/templates/workers/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cubestore-headless
+  labels:
+    app.kubernetes.io/component: workers
+    helm.sh/chart: cubestore-0.11.0
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.34.56"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: worker
+      port: 9001
+      targetPort: worker
+    - name: http-metrics
+      port: 9102
+      targetPort: http-metrics
+  selector:
+    app.kubernetes.io/component: workers
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+---
+# Source: cubestore/templates/router/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-cubestore-router
+  labels:
+    helm.sh/chart: cubestore-0.11.0
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.34.56"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-cubestore-router
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: router
+      app.kubernetes.io/name: cubestore
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: router
+        app.kubernetes.io/name: cubestore
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: cubestore
+          image: "cubejs/cubestore:v0.34.56"
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - name: http
+              containerPort: 3030
+              protocol: TCP
+            - name: meta
+              containerPort: 9999
+              protocol: TCP
+            - name: status
+              containerPort: 3031
+              protocol: TCP
+          env:
+            
+            - name: CUBESTORE_LOG_LEVEL
+              value: "error"
+            - name: CUBESTORE_TELEMETRY
+              value: "false"
+            - name: CUBESTORE_SERVER_NAME
+              value: release-name-cubestore-router:9999
+            - name: CUBESTORE_HTTP_PORT
+              value: "3030"
+            - name: CUBESTORE_META_PORT
+              value: "9999"
+            - name: CUBESTORE_STATUS_PORT
+              value: "3031"
+            
+            - name: CUBESTORE_WORKERS
+              value: "release-name-cubestore-workers-0.release-name-cubestore-headless:9001"
+            - name: CUBESTORE_DATA_DIR
+              value: /cube/.cubestore/data
+            - name: CUBESTORE_REMOTE_DIR
+              value: /cube/data
+          livenessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+            httpGet:
+              path: /livez
+              port: status
+          readinessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+            httpGet:
+              path: /readyz
+              port: status
+          volumeMounts:
+            - name: datadir
+              mountPath: /cube/.cubestore/data
+            - name: remotedir
+              mountPath: /cube/data
+        - name: statsd-exporter
+          image: "prom/statsd-exporter:v0.24.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - '--web.listen-address=0.0.0.0:9102'
+            - --web.telemetry-path=/metrics
+            - '--statsd.listen-udp=0.0.0.0:'
+            - --statsd.cache-size=1000
+            - --statsd.event-queue-size=10000
+            - --statsd.event-flush-threshold=1000
+            - --statsd.event-flush-interval=200ms
+            - --statsd.mapping-config=/etc/prometheus-statsd-exporter/statsd-mapping.conf
+          ports:
+            - name: http-metrics
+              containerPort: 9102
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: statsd-mapping-config
+              mountPath: /etc/prometheus-statsd-exporter
+      volumes:
+        - name: datadir
+          emptyDir: {}
+        - name: remotedir
+          persistentVolumeClaim:
+            claimName: release-name-cubestore-remote-storage
+        - name: statsd-mapping-config
+          configMap:
+            name: cubestore-metrics-mapping
+            items:
+              - key: statsd.mappingConf
+                path: statsd-mapping.conf
+---
+# Source: cubestore/templates/workers/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-cubestore-workers
+  labels:
+    helm.sh/chart: cubestore-0.11.0
+    app.kubernetes.io/name: cubestore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.34.56"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-cubestore-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: workers
+      app.kubernetes.io/name: cubestore
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: workers
+        app.kubernetes.io/name: cubestore
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: cubestore
+          image: "cubejs/cubestore:v0.34.56"
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - name: worker
+              containerPort: 9001
+              protocol: TCP
+          env:
+            
+            - name: CUBESTORE_LOG_LEVEL
+              value: "error"
+            - name: CUBESTORE_TELEMETRY
+              value: "false"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CUBESTORE_SERVER_NAME
+              value: "$(MY_POD_NAME).release-name-cubestore-headless:9001"
+            - name: CUBESTORE_WORKER_PORT
+              value: "9001"
+            - name: CUBESTORE_WORKERS
+              value: "release-name-cubestore-workers-0.release-name-cubestore-headless:9001"
+            - name: CUBESTORE_META_ADDR
+              value: release-name-cubestore-router:9999
+            - name: CUBESTORE_DATA_DIR
+              value: /cube/.cubestore/data
+            - name: CUBESTORE_REMOTE_DIR
+              value: /cube/data
+          volumeMounts:
+            - name: datadir
+              mountPath: /cube/.cubestore/data
+            - name: remotedir
+              mountPath: /cube/data
+        - name: statsd-exporter
+          image: "prom/statsd-exporter:v0.24.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - '--web.listen-address=0.0.0.0:9102'
+            - --web.telemetry-path=/metrics
+            - '--statsd.listen-udp=0.0.0.0:'
+            - --statsd.cache-size=1000
+            - --statsd.event-queue-size=10000
+            - --statsd.event-flush-threshold=1000
+            - --statsd.event-flush-interval=200ms
+            - --statsd.mapping-config=/etc/prometheus-statsd-exporter/statsd-mapping.conf
+          ports:
+            - name: http-metrics
+              containerPort: 9102
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: statsd-mapping-config
+              mountPath: /etc/prometheus-statsd-exporter
+      initContainers:
+        - name: init-router
+          image: "busybox:latest"
+          command: ['sh', '-c', 'until nc -vz release-name-cubestore-router 9999; do echo "Waiting for router"; sleep 2; done;']
+      volumes:
+        - name: datadir
+          emptyDir: {}
+        - name: remotedir
+          persistentVolumeClaim:
+            claimName: release-name-cubestore-remote-storage
+        - name: statsd-mapping-config
+          configMap:
+            name: cubestore-metrics-mapping
+            items:
+              - key: statsd.mappingConf
+                path: statsd-mapping.conf

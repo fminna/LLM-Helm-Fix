@@ -1,0 +1,258 @@
+---
+# Source: identity/templates/serviceaccount.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity
+  namespace: default
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: identity/templates/secret.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Secret
+metadata:
+  name: identity-tls
+  namespace: default
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkxpNHUKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQotLS0tLUJFR0lOIENFUlRJRklDQVRFLS0tLS0KTGk0dQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  tls.key: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpMaTR1Ci0tLS0tRU5EIFJTQSBQUklWQVRFIEtFWS0tLS0tCg==
+---
+# Source: identity/templates/configmap.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-configmap
+  namespace: default
+data:
+  config.yaml: |
+    issuer: https://identity.ingress.example.org
+    storage:
+      type: kubernetes
+      config:
+        inCluster: true
+    web:
+      http: "0.0.0.0:5556"
+      allowedOrigins:
+        - https://dashboard.ingress.example.org
+        - https://dashboard.example.org
+        - http://localhost:8080
+    oauth2:
+      skipApprovalScreen: true
+      responseTypes:
+      - token
+      - code
+      - id_token
+    staticClients:
+    - id: dashboard
+      redirectURIs:
+        - "https://dashboard.ingress.example.org/auth/callback"
+        - "https://dashboard.example.org/auth/callback"
+        - "http://localhost:8080/auth/callback"
+      name: Gardener Dashboard
+      secret: sHq4vLoiQcIWbO3h
+    - id: kube-kubectl
+      public: true
+      trustedPeers:
+      - dashboard
+      name: Kubectl
+    enablePasswordDB: false
+    staticPasswords: []
+    connectors:
+      - config:
+          caData: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkxpNHUKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
+          emailAttr: email
+          entityIssuer: identity.ingress.example.org
+          groupsAttr: groups
+          nameIDPolicyFormat: unspecified
+          redirectURI: https://identity.ingress.example.org/callback
+          ssoIssuer: saml.example.org
+          ssoURL: https://saml.example.org/sso
+          usernameAttr: name
+        id: saml
+        name: SAML
+        type: saml
+---
+# Source: identity/templates/rbac.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name:  garden.sapcloud.io:identity
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: identity
+  namespace: default
+---
+# Source: identity/templates/service.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  namespace: default
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  ports:
+    - port: 5556
+      targetPort: 5556
+      protocol: TCP
+      name: http
+  selector:
+    app: identity
+    release: release-name
+  type: ClusterIP
+  sessionAffinity: None
+---
+# Source: identity/templates/deployment.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity
+  namespace: default
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity
+      release: "release-name"
+  template:
+    metadata:
+      annotations:
+        checksum/configmap-identity-config: f28160bd7096c904d2b4b4c4b987d2f71b39bef0eb3c817232bc117a4d054b1f
+      labels:
+        app: identity
+        release: release-name
+    spec:
+      volumes:
+        - name: config
+          configMap:
+            defaultMode: 420
+            items:
+            - key: config.yaml
+              path: config.yaml
+            name: identity-configmap
+      serviceAccountName: identity
+      dnsPolicy: ClusterFirst
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: dex
+          command:
+            - /usr/local/bin/dex
+            - serve
+            - /etc/dex/config.yaml
+          image: "ghcr.io/dexidp/dex:v2.35.3-distroless"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: "/healthz"
+              port: 5556
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          ports:
+            - name: http
+              containerPort: 5556
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /etc/dex
+            name: config
+---
+# Source: identity/templates/ingress.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: identity-ingress
+  namespace: default
+  labels:
+    app: identity
+    chart: "identity-3.0.0"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-port-in-redirects: "true"
+spec:
+  tls:
+    - secretName: identity-tls
+      hosts:
+        - identity.ingress.example.org
+  rules:
+    - host: identity.ingress.example.org
+      http:
+        paths:
+          - backend:
+              service:
+               name: identity-service
+               port:
+                 number: 5556
+            path: "/"
+            pathType: Prefix
+---
+# Source: identity/templates/secret-kubeconfig.yaml
+# SPDX-FileCopyrightText: 2021 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0

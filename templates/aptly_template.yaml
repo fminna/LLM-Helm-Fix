@@ -1,0 +1,257 @@
+---
+# Source: aptly/templates/aptly-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-aptly-config
+data:
+  aptly.conf: |
+    {"AsyncAPI":false,"AzurePublishEndpoints":{},"FileSystemPublishEndpoints":{},"S3PublishEndpoints":{},"SwiftPublishEndpoints":{},"architectures":[],"databaseOpenAttempts":-1,"dependencyFollowAllVariants":false,"dependencyFollowRecommends":false,"dependencyFollowSource":false,"dependencyFollowSuggests":false,"dependencyVerboseResolve":false,"downloadConcurrency":4,"downloadRetries":0,"downloadSourcePackages":false,"downloadSpeedLimit":0,"downloader":"default","enableMetricsEndpoint":false,"gpgDisableSign":false,"gpgDisableVerify":false,"gpgProvider":"gpg","ppaCodename":"","ppaDistributorID":"","rootDir":"/data","skipContentsPublishing":false,"skipLegacyPool":true}
+---
+# Source: aptly/templates/nginx-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-aptly-nginx-config
+data:
+  nginx.conf: |
+    user  nginx;
+    worker_processes  auto;
+    error_log  /var/log/nginx/error.log notice;
+    pid        /var/run/nginx.pid;
+    events {
+        worker_connections  1024;
+    }
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+        access_log  /var/log/nginx/access.log  main;
+        sendfile        on;
+        #tcp_nopush     on;
+        keepalive_timeout  65;
+        gzip  on;
+
+        server {
+            listen 80;
+            listen [::]:80;
+            server_name _;
+
+            location / {
+                root /usr/share/nginx/html;
+                index index.html index.htm;
+                autoindex on;
+                autoindex_format html;
+                autoindex_localtime off;
+            }
+
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+            }
+        }
+    }
+---
+# Source: aptly/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "release-name-aptly"
+  labels:
+    helm.sh/chart: aptly-0.4.0
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: ""
+---
+# Source: aptly/templates/aptly-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-aptly
+  labels:
+    helm.sh/chart: aptly-0.4.0
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    helm.sh/app: aptly
+---
+# Source: aptly/templates/nginx-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-aptly-public
+  labels:
+    helm.sh/chart: aptly-0.4.0
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    helm.sh/app: nginx
+---
+# Source: aptly/templates/aptly.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-aptly
+  labels:
+    helm.sh/chart: aptly-0.4.0
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aptly
+      app.kubernetes.io/instance: release-name
+      helm.sh/app: aptly
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aptly
+        app.kubernetes.io/instance: release-name
+        helm.sh/app: aptly
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: aptly
+          securityContext:
+            {}
+          image: "ghcr.io/g0dscookie/aptly:latest"
+          imagePullPolicy: Always
+          env:
+            - name: GPG_GENERATE
+              value: "true"
+            - name: GPG_TYPE
+              value: "default"
+            - name: GPG_LENGTH
+              value: "default"
+            - name: GPG_REALNAME
+              value: "Aptly"
+            - name: GPG_EMAIL
+              value: "aptly@example.org"
+            - name: GPG_EXPIRE
+              value: "0"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/version
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /api/version
+              port: http
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/aptly.conf
+              subPath: aptly.conf
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-aptly
+        - name: config
+          configMap:
+            name: release-name-aptly-config
+---
+# Source: aptly/templates/nginx.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-aptly-public
+  labels:
+    helm.sh/chart: aptly-0.4.0
+    app.kubernetes.io/name: aptly
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aptly
+      app.kubernetes.io/instance: release-name
+      helm.sh/app: nginx
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aptly
+        app.kubernetes.io/instance: release-name
+        helm.sh/app: nginx
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: nginx
+          securityContext:
+            {}
+          image: "nginx:1.21"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              readOnly: true
+              subPath: nginx.conf
+            - name: public
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+              subPath: public
+      volumes:
+        - name: public
+          persistentVolumeClaim:
+            claimName: release-name-aptly
+        - name: config
+          configMap:
+            name: release-name-aptly-nginx-config

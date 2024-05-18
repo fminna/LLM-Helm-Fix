@@ -1,0 +1,637 @@
+---
+# Source: k8s-jacoco-operator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-k8s-jacoco-operator
+  labels:
+    helm.sh/chart: k8s-jacoco-operator-0.4.0
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: k8s-jacoco-operator/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-scripts
+  namespace: default
+data:
+  download-agent.js: |
+    const https = require('node:https')
+    const fs = require('node:fs')
+    const path = require('node:path')
+  
+    // https://repo1.maven.org/maven2/org/jacoco/org.jacoco.agent/${ver}/org.jacoco.agent-${ver}.jar
+  
+    // vars needed
+    // agent version, download location
+    const agentVersion = process.env.AGENT_VERSION || '0.8.8'
+    const downloadDir = process.env.DOWNLOAD_DIR || '/mnt/jacoco'
+  
+    // check if it's already there
+    // agent jars will go to ${downloadDir}/${agentVersion}/jacoco.jar
+    const agentDirPath = path.join(downloadDir, agentVersion)
+  
+    fs.stat(agentDirPath, (err) => {
+      if (!err) {
+        console.log('Agent already exists, skipping download')
+        return
+      }
+      fs.mkdir(agentDirPath, {
+        recursive: true
+      }, (err) => {
+        if (err) {
+          console.error('Failed to create agent folder: ', err)
+          process.exit(1)
+          return
+        }
+        // folder now exists, agent jar does not, lets download it
+        const req = https.request({
+          hostname: 'repo1.maven.org',
+          port: 443,
+          path: `maven2/org/jacoco/org.jacoco.agent/${agentVersion}/org.jacoco.agent-${agentVersion}-runtime.jar`
+        }, (res) => {
+          if (res.statusCode === 200) {
+            const jarPath = path.join(downloadDir, agentVersion, 'jacoco.jar')
+            const fileStream = fs.createWriteStream(jarPath)
+            console.log(`Downloading to ${jarPath}`)
+            res.pipe(fileStream)
+            fileStream.on('finish', () => {
+              fileStream.close()
+              console.log('Download complete')
+            })
+          } else {
+            console.error(`Unexpected status code response: ${res.statusCode}`)
+            process.exit(2)
+          }
+        })
+        // log errors
+        req.on('error', console.error)
+        // close the request stream
+        req.end()
+      })
+    })
+  inject-ca.sh: |
+    #!/usr/bin/env sh
+  
+    # Need to wait and watch for the TLS secret to be create
+    while ! kubectl get secret "$SECRET_NAME" --namespace "$RELEASE_NAMESPACE"; do echo "Waiting for TLS secret."; sleep 1; done
+  
+    # Once it's available we need to pull out the CA value
+    TLS_PEM=$(kubectl --namespace $RELEASE_NAMESPACE get secret $SECRET_NAME -o jsonpath="{.data['tls\.crt']}")
+    echo "$TLS_PEM"
+  
+    # Once we have the CA value we need to patch the validating webhook
+    kubectl --namespace "$RELEASE_NAMESPACE" patch mutatingwebhookconfiguration "$HOOK_NAME" -p "{\"webhooks\":[{\"name\":\"$HOOK_SVC_NAME\",\"clientConfig\":{\"caBundle\":\"$TLS_PEM\"}}]}"
+---
+# Source: k8s-jacoco-operator/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-config
+  namespace: default
+data:
+  production.json: |
+    {
+      "log": {
+        "level": "info"
+      },
+      "tls": {
+        "enabled": true
+      },
+      "agentVersion": "0.8.8",
+      "agentPvcName": "release-name-agents",
+      "coveragePvcName": "release-name-coverage"
+    }
+---
+# Source: k8s-jacoco-operator/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-agents
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 512Mi
+---
+# Source: k8s-jacoco-operator/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-coverage
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteMany
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 512Mi
+---
+# Source: k8s-jacoco-operator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-k8s-jacoco-operator
+  labels:
+    helm.sh/chart: k8s-jacoco-operator-0.4.0
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+---
+# Source: k8s-jacoco-operator/templates/agent-pod-reader.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-file-access
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000    
+  volumes:
+  - name: agents
+    persistentVolumeClaim:
+      claimName: release-name-agents
+      readOnly: true
+  - name: coverage
+    persistentVolumeClaim:
+      claimName: release-name-coverage
+      readOnly: true
+  containers:
+  - volumeMounts:
+    - name: agents
+      mountPath: /mnt/jacoco/agents
+    - name: coverage
+      mountPath: /mnt/jacoco/coverage
+    name: reader
+    image: busybox
+    command: ['sleep', '3600s']
+---
+# Source: k8s-jacoco-operator/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-k8s-jacoco-operator
+  labels:
+    helm.sh/chart: k8s-jacoco-operator-0.4.0
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-jacoco-operator
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-jacoco-operator
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-k8s-jacoco-operator
+      securityContext:
+        {}
+      volumes:
+        - name: tls
+          secret:
+            secretName: k8s-jacoco-operator
+            optional: false
+        - name: config-volume
+          configMap:
+            name: release-name-config
+            items:
+              - key: production.json
+                path: production.json
+      containers:
+        - volumeMounts:
+          - name: tls
+            mountPath: '/var/run/secrets/tls'
+            readOnly: true
+          - name: config-volume
+            mountPath: /var/run/config/
+            readOnly: true
+          name: k8s-jacoco-operator
+          securityContext:
+            runAsUser: 1000
+          image: "ghcr.io/curium-rocks/k8s-jacoco-operator:main"
+          imagePullPolicy: Always
+          env:
+          - name: NODE_CONFIG_DIR
+            value: /var/run/config:/usr/src/app/config
+          ports:
+            - name: https
+              containerPort: 3000
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: https
+          readinessProbe:
+            tcpSocket:
+              port: https
+          resources:
+            limits:
+              cpu: "0.2"
+              memory: 128Mi
+            requests:
+              cpu: "0.1"
+              memory: 64Mi
+---
+# Source: k8s-jacoco-operator/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-k8s-jacoco-operator
+  labels:
+    helm.sh/chart: k8s-jacoco-operator-0.4.0
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-k8s-jacoco-operator
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+# Source: k8s-jacoco-operator/templates/agent-download-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-agent-download-job
+  namespace: default
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  # Pod Template
+  template:
+    # Pod Spec
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      volumes:
+        - name: script
+          configMap:
+            name: release-name-scripts
+            items:
+              - key: download-agent.js
+                path: entry-point.js
+                mode: 0755
+        - name: agents
+          persistentVolumeClaim:
+            claimName: release-name-agents
+            readOnly: false
+      containers:
+      - volumeMounts:
+          - name: script
+            mountPath: /job/
+          - name: agents
+            mountPath: /mnt/jacoco
+        name: agent-downloader
+        image: node:lts-alpine
+        imagePullPolicy: Always
+        command: ["node", "/job/entry-point.js"]
+      restartPolicy: Never
+---
+# Source: k8s-jacoco-operator/templates/certificates.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-ca-certificate
+spec:
+  isCA: true
+  commonName: release-name-self-signed-ca
+  secretName: release-name-root-ca-secret
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: release-name-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Source: k8s-jacoco-operator/templates/certificates.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-tls-certificate-k8s-jacoco-operator
+spec:
+  secretName: k8s-jacoco-operator
+  commonName: "release-name-k8s-jacoco-operator.default.svc"
+  dnsNames:
+    - "release-name-k8s-jacoco-operator"
+    - "release-name-k8s-jacoco-operator.default"
+    - "release-name-k8s-jacoco-operator.default.svc"
+    - "release-name-k8s-jacoco-operator.default.svc.cluster.local"
+  usages:
+    - server auth
+  issuerRef:
+    name: release-name-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+# Source: k8s-jacoco-operator/templates/certificates.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: release-name-cluster-issuer
+spec:
+  selfSigned: {}
+---
+# Source: k8s-jacoco-operator/templates/certificates.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: release-name-issuer
+spec:
+  ca:
+    secretName: release-name-root-ca-secret
+---
+# Source: k8s-jacoco-operator/templates/mutating-webhook.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: release-name-k8s-jacoco-operator-hooks
+webhooks:
+- name:  release-name-k8s-jacoco-operator.default.svc
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  timeoutSeconds: 1
+  failurePolicy: Ignore
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: "In"
+      values:
+      - "default"
+  rules:
+  - operations: ["CREATE"]
+    apiGroups: ["*"]
+    apiVersions: ["*"]
+    resources: ["pods"]
+    # Scope to namespace
+    scope: "Namespaced"
+  clientConfig:
+    service:
+      namespace: default
+      name: release-name-k8s-jacoco-operator
+      path: /api/v1/admission
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: default
+  name: release-name-post-install-job-sa
+  labels:
+    helm.sh/chart: k8s-jacoco-operator-0.4.0
+    app.kubernetes.io/name: k8s-jacoco-operator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/resource-policy": keep
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-ca-inject-scripts
+  namespace: default
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "1"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+data:
+  download-agent.js: |
+    const https = require('node:https')
+    const fs = require('node:fs')
+    const path = require('node:path')
+  
+    // https://repo1.maven.org/maven2/org/jacoco/org.jacoco.agent/${ver}/org.jacoco.agent-${ver}.jar
+  
+    // vars needed
+    // agent version, download location
+    const agentVersion = process.env.AGENT_VERSION || '0.8.8'
+    const downloadDir = process.env.DOWNLOAD_DIR || '/mnt/jacoco'
+  
+    // check if it's already there
+    // agent jars will go to ${downloadDir}/${agentVersion}/jacoco.jar
+    const agentDirPath = path.join(downloadDir, agentVersion)
+  
+    fs.stat(agentDirPath, (err) => {
+      if (!err) {
+        console.log('Agent already exists, skipping download')
+        return
+      }
+      fs.mkdir(agentDirPath, {
+        recursive: true
+      }, (err) => {
+        if (err) {
+          console.error('Failed to create agent folder: ', err)
+          process.exit(1)
+          return
+        }
+        // folder now exists, agent jar does not, lets download it
+        const req = https.request({
+          hostname: 'repo1.maven.org',
+          port: 443,
+          path: `maven2/org/jacoco/org.jacoco.agent/${agentVersion}/org.jacoco.agent-${agentVersion}-runtime.jar`
+        }, (res) => {
+          if (res.statusCode === 200) {
+            const jarPath = path.join(downloadDir, agentVersion, 'jacoco.jar')
+            const fileStream = fs.createWriteStream(jarPath)
+            console.log(`Downloading to ${jarPath}`)
+            res.pipe(fileStream)
+            fileStream.on('finish', () => {
+              fileStream.close()
+              console.log('Download complete')
+            })
+          } else {
+            console.error(`Unexpected status code response: ${res.statusCode}`)
+            process.exit(2)
+          }
+        })
+        // log errors
+        req.on('error', console.error)
+        // close the request stream
+        req.end()
+      })
+    })
+  inject-ca.sh: |
+    #!/usr/bin/env sh
+  
+    # Need to wait and watch for the TLS secret to be create
+    while ! kubectl get secret "$SECRET_NAME" --namespace "$RELEASE_NAMESPACE"; do echo "Waiting for TLS secret."; sleep 1; done
+  
+    # Once it's available we need to pull out the CA value
+    TLS_PEM=$(kubectl --namespace $RELEASE_NAMESPACE get secret $SECRET_NAME -o jsonpath="{.data['tls\.crt']}")
+    echo "$TLS_PEM"
+  
+    # Once we have the CA value we need to patch the validating webhook
+    kubectl --namespace "$RELEASE_NAMESPACE" patch mutatingwebhookconfiguration "$HOOK_NAME" -p "{\"webhooks\":[{\"name\":\"$HOOK_SVC_NAME\",\"clientConfig\":{\"caBundle\":\"$TLS_PEM\"}}]}"
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-mutating-webhook-ca-injector
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+rules:
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  resourceNames: ["release-name-k8s-jacoco-operator-hooks"]
+  verbs: ["get", "update", "patch"]
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-hook-read-secrets-binding
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "1"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+subjects:
+- kind: ServiceAccount
+  name:  release-name-post-install-job-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole 
+  name: release-name-mutating-webhook-ca-injector
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: release-name-mutating-webhook-tls-reader
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+rules:
+- apiGroups: [""]
+  resourceNames: ["k8s-jacoco-operator"]
+  resources: ["secrets"]
+  verbs: ["get"]
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-hook-read-secrets-binding
+  namespace: default
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "1"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+subjects:
+- kind: ServiceAccount
+  name:  release-name-post-install-job-sa
+  namespace: default
+roleRef:
+  kind: Role 
+  name: release-name-mutating-webhook-tls-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: k8s-jacoco-operator/templates/self-signed-ca-inject-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-ca-bundle-inject"
+  namespace: "default"
+  labels:
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: 0.1.0
+    helm.sh/chart: "k8s-jacoco-operator-0.4.0"
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "2"
+    "helm.sh/resource-policy": delete
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      name: "release-name"
+      namespace: "default"
+      labels:
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/instance: "release-name"
+        helm.sh/chart: "k8s-jacoco-operator-0.4.0"
+    spec:
+      securityContext:
+        runAsUser: 2000
+        runAsGroup: 2000
+        fsGroup: 2000
+      serviceAccountName: release-name-post-install-job-sa
+      restartPolicy: Never
+      volumes:
+        - name: script
+          configMap:
+            name: release-name-ca-inject-scripts
+            items:
+              - key: inject-ca.sh
+                path: entry-point.sh
+                mode: 0755
+      containers:
+      - volumeMounts:
+          - name: script
+            mountPath: /job/
+        name: post-install-job
+        image: "ghcr.io/curium-rocks/docker-kubectl:main"
+        imagePullPolicy: Always
+        env:
+          - name: SECRET_NAME
+            value: "k8s-jacoco-operator"
+          - name: RELEASE_NAMESPACE
+            value: "default"
+          - name: HOOK_NAME
+            value: "release-name-k8s-jacoco-operator-hooks"
+          - name: HOOK_SVC_NAME
+            value: "release-name-k8s-jacoco-operator.default.svc"
+        command: ["/job/entry-point.sh"]

@@ -1,0 +1,124 @@
+---
+# Source: mongoping/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongoping
+data:
+  HEALTH_ADDR: :8888
+  HEALTH_PATH: /health
+  INTERVAL: 10s
+  METRICS_ADDR: :3000
+  METRICS_BUCKETS_LATENCY: 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025,
+    0.05, 0.1, 0.25, .5, 1
+  METRICS_NAMESPACE: ""
+  METRICS_PATH: /metrics
+  TARGETS: /etc/mongoping/targets.yaml
+  TIMEOUT: 5s
+---
+# Source: mongoping/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongoping-config
+data:
+  targets.yaml: |
+    - name: "mongo1"
+      cmd: hello # "" or hello
+      database: admin # command hello requires database
+      uri: "mongodb://localhost:27017"
+      #tls_ca_file: ca-bundle.pem
+    - name: "mongo2"
+      uri: "mongodb://localhost:27018"
+      user: user2
+      pass: aws-parameterstore:us-east-1:mongo_pass_user2 # Retrieve from parameter store
+      role_arn: arn:aws:iam::100010001000:role/admin
+      #tls_ca_file: ca-bundle.pem
+---
+# Source: mongoping/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mongoping
+  labels:
+    helm.sh/chart: mongoping-1.1.9
+    app.kubernetes.io/name: mongoping
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.9"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongoping
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        rollme: "WGtmt"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "3000"
+        prometheus.io/scrape: "true"
+        sidecar.istio.io/inject: "true"
+      labels:
+        app.kubernetes.io/name: mongoping
+        app.kubernetes.io/instance: release-name
+        app: mongoping
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-mongoping-config
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      containers:
+        - name: release-name
+          securityContext:
+            {}
+          image: "udhos/mongoping:1.1.9"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+          - configMapRef:
+              name: release-name-mongoping
+          volumeMounts:
+          - name: config
+            mountPath: /etc/mongoping
+          startupProbe:
+            # must initialize within 3*100=300 seconds
+            httpGet:
+              path: /health
+              port: 8888
+            periodSeconds: 3
+            failureThreshold: 100
+          readinessProbe:
+            # not ready after 10*6=60 seconds without success
+            httpGet:
+              path: /health
+              port: 8888
+              scheme: HTTP
+            periodSeconds: 10
+            failureThreshold: 6
+            successThreshold: 1
+            timeoutSeconds: 5
+          livenessProbe:
+            # kill after 20*6=120 seconds without success
+            httpGet:
+              path: /health
+              port: 8888
+              scheme: HTTP
+            periodSeconds: 20
+            failureThreshold: 6
+            successThreshold: 1
+            timeoutSeconds: 10            
+          resources:
+            limits:
+              cpu: 2000m
+              ephemeral-storage: 200Mi
+              memory: 300Mi
+            requests:
+              cpu: 300m
+              ephemeral-storage: 100Mi
+              memory: 100Mi

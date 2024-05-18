@@ -1,0 +1,158 @@
+---
+# Source: actual/templates/storage.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-actual-data
+  labels:
+    app.kubernetes.io/name: actual
+    helm.sh/chart: actual-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec: 
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+# Source: actual/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-actual
+  labels:
+    app.kubernetes.io/name: actual
+    helm.sh/chart: actual-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: web
+      port: 5006
+      targetPort: web
+      nodePort: 0
+  selector:
+    app.kubernetes.io/name: actual
+    app.kubernetes.io/instance: release-name
+---
+# Source: actual/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-actual
+  labels:
+    app.kubernetes.io/name: actual
+    helm.sh/chart: actual-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: actual
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: actual
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        runAsGroup: 64087
+        runAsNonRoot: true
+        runAsUser: 64087
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: actual-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 64087
+            runAsNonRoot: true
+            runAsUser: 64087
+          image: ghcr.io/beluga-cloud/actual/actualserver:23.12.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: web
+              containerPort: 5006
+              protocol: TCP
+          livenessProbe:
+            httpGet: &httpProbe
+              port: web
+              path: /
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet: *httpProbe
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            limits:
+              cpu: 100m
+              memory: 100Mi
+            requests:
+              cpu: 10m
+              memory: 100Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              subPath: persistent-files
+            - name: data
+              mountPath: /data/user-files
+              subPath: user-files
+            - name: data
+              mountPath: /data/server-files
+              subPath: server-files
+      nodeSelector:
+        kubernetes.io/os: linux
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-actual-data
+---
+# Source: actual/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-actual-test-connection"
+  labels:
+    app.kubernetes.io/name: actual
+    helm.sh/chart: actual-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      args: ['--timeout=5', '-O/dev/null', 'release-name-actual:5006/health']
+      command: ['wget']
+      image: busybox:musl
+      resources:
+        requests:
+          cpu: 10m
+          memory: 25Mi
+        limits:
+          cpu: 100m
+          memory: 25Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault

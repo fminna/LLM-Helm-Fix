@@ -1,0 +1,150 @@
+---
+# Source: borgserver/templates/psp.yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: release-name-borgserver
+  labels: {}
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'docker/default,runtime/default'
+    apparmor.security.beta.kubernetes.io/allowedProfileNames: 'runtime/default'
+    apparmor.security.beta.kubernetes.io/defaultProfileName:  'runtime/default'
+spec:
+    volumes:
+      - configMap
+      - secret
+      - persistentVolumeClaim
+      - emptyDir
+      - projected
+    seLinux:
+      rule: RunAsAny
+    runAsUser:
+      rule: MustRunAsNonRoot
+    supplementalGroups:
+      rule: MustRunAs
+      ranges:
+        - min: 1
+          max: 65535
+    fsGroup:
+      rule: MustRunAs
+      ranges:
+        - min: 1
+          max: 65535
+    allowPrivilegeEscalation: false
+    privileged: false
+    requiredDropCapabilities:
+    - ALL
+    hostNetwork: true
+    hostIPC: false
+    hostPID: false
+    readOnlyRootFilesystem: true
+---
+# Source: borgserver/templates/configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authorized-keys
+  labels:
+    app: borgserver
+data:
+  authorized-keys: |-
+---
+# Source: borgserver/templates/pvc.yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: borgserver-hostkeys
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Mi
+---
+# Source: borgserver/templates/psp.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-borgserver
+rules:
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs:     ['use']
+  resourceNames:
+  - release-name-borgserver
+---
+# Source: borgserver/templates/psp.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-borgserver
+roleRef:
+  kind: ClusterRole
+  name: release-name-borgserver
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: system:serviceaccounts:default
+---
+# Source: borgserver/templates/statefulset.yml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "borgserver-statefulset"
+  labels:
+    chart: 'borgserver-0.1.0'
+spec:
+  serviceName: borgserver
+  selector:
+    matchLabels:
+      app: borgserver
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: borgserver
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      volumes:
+        - name: repos
+          hostPath:
+            path: /data/backup/lan
+            type: Directory
+        - name: hostkeys
+          persistentVolumeClaim:
+            claimName: borgserver-hostkeys
+        - name: authorized-keys
+          configMap:
+            name: authorized-keys
+            items:
+              - key: authorized-keys
+                path: authorized-keys
+            defaultMode: 0600
+      terminationGracePeriodSeconds: 100
+      initContainers:
+      - name: borgserver-init
+        image: lib42/borgserver:latest
+        command: [ "/init.sh" ]
+        volumeMounts:
+        - name: hostkeys
+          mountPath: /keys
+      containers:
+      - name: borgserver
+        image: lib42/borgserver:latest
+        ports:
+        - containerPort: 2222
+          hostPort: 2222
+          protocol: TCP
+          name: borgserver
+        volumeMounts:
+        - name: hostkeys
+          mountPath: /keys
+        - name: repos
+          mountPath: /backup
+        - name: authorized-keys
+          mountPath: /home/borg/.ssh/authorized_keys
+          subPath: authorized-keys

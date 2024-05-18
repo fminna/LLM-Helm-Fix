@@ -1,0 +1,343 @@
+---
+# Source: leaderboard/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.9.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+type: Opaque
+data:
+  postgresql-postgres-password: "d0ZHekk1dWs2cQ=="
+  postgresql-password: "c29tZV9wYXNzd29yZF9oZXJl"
+---
+# Source: leaderboard/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.9.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  namespace: default
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: leaderboard/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.9.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: leaderboard/templates/ui-loadbalancer.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: leaderboard-ui
+spec:
+  type: LoadBalancer
+  # We want all pods to have their addresses published for the sake of the
+  # other testnet pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  selector:
+    app: leaderboard-ui
+  ports:
+  - name: leaderboard-ui
+    port: 80
+    targetPort: leaderboard-ui
+    protocol: TCP
+---
+# Source: leaderboard/templates/ui.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leaderboard-ui
+  labels:
+    app: leaderboard-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leaderboard-ui
+  template:
+    metadata:
+      labels:
+        app: leaderboard-ui
+        role: leaderboard
+        version: v2
+    spec:
+      containers:
+      - name: ui
+        image: gcr.io/mina-mainnet-303900/leaderboard-ui:v2
+        imagePullPolicy: Always
+        ports:
+        - name: leaderboard-ui
+          protocol: TCP
+          containerPort: 80
+        volumeMounts:
+          - name: php-creds
+            mountPath: /var/www/html/creds/
+      volumes:
+        - name: php-creds
+          secret:
+            secretName: php-connection
+            items:
+            - key: connection.php
+              path: connection.php
+---
+# Source: leaderboard/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pg
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.9.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+  namespace: default
+spec:
+  serviceName: pg-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: pg
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.9.4
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+        app.kubernetes.io/component: primary
+    spec:      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 70
+        runAsUser: 70
+      automountServiceAccountToken: false
+      containers:
+        - name: pg
+          image: gcr.io/mina-mainnet-303900/postgres:v2
+          imagePullPolicy: "Always"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 70
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg
+                  key: postgresql-postgres-password
+            - name: POSTGRES_USER
+              value: "leaderboard"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "leaderboard"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "leaderboard" -d "dbname=leaderboard" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "leaderboard" -d "dbname=leaderboard" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: leaderboard/templates/email-cron.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "email-cron"
+spec:
+  schedule: "0 0 */15 * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cron
+              image: gcr.io/mina-mainnet-303900/leaderboard-bot:v2
+              imagePullPolicy: Always
+              command:
+                - /usr/local/bin/python
+                - send_email.py
+              volumeMounts:
+                - name: cron-creds
+                  mountPath: /opt/minanet/creds/
+          volumes:
+            - name: cron-creds
+              secret:
+                secretName: leaderboard-cron-creds
+                items:
+                - key: gcs-credential.json
+                  path: gcs-credential.json
+                - key: config.py
+                  path: config.py
+                - key: sendgrid.key
+                  path: sendgrid.key
+---
+# Source: leaderboard/templates/leaderboard-cron.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "leaderboard-cron"
+spec:
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cron
+              image: gcr.io/mina-mainnet-303900/leaderboard-bot:v2
+              imagePullPolicy: Always
+              volumeMounts:
+                - name: cron-creds
+                  mountPath: /opt/minanet/creds/
+          volumes:
+            - name: cron-creds
+              secret:
+                secretName: leaderboard-cron-creds
+                items:
+                - key: gcs-credential.json
+                  path: gcs-credential.json
+                - key: sheets-credential.json
+                  path: sheets-credential.json
+                - key: config.py
+                  path: config.py

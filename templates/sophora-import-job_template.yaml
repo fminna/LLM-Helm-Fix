@@ -1,0 +1,376 @@
+---
+# Source: sophora-import-job/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-sophora-import-job
+  labels:
+    helm.sh/chart: sophora-import-job-1.1.0
+    app.kubernetes.io/name: sophora-import-job
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.4.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  application.yml: |-
+    sophora:
+      client:
+        server-connection:
+          urls: 
+          username: # in secret
+          password: # in secret
+          retries: 15
+          retry-interval: 10
+          internal: true
+          use-migration-mode: false
+        toolInfo:
+          enabled: false
+
+    importer:
+      name: Importer
+
+      
+
+      # Defaults for all instances.
+      folders:
+        watchCheckInterval: 1000
+        watchRecursive: true
+
+      webService:
+        enabled: false
+
+      filenamesAddTimestamp: false
+
+      cleanupFoldersCron: "0 0 9 ? * * *" # every day at 9AM
+      cleanupFoldersSuccessfulMaxAge: 1 # in days
+      cleanupFoldersFailureMaxAge: 7 # in days
+
+      # Configuration of the importer instances
+      instances:
+      - name: Import Job
+        key: importjob
+        transform: skipTransform
+        folders:
+          watch: /import/incoming
+          temp: /import/temp
+          success: /import/success
+          failure: /import/failure
+          xsl: /sophora/xsl/.
+        defaultStructureNode: /import
+  logback-spring.xml: |- 
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration scan="true" scanPeriod="60 seconds">
+    	<jmxConfigurator/>
+    
+    	<property name="PATTERN"
+    			  value="%d{dd.MM.yyyy HH:mm:ss} %5level [%12.12thread] [%X{importerInstanceName}: %X{feedName} %X{sourceFileName}] %.40(%logger{0}:%L) --- %msg%n"/>
+    
+    	<appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+    		<encoder>
+    			<pattern>${PATTERN}</pattern>
+    		</encoder>
+    	</appender>
+    
+    	<logger name="com.subshell.sophora" level="INFO"/>
+    	<logger name="com.subshell.sophora.importer" level="INFO"/>
+    	<logger name="org.springframework.boot" level="INFO"/>
+    
+    	<root level="WARN">
+    		<appender-ref ref="console"/>
+    	</root>
+    
+    </configuration>
+---
+# Source: sophora-import-job/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-sophora-import-job
+  labels:
+    helm.sh/chart: sophora-import-job-1.1.0
+    app.kubernetes.io/name: sophora-import-job
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.4.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  schedule: 0 */3 * * 0
+  suspend: true
+  jobTemplate:
+    spec:
+      parallelism: 1
+      activeDeadlineSeconds: 10800
+      ttlSecondsAfterFinished: 604800
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          shareProcessNamespace: true
+          initContainers:
+            
+            - name: zip-via-s3-downloader
+              image: "docker.subshell.com/misc/aws-cli-tools:0.0.2"
+              imagePullPolicy: IfNotPresent
+              volumeMounts:
+                - mountPath: /import
+                  name: import
+                - mountPath: /metrics
+                  name: metrics
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      key: accessKeyId
+                      name: 
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: secretAccessKey
+                      name: 
+                - name: S3_ENDPOINT
+                  value: https://storage.googleapis.com
+                - name: S3_NAME
+                  value: 
+                - name: S3_FILE_PATHS
+                  value: ""
+              command: ["/bin/sh"]
+              args:
+                - "-c"
+                - |-
+                  mkdir dl && cd dl || exit;
+                  jobStart=$(date +%s%3N)
+                  # download via s3 if the required env variables are set
+                  if [ -n "$S3_FILE_PATHS" ]; then
+                    for S3_FILE_PATH in $S3_FILE_PATHS; do
+                      aws --endpoint="$S3_ENDPOINT" s3 cp "s3://$S3_NAME$S3_FILE_PATH" ./
+                      echo "Downloaded $S3_FILE_PATH"
+                    done
+                  fi
+                  
+                  # download via http if the required env variables are set
+                  if [ -n "$REPO_ZIP_URLS" ]; then
+                    for REPO_ZIP_URL in $REPO_ZIP_URLS; do
+                      wget -q --user="${HTTP_USERNAME}" --password="${HTTP_PASSWORD}" "$REPO_ZIP_URL";
+                      echo "Downloaded $REPO_ZIP_URL"
+                    done
+                  fi
+                  
+                  count_files() {
+                    result=$(find $1 -type f | grep ".xml" | wc -l)
+                    echo "$result"
+                  }
+                  
+                  downloadEnd=$(date +%s%3N)
+                  downloadDurationMillis=$((downloadEnd-jobStart))
+                  downloadDurationSeconds=$(awk -v millis=$downloadDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+                  
+                  for file in `ls *.zip`; do unzip "$file" && rm "$file"; done
+                  for file in `ls *.tar.gz`; do tar -zxvf "$file" && rm "$file"; done
+                  
+                  mkdir -p /import/incoming
+                  mkdir -p /import/temp
+                  mkdir -p /import/success
+                  mkdir -p /import/failure
+                  mv * /import/incoming
+                  echo "Copied data to import into local directory /import/incoming"
+                  tree /import/incoming
+                  
+                  downloadedFilesCount=$(count_files /import/incoming)
+                  
+                  # Write metrics to file
+                  cat <<EOT >> /metrics/metrics.txt
+                  # HELP sophora_import_job_start the unix timestamp when the job started
+                  # TYPE sophora_import_job_start gauge
+                  sophora_import_job_start $jobStart
+                  # HELP sophora_import_job_downloaded_documents
+                  # TYPE sophora_import_job_downloaded_documents gauge
+                  sophora_import_job_downloaded_documents $downloadedFilesCount
+                  # HELP sophora_import_job_download_duration_seconds
+                  # TYPE sophora_import_job_download_duration_seconds gauge
+                  sophora_import_job_download_duration_seconds{type="documents"} $downloadDurationSeconds
+                  EOT
+                  
+                  echo "$jobStart" >> /metrics/job_start.txt
+                  
+
+            
+          containers:
+            - name: importer
+              image: "docker.subshell.com/sophora/sophora-importer:master"
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh"]
+              args:
+                - "-c"
+                - |-
+                  count_files() {
+                    result=$(find $1 -type f | grep ".xml" | wc -l)
+                    echo "$result"
+                  }
+                  
+                  cd /sophora || exit
+                  echo "Starting importer."
+                  importerStart=$(date +%s%3N)
+                  java -cp classpath org.springframework.boot.loader.PropertiesLauncher
+                  importerStop=$(date +%s%3N)
+                  echo "Importer stopped."
+                  importDurationMillis=$((importerStop-importerStart))
+                  importDurationSeconds=$(awk -v millis=$importDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+                  
+                  success=$(count_files /import/success)
+                  failure=$(count_files /import/failure)
+                  
+                  printf "successful imports: %i\t import failures: %i\n" "$success" "$failure"
+                  
+                  jobStart=$(cat /metrics/job_start.txt)
+                  jobSuccessful="true"
+                  if [ "$failure" -gt 0 ]; then
+                    jobSuccessful="false"
+                  fi
+                  
+                  jobEnd=$(date +%s%3N)
+                  jobDurationMillis=$((jobEnd-jobStart))
+                  jobDuration=$(awk -v millis=$jobDurationMillis 'BEGIN { print ( millis / 1000 ) }')
+                  # Write metrics to file
+                  cat <<EOT >> /metrics/metrics.txt
+                  # HELP sophora_import_job_end the end unix timestamp of the import job
+                  # TYPE sophora_import_job_end gauge
+                  sophora_import_job_end{success="$jobSuccessful"} $jobEnd
+                  # HELP sophora_import_job_imported_documents
+                  # TYPE sophora_import_job_imported_documents gauge
+                  sophora_import_job_imported_documents{imported="true"} $success
+                  sophora_import_job_imported_documents{imported="false"} $failure
+                  # HELP sophora_import_job_import_duration_seconds
+                  # TYPE sophora_import_job_import_duration_seconds gauge
+                  sophora_import_job_import_duration_seconds $importDurationSeconds
+                  # HELP sophora_import_job_duration_seconds
+                  # TYPE sophora_import_job_duration_seconds gauge
+                  sophora_import_job_duration_seconds{success="$jobSuccessful"} $jobDuration
+                  EOT
+                  
+                  exit 0
+                  
+              env:
+                - name: JDK_JAVA_OPTIONS
+                  value: -XX:InitialRAMPercentage=50.0 -XX:MaxRAMPercentage=80.0 -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+                - name: SOPHORA_CLIENT_SERVERCONNECTION_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      key: username
+                      name: 
+                - name: SOPHORA_CLIENT_SERVERCONNECTION_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      key: password
+                      name: 
+                
+              resources:
+                limits:
+                  memory: 2Gi
+                requests:
+                  cpu: 200m
+                  memory: 2Gi
+              volumeMounts:
+                - name: importer-config
+                  mountPath: /sophora/application.yml
+                  subPath: application.yml
+                - name: importer-config
+                  mountPath: /sophora/logback-spring.xml
+                  subPath: logback-spring.xml
+                - name: import
+                  mountPath: /import
+                - name: xsl
+                  mountPath: /sophora/xsl
+                - name: libs
+                  mountPath: /sophora/additionalLibs
+                - mountPath: /metrics
+                  name: metrics
+            - name: process-watcher
+              image: "docker.subshell.com/misc/aws-cli-tools:0.0.2"
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh"]
+              args:
+                - "-c"
+                - |- 
+                  count_files() {
+                    result=$(find $1 -type f | grep ".xml" | wc -l)
+                    echo "$result"
+                  }
+                  
+                  currentFileCount=$(count_files /import/incoming)
+                  while [ $currentFileCount -gt 0 ]
+                  do
+                    echo "Still waiting. Current file count is ${currentFileCount}"
+                    sleep 1
+                    currentFileCount=$(count_files /import/incoming)
+                  done
+                  
+                  echo "No files remaining. Stopping importer."
+                  # Kill the importer:
+                  importerPid=$(pgrep java)
+                  kill $importerPid
+                  
+                  # Wait for importer to stop
+                  tail --pid="$importerPid" -f /dev/null
+                  
+                  # Push metrics
+                  if [ -z "$PUSHGATEWAY_BASE_URL" ]; then
+                    echo "pushgateway url is empty - not pushing metrics"
+                  else
+                    # give the importer container two seconds to write the metrics
+                    sleep 2
+                    echo "pushing metrics"
+                    if [ -z "$PUSHGATEWAY_USERNAME" ]; then
+                      curl -X PUT -s -H "Content-Type: text/plain" --data-binary "@/metrics/metrics.txt" "$PUSHGATEWAY_BASE_URL/metrics/job/$JOB_NAME"
+                    else
+                      curl -X PUT -s -H "Content-Type: text/plain" --user "${PUSHGATEWAY_USERNAME}:${PUSHGATEWAY_PASSWORD}" --data-binary "@/metrics/metrics.txt" "$PUSHGATEWAY_BASE_URL/metrics/job/$JOB_NAME"
+                    fi
+                  fi
+                  
+                  failure=$(count_files /import/failure)
+                  
+                  if [ "$failure" -gt 0 ]; then
+                    # error
+                    echo "import was not successful"
+                    echo "failures"
+                    echo "===="
+                    ls -R /import/failure
+                  
+                    if [ -n "$IMPORT_FAILURE_FILES_ENABLED" ]; then
+                      s3Path="s3://$S3_NAME$S3_FILE_PATH/${MY_POD_NAME}_$(date '+%Y-%m-%d_%H-%M')"
+                      echo "uploading failure files to configured s3 bucket $s3Path"
+                      aws --endpoint="$S3_ENDPOINT" s3 cp "/import/failure/" "$s3Path" --recursive
+                    fi
+                  else
+                    echo "import was successful"
+                  fi
+                  
+                  exit 0
+              volumeMounts:
+                - mountPath: /import
+                  name: import
+                - mountPath: /metrics
+                  name: metrics
+              env:
+                - name: PUSHGATEWAY_BASE_URL
+                  value: 
+                - name: JOB_NAME
+                  value: "release-name-sophora-import-job"
+              securityContext:
+                capabilities:
+                  add:
+                    - SYS_PTRACE
+          volumes:
+            - name: import
+              emptyDir: {}
+            - name: saxon-licence
+              secret:
+                secretName: saxon-license
+                optional: true
+            - name: xsl
+              emptyDir: {}
+            - name: libs
+              emptyDir: {}
+            - name: importer-config
+              configMap:
+                name: release-name-sophora-import-job
+            - name: metrics
+              emptyDir: {}

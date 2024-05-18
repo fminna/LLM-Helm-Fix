@@ -1,0 +1,563 @@
+---
+# Source: patchwork/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-patchwork
+  labels:
+    helm.sh/chart: patchwork-0.8.5
+    app.kubernetes.io/name: patchwork
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: patchwork/templates/dotenv.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-dotenv
+type: Opaque
+stringData:
+  .env: |-
+    PATCHWORK_REDIS_HOST=release-name-redis.default.svc
+    PATCHWORK_REDIS_PORT=6379
+    PATCHWORK_UPDATE_CRON=*/30 * * * *
+    PATCHWORK_RESTART_GRACE_PERIOD_SECONDS=3600
+---
+# Source: patchwork/charts/redis/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  labels:
+    helm.sh/chart: redis-0.7.5
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  init.sh: |
+    #!/bin/bash
+    REDIS_CONFIG=/data/conf/redis.conf
+    SENTINEL_CONFIG=/data/conf/sentinel.conf
+    if [ -f "/data/init.log" ]; then
+      echo "Detected restart of this instance ($HOSTNAME)"
+      echo "## This was the previous log:"
+      cat /data/init.log
+      echo "## End of previous log"
+    fi
+
+    # Log a message during initialization phase
+    # $1 - the log message
+    log() {
+      echo "$(date) $1"
+      echo "$(date) $1" >>/data/init.log
+    }
+
+    # Creating redis base configuration
+    configure_redis_base() {
+      log "Creating redis base configuration"
+      mkdir -p /data/conf
+      rm -f $REDIS_CONFIG
+
+      log "Setting redis server defaults"
+      echo "port 6379" >>$REDIS_CONFIG
+      echo "protected-mode no" >>$REDIS_CONFIG
+      echo "bind 0.0.0.0" >>$REDIS_CONFIG
+      echo "dir /data" >>$REDIS_CONFIG
+      log "Finished creating base configuration"
+    }
+
+    configure_redis_ext() {
+      if [ -f /usr/local/etc/redis/redis.conf ]; then
+          log "Adding optional redis configuration"
+          cat /usr/local/etc/redis/redis.conf >>$REDIS_CONFIG
+      fi
+      if [ -d /extraredisconfigs ]; then
+        log "Adding extra redis configs to redis configuration"
+        cat /extraredisconfigs/* >>$REDIS_CONFIG
+      fi
+    }
+
+    test_master_alive() {
+      TEST="$(timeout 2s redis-cli -h $MASTER -p 6379 ping)"
+      if [ -z "$TEST" ]; then
+        log "Master is not alive"
+        return 1
+      fi
+      log "Master is alive"
+      return 0
+    }
+
+    test_valid_dns() {
+      KNOWN_HOSTS=($(getent hosts release-name-redis-headless.default.svc.cluster.local | awk '{ print $1 }'))
+      log "## Known hosts for headless service release-name-redis-headless.default.svc.cluster.local:"
+      for AHOSTIP in "${KNOWN_HOSTS[@]}"; do
+        AHOSTNAME=$(getent hosts $AHOSTIP | awk '{print $2}')
+        log "${AHOSTIP} ${AHOSTNAME}"
+      done
+      log "#####"
+      MASTERENTRY="$(getent hosts $MASTER | awk '{ print $1 }')"
+    }
+
+    configure_sentinel() {
+      log "Configuring sentinel server..."
+      rm -f $SENTINEL_CONFIG
+
+      log "Setting sentinel defaults"
+      if [ -z "$MASTER" ]; then
+        MASTER="$(getent hosts $HOSTNAME | awk '{ print $1 }')"
+        log "No master found - Configuring sentinel for master $HOSTNAME with address $MASTER"
+        echo "sentinel monitor redisha $MASTER 6379 2" >>$SENTINEL_CONFIG
+      else
+        log "Redis master was found - Configuring sentinel for master address $MASTER"
+        echo "sentinel monitor redisha $MASTER 6379 2" >>$SENTINEL_CONFIG
+      fi
+      echo "sentinel down-after-milliseconds redisha 30000" >>$SENTINEL_CONFIG
+      echo "sentinel failover-timeout redisha 180000" >>$SENTINEL_CONFIG
+    }
+
+    configure_sentinel_ext() {
+      if [ -f /usr/local/etc/redis/sentinel.conf ]; then
+          log "Adding optional sentinel configuration settings"
+          cat /usr/local/etc/redis/sentinel.conf >>$SENTINEL_CONFIG
+      fi
+      if [ -d /extrasentinelconfigs ]; then
+        log "Adding extra sentinel configs to sentinel configuration"
+        cat /extrasentinelconfigs/* >>$SENTINEL_CONFIG
+      fi
+      log "Configuring sentinel server finished."
+    }
+
+    configure_redis_cluster() {
+      log "Try to resolve cluster service.."
+      SERVICE="$(getent hosts release-name-redis)"
+      if [ -z "$SERVICE" ]; then
+        log "Can't resolve service - Will restart after DNS failure wait"
+        sleep 15
+        log "Restart"
+        exit 1
+      else
+        log "Service resolved: ${SERVICE}"
+      fi
+      log "Try to detect cluster master.."
+      MASTER="$(timeout 2s redis-cli -h release-name-redis -p 26379 sentinel get-master-addr-by-name redisha | head -n 1)"
+      if [ -z "$MASTER" ]; then
+        log "No master found - This instance ($HOSTNAME) will be master now"
+      else
+        log "Redis master was found with address $MASTER - Checking host dns entry"
+        test_valid_dns
+        if [ -z "$MASTERENTRY" ]; then
+          log "No valid DNS entry found!"
+          if [ -f "/data/failover_restart" ]; then
+            rm /data/failover_restart
+            log "Forcing failover now"
+            redis-cli -h release-name-redis -p 26379 sentinel failover redisha
+          else
+            log "Waiting for failover before restart"
+            sleep 35
+            touch /data/failover_restart
+          fi
+          log "Restart"
+          exit 1
+        else
+          MASTER=$MASTERENTRY
+          log "$MASTER has valid DNS entry"
+          log "Checking if master is alive"
+          test_master_alive
+          if [ "$?" -eq "1" ]; then
+            if [ -f "/data/failover_restart" ]; then
+              rm /data/failover_restart
+              log "Master is still dead! - forcing failover and retry pod initialization"
+              redis-cli -h release-name-redis -p 26379 sentinel failover redisha
+            else
+              log "Dead master at address $MASTER detected! - waiting for failover"
+              sleep 35
+              touch /data/failover_restart
+            fi
+            log "Restart"
+            exit 1
+          else
+            rm -f /data/failover_restart
+            log "Setting this instance ($HOSTNAME) as replicaof $MASTER"
+            echo "replicaof $MASTER 6379" >>$REDIS_CONFIG
+          fi
+        fi
+      fi
+    }
+
+    log "Creating configuration..."
+    configure_redis_base
+    configure_redis_ext
+    log "Done."
+    rm -f /data/init.log
+---
+# Source: patchwork/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-patchwork-updater
+rules:
+# need to be able to fetch pull secrets to interact with private registries
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+# meed to to be able to fetch indivudal pods to lookup image hashes
+# need to be able to lookup images on node and the node arch
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+# need to be able to lookup/list and patch apps
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch", "patch"]
+---
+# Source: patchwork/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-patchwork-updater
+subjects:
+- kind: ServiceAccount
+  name: release-name-patchwork
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-patchwork-updater
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: patchwork/charts/redis/templates/service-internal.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  labels:
+    helm.sh/chart: redis-0.7.5
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+---
+# Source: patchwork/charts/redis/templates/services.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis
+  labels:
+    helm.sh/chart: redis-0.7.5
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+---
+# Source: patchwork/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-patchwork
+  labels:
+    helm.sh/chart: patchwork-0.8.5
+    app.kubernetes.io/name: patchwork
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: patchwork
+    app.kubernetes.io/instance: release-name
+---
+# Source: patchwork/charts/redis/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-redis
+  labels:
+    helm.sh/chart: redis-0.7.5
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/customconfig: 01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b
+        checksum/scripts: 444ffc204888e4512d892d12d2784b369817973b39c545a9a63c7bdbfa82075f
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      securityContext:
+        fsGroup: 999
+        supplementalGroups:
+        - 999
+      initContainers:
+        - name: redis-init
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 999
+            runAsNonRoot: true
+            runAsUser: 999
+          image: "ghcr.io/bryopsida/redis:main"
+          imagePullPolicy: Always
+          volumeMounts:
+            - mountPath: /data
+              name: redis-data
+            - name: scripts
+              mountPath: /scripts
+          command: [ "/scripts/init.sh" ]
+      containers:
+        - name: redis-server
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 999
+            runAsNonRoot: true
+            runAsUser: 999
+          image: "ghcr.io/bryopsida/redis:main"
+          imagePullPolicy: Always
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli ping
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+            successThreshold: 1
+            periodSeconds: 10              
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli ping
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - redis-cli ping
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+            periodSeconds: 10
+          command:
+            - redis-server
+          args:
+            - /data/conf/redis.conf
+          envFrom:
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0555
+        - name: redis-data
+          emptyDir: {}
+---
+# Source: patchwork/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-patchwork
+  labels:
+    helm.sh/chart: patchwork-0.8.5
+    app.kubernetes.io/name: patchwork
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patchwork
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patchwork
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-patchwork
+      securityContext:
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: patchwork
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+          image: "ghcr.io/bryopsida/patchwork:main"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dotenv
+              mountPath: /usr/src/app/.env
+              subPath: .env
+      volumes:
+        - name: dotenv
+          secret:
+            secretName: release-name-dotenv
+---
+# Source: patchwork/templates/tests/postman.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-postman-configmap
+  annotations:
+    "helm.sh/hook": test-success
+data:
+  Nest.JS-Starter.postman_collection.json: "{\n\t\"info\": {\n\t\t\"_postman_id\": \"c4d4f87c-e6f9-41e0-80d2-ff869d06f391\",\n\t\t\"name\":
+    \"Nest.JS Starter\",\n\t\t\"schema\": \"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\",\n\t\t\"_exporter_id\":
+    \"227389\"\n\t},\n\t\"item\": [\n\t\t{\n\t\t\t\"name\": \"Health\",\n\t\t\t\"event\":
+    [\n\t\t\t\t{\n\t\t\t\t\t\"listen\": \"test\",\n\t\t\t\t\t\"script\": {\n\t\t\t\t\t\t\"exec\":
+    [\n\t\t\t\t\t\t\t\"pm.test(\\\"Response time is less than 500ms\\\", function ()
+    {\",\n\t\t\t\t\t\t\t\"    pm.expect(pm.response.responseTime).to.be.below(500);\",\n\t\t\t\t\t\t\t\"});\",\n\t\t\t\t\t\t\t\"\",\n\t\t\t\t\t\t\t\"pm.test(\\\"Response
+    status code is 200\\\", function() {\",\n\t\t\t\t\t\t\t\"    pm.expect(pm.response.code).to.be.eq(200)\",\n\t\t\t\t\t\t\t\"});\",\n\t\t\t\t\t\t\t\"\",\n\t\t\t\t\t\t\t\"pm.test(\\\"Response
+    body is ok\\\", function() {\",\n\t\t\t\t\t\t\t\"    var responseData = pm.response.json()\",\n\t\t\t\t\t\t\t\"
+    \   pm.expect(responseData.status).to.eq(\\\"ok\\\")\",\n\t\t\t\t\t\t\t\"    pm.expect(pm.response.body)\",\n\t\t\t\t\t\t\t\"});\"\n\t\t\t\t\t\t],\n\t\t\t\t\t\t\"type\":
+    \"text/javascript\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t],\n\t\t\t\"request\": {\n\t\t\t\t\"method\":
+    \"GET\",\n\t\t\t\t\"header\": [],\n\t\t\t\t\"url\": {\n\t\t\t\t\t\"raw\": \"{{server_url}}/health\",\n\t\t\t\t\t\"host\":
+    [\n\t\t\t\t\t\t\"{{server_url}}\"\n\t\t\t\t\t],\n\t\t\t\t\t\"path\": [\n\t\t\t\t\t\t\"health\"\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t},\n\t\t\t\"response\":
+    []\n\t\t},\n\t\t{\n\t\t\t\"name\": \"Swagger\",\n\t\t\t\"event\": [\n\t\t\t\t{\n\t\t\t\t\t\"listen\":
+    \"test\",\n\t\t\t\t\t\"script\": {\n\t\t\t\t\t\t\"exec\": [\n\t\t\t\t\t\t\t\"pm.test(\\\"Response
+    time is less than 500ms\\\", function () {\",\n\t\t\t\t\t\t\t\"    pm.expect(pm.response.responseTime).to.be.below(500);\",\n\t\t\t\t\t\t\t\"});\",\n\t\t\t\t\t\t\t\"\",\n\t\t\t\t\t\t\t\"pm.test(\\\"Response
+    status code is 200\\\", function() {\",\n\t\t\t\t\t\t\t\"    pm.expect(pm.response.code).to.be.eq(200)\",\n\t\t\t\t\t\t\t\"});\"\n\t\t\t\t\t\t],\n\t\t\t\t\t\t\"type\":
+    \"text/javascript\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t],\n\t\t\t\"request\": {\n\t\t\t\t\"method\":
+    \"GET\",\n\t\t\t\t\"header\": [],\n\t\t\t\t\"url\": {\n\t\t\t\t\t\"raw\": \"{{server_url}}/api-json\",\n\t\t\t\t\t\"host\":
+    [\n\t\t\t\t\t\t\"{{server_url}}\"\n\t\t\t\t\t],\n\t\t\t\t\t\"path\": [\n\t\t\t\t\t\t\"api-json\"\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t},\n\t\t\t\"response\":
+    []\n\t\t}\n\t]\n}"
+  Nest.JS-Starter.postman_environment.json: "{\n\t\"id\": \"90a0a472-f6c1-4ab9-aab9-c38153713251\",\n\t\"name\":
+    \"Nest.JS Starter\",\n\t\"values\": [\n\t\t{\n\t\t\t\"key\": \"server_url\",\n\t\t\t\"value\":
+    \"http://localhost:3000\",\n\t\t\t\"type\": \"default\",\n\t\t\t\"enabled\": true\n\t\t}\n\t],\n\t\"_postman_variable_scope\":
+    \"environment\",\n\t\"_postman_exported_at\": \"2023-06-18T02:35:13.304Z\",\n\t\"_postman_exported_using\":
+    \"Postman/10.15.1\"\n}"
+---
+# Source: patchwork/templates/tests/postman.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-patchwork-postman-test"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test-runner
+      image: postman/newman:latest
+      volumeMounts:
+        - name: collection-volume
+          mountPath: /postman/
+      args:
+        - run
+        - "/postman/Nest.JS-Starter.postman_collection.json"
+        - --env-var
+        - 'server_url=http://release-name-patchwork.default.svc:3000'
+  volumes:
+    - name: collection-volume
+      configMap:
+        name: release-name-postman-configmap
+---
+# Source: patchwork/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-patchwork-test-connection"
+  labels:
+    helm.sh/chart: patchwork-0.8.5
+    app.kubernetes.io/name: patchwork
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-patchwork:3000']
+  restartPolicy: Never

@@ -1,0 +1,179 @@
+---
+# Source: central-hostpath-mapper/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hpm-release-name
+  namespace: default
+---
+# Source: central-hostpath-mapper/templates/rbac/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpm-release-name-v-default
+  labels:
+    app: central-hostpath-mapper
+    chart: "central-hostpath-mapper-0.2.2"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/status", "nodes", "nodes/status"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["storage.loft.sh"]
+    resources: ["virtualclusters"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["cluster.loft.sh"]
+    resources: ["features"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "watch", "list"]
+---
+# Source: central-hostpath-mapper/templates/rbac/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: hpm-release-name-v-default
+  labels:
+    app: central-hostpath-mapper
+    chart: "central-hostpath-mapper-0.2.2"
+    release: "release-name"
+    heritage: "Helm"
+subjects:
+  - kind: ServiceAccount
+    name: hpm-release-name
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: hpm-release-name-v-default
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: central-hostpath-mapper/templates/rbac/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: central-hostpath-mapper
+    chart: "central-hostpath-mapper-0.2.2"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/attach", "pods/portforward", "pods/exec"]
+    verbs: ["create", "delete", "patch", "update", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints", "events", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: central-hostpath-mapper/templates/rbac/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app: central-hostpath-mapper
+    chart: "central-hostpath-mapper-0.2.2"
+    release: "release-name"
+    heritage: "Helm"
+subjects:
+  - kind: ServiceAccount
+    name: hpm-release-name
+    namespace: default
+roleRef:
+  kind: Role
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: central-hostpath-mapper/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-hostpath-mapper
+  namespace: default
+  labels:
+    app: central-hostpath-mapper
+    chart: "central-hostpath-mapper-0.2.2"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  selector:
+    matchLabels:
+      app: central-hostpath-mapper
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: central-hostpath-mapper
+        release: release-name
+    spec:
+      serviceAccountName: hpm-release-name
+      containers:
+      - name: hostpath-mapper
+        image: "ghcr.io/loft-sh/central-hostpath-mapper:0.2.2"
+        
+        securityContext:
+          # Required for Bidirectional mount propagation
+          privileged: true
+          runAsUser: 0
+          capabilities:
+            add: ["SYS_ADMIN"]
+          allowPrivilegeEscalation: true
+        
+        command:
+          - /central-hpm
+        env:
+          - name: VCLUSTER_HOSTPATH_MAPPER_CURRENT_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+        args:
+          - start
+          - --use-mounts=true
+        volumeMounts:
+          - name: logs
+            mountPath: /var/log
+          - name: virtual-temp
+            mountPath: /tmp/vcluster
+            mountPropagation: Bidirectional
+          - name: pod-logs
+            mountPath: /var/log/pods
+          # - name: virtual-pod-logs
+          #   mountPath: /tmp/vcluster/default/release-name/log/pods
+          - name: kubelet-pods
+            mountPath: /var/lib/kubelet/pods
+          # - name: virtual-kubelet-pods
+          #   mountPath: /tmp/vcluster/default/release-name/kubelet/pods
+          # - name: kubeconfig
+          #   mountPath: /data/server/tls
+      volumes:
+        - name: logs
+          hostPath:
+            path: /var/log
+        - name: virtual-temp
+          hostPath:
+            path: /tmp/vcluster
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+        - name: kubelet-pods
+          hostPath:
+            path: /var/lib/kubelet/pods
+        # - name: virtual-pod-logs
+        #   hostPath:
+        #     path: /tmp/vcluster/default/release-name/log/pods
+        # - name: virtual-kubelet-pods
+        #   hostPath:
+        #     path: /tmp/vcluster/default/release-name/kubelet/pods
+        # - name: kubeconfig
+        #   secret:
+        #     secretName: vc-release-name

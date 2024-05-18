@@ -1,0 +1,195 @@
+---
+# Source: lm-logs/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-lm-logs
+  labels:
+    helm.sh/chart: lm-logs-0.3.5
+    app.kubernetes.io/name: lm-logs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: lm-logs/templates/configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: lm-logs
+  labels:
+    app.kubernetes.io/name: lm-logs
+    app.kubernetes.io/instance: release-name
+data:
+  fluent.conf: |
+    @include kubernetes.conf
+
+    <system>
+      log_level "#{ENV['FLUENT_LOG_LEVEL'] || 'warn'}"
+    </system>
+
+    <filter kubernetes.**>
+      @type record_transformer
+      enable_ruby
+      <record>
+        message ${record["log"]} ${record["message"]}
+        timestamp ${record["time"]}
+      </record>
+      remove_keys log
+    </filter>
+
+    <match kubernetes.**>
+      @type lm
+      company_name 
+      resource_mapping {"kubernetes.pod_name": "auto.name"}
+      access_id 
+      access_key 
+      debug false
+      compression gzip
+      include_metadata true
+      device_less_logs false
+      <buffer>
+        @type memory
+        flush_interval 1s
+        chunk_limit_size 8m
+        flush_thread_count 8
+      </buffer>
+    </match>
+  kubernetes.conf: |
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag "#{ENV['FLUENT_CONTAINER_TAIL_TAG'] || 'kubernetes.*'}"
+      exclude_path "#{ENV['FLUENT_CONTAINER_TAIL_EXCLUDE_PATH'] || '/var/log/containers/lm-logs*.log' }"
+      <parse>
+        @type "#{ENV['FLUENT_CONTAINER_TAIL_PARSER_TYPE'] || 'multi_format'}"
+        <pattern>
+          format json
+          keep_time_key true
+          time_format %Y-%m-%dT%H:%M:%S.%NZ
+        </pattern>
+        <pattern>
+          format syslog
+        </pattern>
+        <pattern>
+          format none
+        </pattern>
+      </parse>
+    </source>
+
+    <filter kubernetes.**>
+      @type concat
+      key log
+      seperator ""
+      multiline_start_regexp /^\[(\d{4}-)?\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{3}.*\]/
+      timeout_label @NORMAL
+    </filter>
+
+    <label @NORMAL>
+      <match kubernetes.**>
+        @type stdout
+      </match>
+    </label>
+
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+      kubernetes_url "#{ENV['FLUENT_FILTER_KUBERNETES_URL'] || 'https://' + ENV.fetch('KUBERNETES_SERVICE_HOST') + ':' + ENV.fetch('KUBERNETES_SERVICE_PORT') + '/api'}"
+      verify_ssl "#{ENV['KUBERNETES_VERIFY_SSL'] || true}"
+      ca_file "#{ENV['KUBERNETES_CA_FILE']}"
+      skip_labels "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_LABELS'] || 'false'}"
+      skip_container_metadata "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_CONTAINER_METADATA'] || 'false'}"
+      skip_master_url "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_MASTER_URL'] || 'false'}"
+      skip_namespace_metadata "#{ENV['FLUENT_KUBERNETES_METADATA_SKIP_NAMESPACE_METADATA'] || 'false'}"
+    </filter>
+---
+# Source: lm-logs/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-lm-logs
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Source: lm-logs/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-lm-logs
+roleRef:
+  kind: ClusterRole
+  name: release-name-lm-logs
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: release-name-lm-logs
+  namespace: default
+---
+# Source: lm-logs/templates/deamonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-lm-logs
+  labels:
+    helm.sh/chart: lm-logs-0.3.5
+    app.kubernetes.io/name: lm-logs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lm-logs
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lm-logs
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-lm-logs
+      containers:
+        - name: lm-logs
+          securityContext:
+            null
+          image: "logicmonitor/lm-logs-k8s-fluentd:1.0.5"
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            
+          imagePullPolicy: Always
+          resources:
+            limits:
+              memory: 1000Mi
+            requests:
+              cpu: 300m
+              memory: 700Mi
+          volumeMounts:
+            - mountPath: /fluentd/etc
+              name: fluentconf
+            - mountPath: /var/log
+              name: varlog
+            - mountPath: /var/lib/docker/containers
+              name: varlibdockercontainers
+              readOnly: true
+      volumes:
+        - name: fluentconf
+          configMap:
+            name: lm-logs
+        - hostPath:
+            path: /var/log
+          name: varlog
+        - hostPath:
+            path: /var/lib/docker/containers
+          name: varlibdockercontainers
+      tolerations:
+        - operator: Exists

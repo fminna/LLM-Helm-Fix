@@ -1,0 +1,431 @@
+---
+# Source: mediawiki/templates/networkpolicy.yaml.tpl
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mediawiki-release-name  
+  labels:
+    app: mediawiki
+    chart: mediawiki-0.6.26
+    release: release-name
+    heritage: Helm
+  
+spec:
+  podSelector:
+    matchLabels:
+      app: mediawiki
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8080
+        protocol: TCP
+---
+# Source: mediawiki/templates/configmap.yaml.tpl
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mediawiki-release-name-httpd-sites-config  
+  labels:
+    app: mediawiki
+    chart: mediawiki-0.6.26
+    release: release-name
+    heritage: Helm
+  
+data:
+
+
+  01-wikipedia.local.conf: |      ## add a default if no priority
+    # VirtualHost for wikipedia.local
+    <VirtualHost *:8080>
+        ServerName wikipedia.local
+        DocumentRoot /srv/mediawiki/docroot/wikipedia.org
+        ServerAlias *.wikipedia.org
+        UseCanonicalName Off
+    
+        AllowEncodedSlashes On
+    
+        RewriteEngine On
+        RewriteRule . - [E=RW_PROTO:%{HTTP:X-Forwarded-Proto}]
+        RewriteCond %{ENV:RW_PROTO} !=https
+        RewriteRule . - [E=RW_PROTO:http]
+        # Uploads to the host-specific directory
+        RewriteCond %{HTTP_HOST} ([a-z\-]+)\.wikipedia\.org
+        RewriteRule ^/upload/(.*)$ %{ENV:RW_PROTO}://upload.wikimedia.org/wikipedia/%1/$1 [R=302]
+        
+        RewriteRule . - [E=RW_PROTO:%{HTTP:X-Forwarded-Proto}]
+        RewriteCond %{ENV:RW_PROTO} !=https
+        RewriteRule . - [E=RW_PROTO:http]
+        # RDF URIs
+        # Note that for Q and P, we support both lower and upper case for historical
+        # reason, for L and M there is no use case for lower case, so we only support
+        # upper case.
+        
+        # Direct link to the statement using the EntityID$StatementID URL anchor (T203397).
+        # We exclude the M prefix (MediaInfo on commons) as it lacks support for such an anchor.
+        #
+        # First try to capture Lexeme forms and senses as their statement anchors are a bit special
+        # e.g /entity/statement/L123-S18-1695a65e-4e4a-ba7d-5939-c58b300792a6 -> Special:EntityData/L123#L123-S18$1695a65e-4e4a-ba7d-5939-c58b300792a6
+        # (we use the NE flag to make sure we do not url encode the anchor char #)
+        RewriteRule ^/entity/statement/(L\d+)-([SF]\d+)-(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Special:EntityData/$1#$1-$2\$$3 [NE,R=303,L]
+        # Then capture other statements
+        # e.g. /entity/statement/Q2-50fad68d-4f91-f878-6f29-e655af54690e -> Special:EntityData/Q2#Q2$50fad68d-4f91-f878-6f29-e655af54690e
+        RewriteRule ^/entity/statement/([QqPpL]\d+)-(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Special:EntityData/$1#$1\$$2 [NE,R=303,L]
+        
+        # Catch-up any other statement URLs and redirect it to Special:EntityData forgetting everything added after the entity ID
+        RewriteRule ^/entity/statement/([QpPpLM]\d+) %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Special:EntityData/$1 [R=303,L]
+        
+        # TODO: value & reference handling can be improved to refer to something better
+        # like DESCRIBE query
+        RewriteRule ^/value/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Special:ListDatatypes [R=303,L]
+        RewriteRule ^/reference/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Help:Sources [R=303,L]
+        RewriteRule ^/prop/direct/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/direct-normalized/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/novalue/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/statement/value/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/statement/value-normalized/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/qualifier/value/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/qualifier/value-normalized/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/reference/value/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/reference/value-normalized/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/statement/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/qualifier/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/reference/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        RewriteRule ^/prop/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Property:$1 [R=303,L]
+        # https://meta.wikimedia.org/wiki/Wikidata/Notes/URI_scheme
+        RewriteRule ^/entity/E(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/EntitySchema:E$1 [R=303,QSA,L]
+        RewriteRule ^/entity/(.*)$ %{ENV:RW_PROTO}://%{SERVER_NAME}/wiki/Special:EntityData/$1 [R=303,QSA]
+        
+        ### Common rewrite rules for all wikis
+    
+        # Redirect /wiki, /w to the fcgi backend
+        RewriteRule     ^/w/wiki.phtml$      /w/index.php [L,QSA,NE]
+    
+        # Primary wiki redirector:
+        RewriteRule ^/wiki /w/index.php [L]
+        # Make robots.txt editable via MediaWiki:robots.txt
+        RewriteRule ^/robots\.txt$ /w/robots.php [L]
+        # Primary wiki redirector:
+        RewriteRule ^/$ /w/index.php
+        # Configurable favicon
+        RewriteRule ^/favicon\.ico$ /w/favicon.php [L]
+        # Configurable apple-touch-icon.png
+        RewriteRule ^/apple-touch-icon\.png$ /w/touch.php [L]
+    
+        # Multiversion static files (T99096)
+        RewriteRule ^/w/skins/.*$ /w/static.php [PT]
+        RewriteRule ^/w/resources/.*$ /w/static.php [PT]
+        RewriteRule ^/w/extensions/.*$ /w/static.php [PT]
+        RewriteRule ^/w/COPYING$ /w/static.php [PT]
+        RewriteRule ^/w/CREDITS$ /w/static.php [PT]
+    
+    
+        # Common API-related rewrites
+        # API listing
+        RewriteRule ^/api$ %{ENV:RW_PROTO}://%{SERVER_NAME}/api/ [R=301]
+        RewriteRule ^/api/$ /w/extract2.php?template=API_listing_template [L]
+    
+        # Math compatibility mode
+        RewriteCond %{ENV:RW_PROTO} !=""
+        RewriteRule ^/math/(.*) %{ENV:RW_PROTO}://upload.wikimedia.local/math/$1 [R=301]
+        RewriteRule ^/math/(.*) https://upload.wikimedia.local/math/$1 [R=301]
+        # ShortUrl support, for wikis where it's enabled
+        RewriteRule ^/s/.*$     /w/index.php
+        # UseMod compatibility URLs
+        RewriteCond %{QUERY_STRING} ([^&;]+)
+        RewriteRule ^/wiki\.cgi$ %{ENV:RW_PROTO}://%{SERVER_NAME}/w/index.php?title=%1 [R=301,L]
+        RewriteRule ^/wiki\.cgi$ %{ENV:RW_PROTO}://%{SERVER_NAME}/w/index.php [R=301,L]
+        # Early phase 2 compatibility URLs
+        RewriteRule ^/wiki\.phtml$ %{ENV:RW_PROTO}://%{SERVER_NAME}/w/index.php [R=301,L]
+        # Custom rewrite rules (late)
+        # moved wikistats off NFS
+        RewriteRule ^/wikistats(/(.*$)|$) %{ENV:RW_PROTO}://stats.wikimedia.org/$2 [R=302,L]
+    
+        RewriteRule ^/sr /w/index.php [L]
+        RewriteRule ^/sr-ec /w/index.php [L]
+        RewriteRule ^/sr-el /w/index.php [L]
+        RewriteRule ^/zh /w/index.php [L]
+        RewriteRule ^/zh-hans /w/index.php [L]
+        RewriteRule ^/zh-hant /w/index.php [L]
+        RewriteRule ^/zh-cn /w/index.php [L]
+        RewriteRule ^/zh-hk /w/index.php [L]
+        RewriteRule ^/zh-my /w/index.php [L]
+        RewriteRule ^/zh-mo /w/index.php [L]
+        RewriteRule ^/zh-sg /w/index.php [L]
+        RewriteRule ^/zh-tw /w/index.php [L]
+        # Forbid accessing files under /w/extensions
+        RewriteRule ^/w/extensions/.*\.php - [F,L]
+        <FilesMatch "\.php$">
+            SetHandler "proxy:fcgi://127.0.0.1:9000"
+        </FilesMatch>
+    
+        RewriteRule ^/\.well-known/change-password$ /wiki/Special:ChangeCredentials/MediaWiki\\Auth\\PasswordAuthenticationRequest [R=302]
+    </VirtualHost>
+    
+  02-static.conf: |
+    <Virtualhost *:8080>
+      Servername test
+      ServerAlias test.local
+      DocumentRoot /srv/mediawiki/docroot/standard-docroot
+    </VirtualHost>
+---
+# Source: mediawiki/templates/configmap.yaml.tpl
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mediawiki-release-name-wikimedia-cluster-config
+data:
+  wikimedia-cluster: local
+---
+# Source: mediawiki/templates/service.yaml.tpl
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediawiki-release-name
+  labels:  
+  labels:
+    app: mediawiki
+    chart: mediawiki-0.6.26
+    release: release-name
+    heritage: Helm
+  
+spec:
+  type: NodePort
+  selector:
+    app: mediawiki
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 8080
+      port: 8080
+---
+# Source: mediawiki/templates/deployment.yaml.tpl
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default.local.release-name  
+  labels:
+    app: mediawiki
+    chart: mediawiki-0.6.26
+    release: release-name
+    heritage: Helm
+  
+spec:
+  selector:
+    matchLabels:
+      app: mediawiki
+      release: release-name
+  replicas: 1
+  strategy:
+      rollingUpdate:
+        maxSurge: 3%
+        maxUnavailable: 3%
+      type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: mediawiki
+        release: release-name
+        deployment: default
+        routed_via: release-name
+      annotations:
+        checksum/sites: 218b79fd1729dcbe75e29db7dcaff6e47a8a729a036e4f787a9f75960d97a4e3        
+        
+    spec:
+      # TODO: add affinity rules to ensure even distribution across rows
+      terminationGracePeriodSeconds: 10
+      containers:        
+        
+        ### The apache httpd container
+        # TODO: set up logging. See T265876
+        # TODO: fix virtualhosts in puppet so that the port is set to APACHE_RUN_PORT
+        - name: mediawiki-release-name-httpd
+          image: docker-registry.wikimedia.org/latest
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: FCGI_MODE
+            value: FCGI_TCP
+          - name: SERVERGROUP
+            value: main
+          - name: APACHE_RUN_PORT
+            value: "8080"
+          # Set the pod name as the value of the Server: header.
+          - name: SERVER_SIGNATURE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          # Log in ecs format
+          - name: LOG_FORMAT
+            value: ecs_rsyslog
+          # Do not log monitoring requests
+          - name: LOG_SKIP_SYSTEM
+            value: "1"
+          ports:
+          - name: httpd
+            containerPort: 8080
+          # PHP monitoring port
+          - name: php-metrics
+            containerPort: 9181
+          livenessProbe:
+            tcpSocket:
+              port: httpd
+          readinessProbe:
+            httpGet:
+              # this is the simplest php script you can think of - it just returns OK.
+              # This way, we're just testing that apache + php-fpm are ready.
+              # mcrouter, if enabled, should have its own readiness probe probably.
+              path: /healthz
+              port: php-metrics
+        
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                - "/bin/sh"
+                - "-c"
+                - "sleep 8"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 600Mi
+            limits:
+              cpu: 1
+              memory: 800Mi
+          volumeMounts:
+          # Note: we use subpaths here. Given subpaths are implemented with bind mounts,
+          # they won't be updated when the configmap is updated.
+          # This is ok because we're re-deploying the pods when that happens.
+          - name: mediawiki-release-name-httpd-sites
+            mountPath: /etc/apache2/sites-enabled/01-wikipedia.local.conf
+            subPath: 01-wikipedia.local.conf
+          - name: mediawiki-release-name-httpd-sites
+            mountPath: /etc/apache2/sites-enabled/02-static.conf
+            subPath: 02-static.conf
+        ### The MediaWiki container
+        - name: mediawiki-release-name-app
+          image: docker-registry.wikimedia.org/placeholder-for-mediawiki-image-name
+          imagePullPolicy: IfNotPresent
+        
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                - "/bin/sh"
+                - "-c"
+                - "sleep 8"
+          env:
+          - name: SERVERGROUP
+            value: main
+          - name: FCGI_MODE
+            value: FCGI_TCP
+          - name: FCGI_URL
+            value: "0.0.0.0:9000"
+          - name: PHP__opcache__memory_consumption
+            value: "200"
+          - name: PHP__opcache__max_accelerated_files
+            value: "1000"
+          - name: PHP__opcache__interned_strings_buffer
+            value: "10"
+          - name: PHP__auto_prepend_file
+            value: "/srv/mediawiki/wmf-config/PhpAutoPrepend.php"
+          - name: FPM__request_terminate_timeout
+            value: "60"
+          - name: PHP__apc__shm_size
+            value: 400M
+          - name: FPM__pm__max_children
+            value: "5"
+          - name: FPM__request_slowlog_timeout
+            value: "0"
+          - name: PHP__display_errors
+            value: "Off"
+          - name: PHP__error_reporting
+            value: "30719"
+          - name: PHP__pcre__backtrack_limit
+            value: "5000000"
+          - name: PHP__max_execution_time
+            value: "210"
+          - name: PHP__error_log
+            value: "/dev/stderr"
+          - name: FCGI_ALLOW
+            value: "127.0.0.1"
+          # See T276908
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 3500Mi
+            limits:
+              cpu: 2000m
+              memory: 4000Mi
+          volumeMounts:
+          # TODO: use an env variable for this.
+          - name: mediawiki-release-name-wikimedia-cluster
+            mountPath: /etc/wikimedia-cluster
+            subPath: wikimedia-cluster
+          # GeoIP data
+          - name: mediawiki-release-name-geoip
+            mountPath: /usr/share/GeoIP/
+            readOnly: true
+          - name: mediawiki-release-name-geoipinfo
+            mountPath: /usr/share/GeoIPInfo/
+            readOnly: true
+                                
+                
+      volumes:        
+        
+        # Apache sites
+        - name: mediawiki-release-name-httpd-sites
+          configMap:
+            name: mediawiki-release-name-httpd-sites-config
+        # Datacenter
+        - name: mediawiki-release-name-wikimedia-cluster
+          configMap:
+            name: mediawiki-release-name-wikimedia-cluster-config
+        # TLS configurations
+        # GeoIP data
+        - name: mediawiki-release-name-geoip
+          hostPath:
+            path: /usr/share/GeoIP
+        - name: mediawiki-release-name-geoipinfo
+          hostPath:
+            path: /usr/share/GeoIPInfo
+---
+# Source: mediawiki/templates/ingress.yaml.tpl
+---
+---
+# Source: mediawiki/templates/tests/test-deployment.yaml.tpl
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-mediawiki-release-name  
+  labels:
+    app: mediawiki
+    chart: mediawiki-0.6.26
+    release: release-name
+    heritage: Helm
+  
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsUser: 1000
+      containers:
+      - name: test-mediawiki-release-name
+        image: docker-registry.wikimedia.org/wmfdebug:latest
+        command:
+          - curl
+          - -sSf
+          - --connect-to
+          - "test.wikipedia.org:80:mediawiki-release-name:8080"
+          - -H
+          - "X-Forwarded-Proto: https"
+          - http://test.wikipedia.org/wiki/Main_Page
+      restartPolicy: Never

@@ -1,0 +1,337 @@
+---
+# Source: cicd/charts/postgres/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgres
+  labels:
+    app: postgres
+    chart: postgres-3.18.4
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  postgresql-password: "WkhUcktielF5Tg=="
+---
+# Source: cicd/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-cicd
+  labels:
+    app: "cicd"
+    chart: "cicd-2.0.5"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  github-client-id: ""
+  github-client-secret: ""
+---
+# Source: cicd/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: "release-name-cicd"
+subjects:
+  - kind: ServiceAccount
+    name: "release-name-cicd"
+    namespace: "default"
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: cicd/charts/postgres/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres-headless
+  labels:
+    app: postgres
+    chart: postgres-3.18.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: postgresql
+  selector:
+    app: postgres
+    release: "release-name"
+---
+# Source: cicd/charts/postgres/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres
+  labels:
+    app: postgres
+    chart: postgres-3.18.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: postgresql
+  selector:
+    app: postgres
+    release: "release-name"
+    role: master
+---
+# Source: cicd/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cicd
+  labels:
+    app: "cicd"
+    chart: "cicd-2.0.5"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+  - name: grpc
+    port: 9000
+    targetPort: 9000
+  selector:
+    app: cicd
+    release: "release-name"
+    component: cicd
+---
+# Source: cicd/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "release-name-cicd"
+  labels:
+    app: "cicd"
+    chart: "cicd-2.0.5"
+    release: release-name
+    heritage: Helm
+    component: cicd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "cicd"
+      release: "release-name"
+      component: cicd
+  template:
+    metadata:
+      labels:
+        app: "cicd"
+        release: "release-name"
+        component: cicd
+    spec:
+      serviceAccountName: "default"
+      containers:
+      - name: cicd-server
+        image: "banzaicloud/cicd:0.8.7"
+        command: ["/bin/cicd-server"]
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: CICD_SECRET
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: CICD_HOST
+            value: http://release-name-cicd
+          - name: CICD_GITHUB
+            value: "true"
+          - name: CICD_GITHUB_CLIENT
+            valueFrom:
+              secretKeyRef:
+                name: release-name-cicd
+                key: github-client-id
+          - name: CICD_GITHUB_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: release-name-cicd
+                key: github-client-secret
+
+          # Database related section
+          - name: CICD_DATABASE_HOST
+            value: release-name-postgres.default.svc.cluster.local
+          - name: CICD_DATABASE_PORT
+            value: "5432"
+          - name: CICD_DATABASE_NAME
+            value: cicd
+          - name: CICD_DATABASE_USER
+            value: cicd-rw
+          - name : CICD_DATABASE_DRIVER
+            value: postgres
+          - name: CICD_DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-postgres
+                key: postgresql-password
+
+          - name: CICD_BUILD_URL
+            value: "https://cp.example.com/ui"
+          - name: PIPELINE_BASEPATH
+            value: "https://cp.example.com/pipeline"
+          - name: PIPELINE_EXTERNAL_BASEPATH
+            value: "https://cp.example.com/pipeline"
+          - name: CICD_DEBUG
+            value: "true"
+          - name: CICD_OPEN
+            value: "true"
+          - name: CICD_REPO_CONFIG
+            value: ".banzaicloud/pipeline.yaml"
+
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: grpc
+          containerPort: 9000
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+        resources:
+          {}
+
+      - name: cicd-agent
+        image: "banzaicloud/cicd:0.8.7"
+        command: ["/bin/cicd-agent"]
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: CICD_SECRET
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          
+          - name: CICD_DEBUG
+            value: "false"
+          
+          - name: CICD_MAX_PROCS
+            value: "16"
+          
+        resources:
+          {}
+---
+# Source: cicd/charts/postgres/templates/statefulset.yaml
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: release-name-postgres
+  labels:
+    app: postgres
+    chart: postgres-3.18.4
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  serviceName: release-name-postgres-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: postgres
+      release: "release-name"
+      role: master
+  template:
+    metadata:
+      name: release-name-postgres
+      labels:
+        app: postgres
+        chart: postgres-3.18.4
+        release: "release-name"
+        heritage: "Helm"
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      - name: init-chmod-data
+        image: docker.io/bitnami/minideb:latest
+        imagePullPolicy: "Always"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        command:
+          - sh
+          - -c
+          - |
+            chown -R 1001:1001 /bitnami
+            if [ -d /bitnami/postgresql/data ]; then
+              chmod  0700 /bitnami/postgresql/data;
+            fi
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/postgresql
+          subPath: 
+      containers:
+      - name: release-name-postgres
+        image: docker.io/bitnami/postgresql:10.7.0
+        imagePullPolicy: "Always"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        securityContext:
+          runAsUser: 1001
+        env:
+        - name: PGDATA
+          value: "/bitnami/postgresql"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-postgres
+              key: postgresql-password
+        ports:
+        - name: postgresql
+          containerPort: 5432
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready -U "postgres" -h 127.0.0.1
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready -U "postgres" -h 127.0.0.1
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/postgresql
+          subPath: 
+      volumes:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"

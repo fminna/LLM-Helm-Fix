@@ -1,0 +1,384 @@
+---
+# Source: alerta-web/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.2.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgres-password: "ZjFwWGk5c0pZQw=="
+  password: "UEdfQUxFUlRBX1BBU1NXT1JE"
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: alerta-web/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-alerta-web
+  labels:
+    app: release-name-alerta-web
+    chart: "alerta-web-0.1.9"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  
+  alerta-admin-password:  "QUxFUlRBX0FETUlOX1BBU1NXT1JE"
+  
+  
+  alerta-admin-key:  "QUxFUlRBX0FETUlOX0tFWQ=="
+  
+  
+  alerta-api-key:  "QUxFUlRBX0FETUlOX0tFWQ=="
+---
+# Source: alerta-web/templates/configmap.yaml
+apiVersion: v1
+data:
+  alertad.conf: |
+    
+    ACTIONS = ['createIssue', 'updateIssue']
+    ALERTMANAGER_API_URL = "http://prometheus-alertmanager.svc"
+    ALERTMANAGER_SILENCE_FROM_ACK = True
+    AUTH_REQUIRED = True
+    COLOR_MAP = { 'severity': { 'security': '#000000', 'critical': 'red', 'major' : '#F89407', 'minor' : '#f8bc07', 'warning': '#1E90FF', 'indeterminate': '#a32cf2', 'informational': 'green', 'ok': '#00CC00', 'normal': '#0aab78', 'unknown': 'silver' }, 'text': 'white' }
+    COLUMNS = ['severity', 'status', 'lastReceiveTime', 'environment', 'service', 'resource', 'event', 'value', 'text']
+    DEBUG = False
+    DELETE_EXPIRED_AFTER = 60
+    DELETE_INFO_AFTER = 60
+    LOG_HANDLERS = ['console']
+    PLUGINS = ['prometheus', 'enhance']
+    SIGNUP_ENABLED = False
+    DATABASE_URL = "postgresql://alerta:PG_ALERTA_PASSWORD@release-name-postgresql:5432/alerta"
+    
+kind: ConfigMap
+metadata:
+  name: release-name-alerta-web
+  labels:
+    app: alerta-web
+    chart: alerta-web-0.1.9
+    release: release-name
+    heritage: Helm
+---
+# Source: alerta-web/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.2.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: alerta-web/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.2.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: alerta-web/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-alerta-web
+  labels:
+    app: alerta-web
+    chart: alerta-web-0.1.9
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: alerta-web
+    release: release-name
+---
+# Source: alerta-web/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-alerta-web
+  labels:
+    app: alerta-web
+    chart: alerta-web-0.1.9
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alerta-web
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: alerta-web
+        release: release-name
+      annotations:
+        checksum/config: 873b848f8285c0c611df3a83222dffb0ad39b005b8065403d0e8a72fb8e8befa
+        checksum/secrets: 63c5cc204a146df9b4906a69f574d5d70eef628a8bf2cf65ec6aefc2ace24e20
+    spec:
+      containers:
+        - name: alerta-web
+          image: "hayk96/alerta-web:9.0.3"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ADMIN_USERS
+              value: admin
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-alerta-web
+                  key: alerta-admin-password
+            - name: ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-alerta-web
+                  key: alerta-admin-key
+            - name: ALERTA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-alerta-web
+                  key: alerta-api-key
+            - name: INSTALL_PLUGINS
+              value: prometheus,normalise,enhance
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 300
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+          volumeMounts:
+            - name: alerta-config
+              mountPath: /app/alertad.conf
+              subPath: alertad.conf
+          resources:
+            limits:
+              cpu: 200m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: alerta-config
+          configMap:
+            name: release-name-alerta-web
+---
+# Source: alerta-web/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.2.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-12.2.3
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:15.2.0-debian-11-r11
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "alerta"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: password
+            - name: POSTGRES_DB
+              value: "alerta"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "alerta" -d "dbname=alerta" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                
+                - |
+                  exec pg_isready -U "alerta" -d "dbname=alerta" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "1Gi"

@@ -1,0 +1,175 @@
+---
+# Source: onedev/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-onedev
+  namespace: default
+  labels: 
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+---
+# Source: onedev/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-onedev-secrets
+  namespace: default
+  labels: 
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+type: Opaque
+data:
+  dbPassword: Y2hhbmdlaXQ=
+---
+# Source: onedev/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-onedev
+  labels:
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"] #require this permission to run builds in isolated namespaces
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["get", "list", "create", "delete"] #require this permission to bind cluster roles to service account of running builds
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"] #require this permission to search nodes matching executor criterias
+  - apiGroups: [""]
+    resources: ["services", "pods", "pods/log", "pods/exec", "secrets", "configmaps", "events"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"] #require this permission to run builds as pods
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "patch", "delete"] #require this permission to run builds as pods
+---
+# Source: onedev/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-onedev
+  labels:
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+subjects:
+  - kind: ServiceAccount
+    namespace: default
+    name: release-name-onedev
+roleRef:
+  kind: ClusterRole
+  name: release-name-onedev
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: onedev/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-onedev
+  namespace: default
+  labels: 
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  - name: ssh
+    port: 22
+    targetPort: ssh
+    protocol: TCP
+  selector: 
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  sessionAffinity: ClientIP
+---
+# Source: onedev/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-onedev
+  namespace: default
+  labels: 
+    helm.sh/chart: onedev-10.6.0
+    app.kubernetes.io/name: onedev
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: onedev
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/managed-by: Helm
+  serviceName: release-name-onedev
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels: 
+        app.kubernetes.io/name: onedev
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec: 
+      serviceAccountName: release-name-onedev
+      dnsPolicy: ClusterFirst
+      containers:
+        - name: onedevserver
+          image: "docker.io/1dev/server:10.6.0"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: k8s_service
+            value: release-name-onedev
+          - name: max_memory_percent
+            value: "50"
+          ports:
+          - name: http
+            containerPort: 6610
+            protocol: TCP
+          - name: ssh
+            containerPort: 6611
+            protocol: TCP
+          volumeMounts:
+          - name: data
+            mountPath: "/opt/onedev"
+          - name: trust-certs
+            mountPath: "/opt/onedev/conf/trust-certs"
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: trust-certs
+        secret:
+          secretName: onedev-trustcerts
+          optional: true
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: 
+      resources:
+        requests:
+          storage: 100Gi

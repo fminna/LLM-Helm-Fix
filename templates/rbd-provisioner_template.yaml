@@ -1,0 +1,143 @@
+---
+# Source: rbd-provisioner/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rbd-provisioner
+---
+# Source: rbd-provisioner/templates/storageclass.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret-admin
+type: "kubernetes.io/rbd"
+data:
+  # ceph auth get-key client.admin | base64
+  key:
+---
+# Source: rbd-provisioner/templates/storageclass.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret
+type: "kubernetes.io/rbd"
+data:
+  # ceph auth add client.kube mon 'allow r' osd 'allow rwx pool=kube'
+  # ceph auth get-key client.kube | base64
+  key:
+---
+# Source: rbd-provisioner/templates/storageclass.yaml
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: rbd
+#provisioner: ceph.com/rbd
+provisioner: ceph.com/rbd
+parameters:
+  monitors: 
+  pool: rbd
+  adminId: admin
+  adminSecretNamespace: default
+  adminSecretName: ceph-secret-admin
+  userId: admin
+  userSecretNamespace: default
+  userSecretName: ceph-secret
+  fsType: ext4
+  imageFormat: "2"
+  imageFeatures: layering
+reclaimPolicy: Delete
+---
+# Source: rbd-provisioner/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rbd-provisioner
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["kube-dns","coredns"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+# Source: rbd-provisioner/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rbd-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: rbd-provisioner
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: rbd-provisioner
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: rbd-provisioner/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rbd-provisioner
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+# Source: rbd-provisioner/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rbd-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rbd-provisioner
+subjects:
+- kind: ServiceAccount
+  name: rbd-provisioner
+  namespace: default
+---
+# Source: rbd-provisioner/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rbd-provisioner
+  # namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rbd-provisioner
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: rbd-provisioner
+    spec:
+      containers:
+      - name: rbd-provisioner
+        image: "kubesphere/rbd-provisioner:v2.1.1-k8s1.11"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PROVISIONER_NAME
+#          value: ceph.com/rbd
+          value: ceph.com/rbd
+      serviceAccount: rbd-provisioner

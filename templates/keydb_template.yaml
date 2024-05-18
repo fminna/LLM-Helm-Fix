@@ -1,0 +1,295 @@
+---
+# Source: keydb/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-keydb
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keydb
+      app.kubernetes.io/instance: release-name
+---
+# Source: keydb/templates/secret-utils.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-keydb-utils
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  server.sh: |
+    #!/bin/bash
+    set -euxo pipefail
+
+    host="$(hostname)"
+    replicas=()
+    for node in {0..2}; do
+      if [ "${host}" != "release-name-keydb-${node}" ]; then
+          replicas+=("--replicaof release-name-keydb-${node}.release-name-keydb-headless 6379")
+      fi
+    done
+    exec keydb-server /etc/keydb/redis.conf \
+        --active-replica "yes" \
+        --multi-master "yes" \
+        --appendonly "no" \
+        --bind "0.0.0.0" \
+        --port "6379" \
+        --protected-mode "no" \
+        --server-threads "2" \
+        "${replicas[@]}"
+---
+# Source: keydb/templates/cm-health.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-keydb-health
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    set -e
+
+    loading_response="LOADING KeyDB is loading the dataset in memory"
+
+    [[ -n "${REDIS_PASSWORD}" ]] && export REDISCLI_AUTH="${REDIS_PASSWORD}"
+    response="$(
+      timeout -s 15 "${1}" \
+      keydb-cli \
+        -h localhost \
+        -p "${REDIS_PORT}" \
+        GET 90f717dd-0e68-43b8-9363-fddaad00d6c9
+    )"
+    if [ "${response}" = "${loading_response}" ]; then
+      echo "${response}"
+      exit 1
+    fi
+
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    set -e
+
+    [[ -n "${REDIS_PASSWORD}" ]] && export REDISCLI_AUTH="${REDIS_PASSWORD}"
+    response="$(
+      timeout -s 15 "${1}" \
+      keydb-cli \
+        -h localhost \
+        -p "${REDIS_PORT}" \
+        PING
+    )"
+    if [ "${response}" != "PONG" ]; then
+      echo "${response}"
+      exit 1
+    fi
+  cleanup_tempfiles.sh: |-
+    #!/bin/bash
+
+    set -e
+
+    find /data/ -type f \( -name "temp-*.aof" -o -name "temp-*.rdb" \) -mmin +60 -delete
+---
+# Source: keydb/templates/svc-headless.yaml
+# Headless service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-keydb-headless
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: "server"
+    port: 6379
+    protocol: TCP
+    targetPort: "keydb"
+  selector:
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+---
+# Source: keydb/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-keydb
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  ports:
+  - name: "server"
+    port: 6379
+    protocol: TCP
+    targetPort: "keydb"
+  - name: "redis-exporter"
+    port: 9121
+    protocol: TCP
+    targetPort: "redis-exporter"
+  selector:
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+  sessionAffinity: ClientIP
+---
+# Source: keydb/templates/sts.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-keydb
+  labels:
+    helm.sh/chart: keydb-0.48.0
+    app.kubernetes.io/name: keydb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "6.3.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 3
+  serviceName: release-name-keydb-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keydb
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/secret-utils: f079bc7dc080843bd58e8f99d23b952acc4a78a30026d2d89cb8295eb89a52b9
+      labels:
+        helm.sh/chart: keydb-0.48.0
+        app.kubernetes.io/name: keydb
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "6.3.2"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - 'keydb'
+                - key: app.kubernetes.io/instance
+                  operator: In
+                  values:
+                  - 'release-name'
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - name: keydb
+        image: eqalpha/keydb:x86_64_v6.3.2
+        imagePullPolicy: IfNotPresent
+        command:
+        - /utils/server.sh
+        env:
+        - name: REDIS_PORT
+          value: "6379"
+        ports:
+        - name: keydb
+          containerPort: 6379
+          protocol: TCP
+        livenessProbe:
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          # One second longer than command timeout should prevent generation of zombie processes.
+          timeoutSeconds: 6
+          successThreshold: 1
+          failureThreshold: 5
+          exec:
+            command:
+              - sh
+              - -c
+              - /health/ping_liveness_local.sh 5
+        readinessProbe:
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          # One second longer than command timeout should prevent generation of zombie processes.
+          timeoutSeconds: 2
+          successThreshold: 1
+          failureThreshold: 5
+          exec:
+            command:
+              - sh
+              - -c
+              - /health/ping_readiness_local.sh 1
+        startupProbe:
+          periodSeconds: 5
+          # One second longer than command timeout should prevent generation of zombie processes.
+          timeoutSeconds: 2
+          failureThreshold: 24
+          exec:
+            command:
+              - sh
+              - -c
+              - /health/ping_readiness_local.sh 1
+        resources:
+          {}
+        securityContext:
+          {}
+        volumeMounts:
+        - name: health
+          mountPath: /health
+        - name: keydb-data
+          mountPath: /data
+        - name: utils
+          mountPath: /utils
+          readOnly: true
+      imagePullSecrets:
+        []
+      securityContext:
+        {}
+      volumes:
+      - name: health
+        configMap:
+          name: release-name-keydb-health
+          defaultMode: 0755
+      - name: utils
+        secret:
+          secretName: release-name-keydb-utils
+          defaultMode: 0755
+          items:
+          - key: server.sh
+            path: server.sh
+  volumeClaimTemplates:
+  - metadata:
+      name: keydb-data
+      annotations:
+      labels:
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi

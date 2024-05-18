@@ -1,0 +1,170 @@
+---
+# Source: huginn/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: huginn-secret
+  labels:
+    helm.sh/chart: huginn-0.2
+    component: "agent-server"
+    managed-by: chynten
+    created-by: chynten
+    version: "version-5.7.12"
+type: Opaque
+data:
+  mysql-password: "aHVnaW5uQDMyMQ=="
+  smtp-password: "c210cHBhc3N3b3Jk"
+  invitation-code: "c29tZXJhbmRvbWludml0YXRpb25jb2Rl"
+---
+# Source: huginn/templates/PersistentVolumeClaim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: huginn-upload-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "1G"
+---
+# Source: huginn/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: huginn-svc
+  labels:
+    helm.sh/chart: huginn-0.2
+    component: "agent-server"
+    managed-by: chynten
+    created-by: chynten
+    version: "version-5.7.12"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+  selector:
+    app-name: huginn
+---
+# Source: huginn/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: huginn-deployment
+  labels:
+    helm.sh/chart: huginn-0.2
+    component: "agent-server"
+    managed-by: chynten
+    created-by: chynten
+    version: "version-5.7.12"
+    app-name: huginn
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app-name: huginn
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app-name: huginn
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: huginn
+          image: "huginn/huginn:4df1217d3055db980a04f293e28016b77826e3ca"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          resources:
+            {}
+          env:
+          - name: ENABLE_INSECURE_AGENTS
+            value: "true"
+          - name: DOMAIN
+            value: agent.example.com
+          - name: DATABASE_HOST
+            value: mysql-svc.mysql
+          - name: DATABASE_NAME
+            value: "huginn" 
+          - name: DATABASE_USERNAME
+            value: "huginn" 
+          - name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: huginn-secret
+                key: mysql-password
+          - name: FORCE_SSL
+            value: "true" 
+          - name: INVITATION_CODE
+            valueFrom:
+              secretKeyRef:
+                name: huginn-secret
+                key: invitation-code
+          - name: SMTP_DOMAIN
+            value: "gmail.com" 
+          - name: SMTP_USER_NAME
+            value: "user@gmail.com" 
+          - name: SMTP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: huginn-secret
+                key: smtp-password
+          - name: SMTP_SERVER
+            value: "smtp.gmail.com" 
+          - name: SMTP_PORT
+            value: "587" 
+          - name: SMTP_AUTHENTICATION
+            value: "plain" 
+          - name: SMTP_ENABLE_STARTTLS_AUTO
+            value: "true" 
+          - name: SMTP_SSL
+            value: "false" 
+          - name: EMAIL_FROM_ADDRESS
+            value: "user2@gmail.com" 
+          volumeMounts:
+          - name: upload
+            mountPath: /upload
+            subPath: huginn
+      securityContext:
+        fsGroup: 33
+      volumes:
+      - name: upload
+        persistentVolumeClaim:
+          claimName: huginn-upload-pvc
+---
+# Source: huginn/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: huginn-ingress
+  labels:
+    helm.sh/chart: huginn-0.2
+    component: "agent-server"
+    managed-by: chynten
+    created-by: chynten
+    version: "version-5.7.12"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+    - hosts:
+        - "agent.example.com"
+      secretName: huginn-letsencrypt-certificate
+  rules:
+    - host: "agent.example.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: huginn-svc
+                port:
+                  number: 3000

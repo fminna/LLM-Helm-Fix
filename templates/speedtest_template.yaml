@@ -1,0 +1,228 @@
+---
+# Source: speedtest/charts/influxdb/templates/influxdb/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-influxdb
+  labels:
+    app.kubernetes.io/name: influxdb
+    helm.sh/chart: influxdb-1.1.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  admin-user-password: "YzlmNTd2SlZEcA=="
+---
+# Source: speedtest/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-speedtest
+  labels:
+    app: speedtest
+    chart: "speedtest-3.0.4"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  config.ini: |
+    [GENERAL]
+    Delay = 3600
+    [INFLUXDB]
+    Address = release-name-influxdb
+    Port = 8086
+    Database = speedtests
+    Username = 
+    Password = 
+    Verify_SSL = False
+    [SPEEDTEST]
+    Server = 
+    [LOGGING]
+    Level = info
+---
+# Source: speedtest/charts/influxdb/templates/influxdb/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-influxdb
+  labels:
+    app.kubernetes.io/name: influxdb
+    helm.sh/chart: influxdb-1.1.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: influxdb
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8086
+      targetPort: http
+      protocol: TCP
+      name: http
+      nodePort: null
+    - port: 8088
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: influxdb
+---
+# Source: speedtest/charts/influxdb/templates/influxdb/deployment-standalone.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-influxdb
+  labels:
+    app.kubernetes.io/name: influxdb
+    helm.sh/chart: influxdb-1.1.9
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: influxdb
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: influxdb
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: influxdb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: influxdb
+        helm.sh/chart: influxdb-1.1.9
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: influxdb
+    spec:
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: influxdb
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: influxdb
+                namespaces:
+                  - default
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: influxdb
+          image: docker.io/bitnami/influxdb:1.8.3-debian-10-r88
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: INFLUXDB_HTTP_AUTH_ENABLED
+              value: "false"
+            - name: INFLUXDB_ADMIN_USER
+              value: "admin"
+            - name: INFLUXDB_ADMIN_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-influxdb
+                  key: admin-user-password
+            - name: INFLUXDB_DB
+              value: "speedtests"
+          ports:
+            - name: http
+              containerPort: 8086
+              protocol: TCP
+            - name: rpc
+              containerPort: 8088
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  if [[ -f "${INFLUXDB_ADMIN_USER_PASSWORD_FILE:-}" ]]; then
+                      export INFLUXDB_ADMIN_USER_PASSWORD="$(< "${INFLUXDB_ADMIN_USER_PASSWORD_FILE}")"
+                  fi
+                   timeout 29s influx -host $POD_IP -port 8086 -execute "SHOW DATABASES"
+            initialDelaySeconds: 180
+            periodSeconds: 45
+            timeoutSeconds: 30
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  if [[ -f "${INFLUXDB_ADMIN_USER_PASSWORD_FILE:-}" ]]; then
+                      export INFLUXDB_ADMIN_USER_PASSWORD="$(< "${INFLUXDB_ADMIN_USER_PASSWORD_FILE}")"
+                  fi
+                   timeout 29s influx -host $POD_IP -port 8086 -execute "SHOW DATABASES"
+            initialDelaySeconds: 60
+            periodSeconds: 45
+            timeoutSeconds: 30
+            successThreshold: 1
+            failureThreshold: 6
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# Source: speedtest/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-speedtest
+  labels:
+    app: speedtest
+    chart: "speedtest-3.0.4"
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: speedtest
+      release: release-name
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: speedtest
+        release: release-name
+    spec:
+      containers:
+        - name: speedtest
+          image: "atribe/speedtest-for-influxdb-and-grafana:latest"
+          imagePullPolicy: IfNotPresent
+          resources:
+            {}
+          volumeMounts:
+          - name: speedtest
+            mountPath: /src/config.ini
+            subPath: config.ini
+      volumes:
+      - name: speedtest
+        configMap:
+          name: release-name-speedtest
+          items:
+          - key: config.ini
+            path: config.ini

@@ -1,0 +1,274 @@
+---
+# Source: multus-cni/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-multus-cni
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: multus-cni
+    app.kubernetes.io/version: 4.0.2
+    helm.sh/chart: multus-cni-2.0.3
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: multus-cni
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - {}
+  ingress:
+---
+# Source: multus-cni/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-multus-cni
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: multus-cni
+    app.kubernetes.io/version: 4.0.2
+    helm.sh/chart: multus-cni-2.0.3
+automountServiceAccountToken: false
+---
+# Source: multus-cni/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-multus-cni-default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: multus-cni
+    app.kubernetes.io/version: 4.0.2
+    helm.sh/chart: multus-cni-2.0.3
+rules:
+  - apiGroups: ["k8s.cni.cncf.io"]
+    resources:
+      - '*'
+    verbs:
+      - '*'
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/status
+    verbs:
+      - get
+      - update
+  - apiGroups:
+      - ""
+      - events.k8s.io
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+      - update
+---
+# Source: multus-cni/templates/clusterrolebinding.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-multus-cni-default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: multus-cni
+    app.kubernetes.io/version: 4.0.2
+    helm.sh/chart: multus-cni-2.0.3
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-multus-cni-default
+subjects:
+  - kind: ServiceAccount
+    name: release-name-multus-cni
+    namespace: "default"
+---
+# Source: multus-cni/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-multus-cni
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: multus-cni
+    app.kubernetes.io/version: 4.0.2
+    helm.sh/chart: multus-cni-2.0.3
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: multus-cni
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: multus-cni
+        app.kubernetes.io/version: 4.0.2
+        helm.sh/chart: multus-cni-2.0.3
+    spec:
+      
+      hostNetwork: true
+      serviceAccountName: release-name-multus-cni
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: Always
+        supplementalGroups: []
+        sysctls: []
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: multus-cni
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      priorityClassName: ""
+      automountServiceAccountToken: true
+      initContainers:
+        - name: install-multus-binary
+          image: docker.io/bitnami/multus-cni:4.0.2-debian-12-r26
+          command:
+            - cp 
+            - -r
+            # Using /usr/src to allow compatibility with upstream multus container
+            - "/usr/src/multus-cni/bin/multus"
+            - "/bitnami/multus-cni/host/opt/cni/bin/"
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop:
+              - ALL
+            privileged: true
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: cni-bin-dir
+              mountPath: /bitnami/multus-cni/host/opt/cni/bin
+              mountPropagation: Bidirectional
+        - name: generate-kubeconfig
+          image: docker.io/bitnami/multus-cni:4.0.2-debian-12-r26
+          command:
+            - install_multus
+          args:
+            - "--type"
+            - "thin"
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop:
+              - ALL
+            privileged: true
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: cni-bin-dir
+              mountPath: /bitnami/multus-cni/host/opt/cni/bin
+              mountPropagation: Bidirectional
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+      containers:
+        - name: multus-cni
+          image: docker.io/bitnami/multus-cni:4.0.2-debian-12-r26
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - "/thin_entrypoint"
+          args:
+            - "--multus-conf-file=auto"
+            - "--cni-conf-dir=/bitnami/multus-cni/host/etc/cni/net.d"
+            - "--multus-autoconfig-dir=/bitnami/multus-cni/host/etc/cni/net.d"
+            - "--cni-bin-dir=/bitnami/multus-cni/host/opt/cni/bin"
+            - "--multus-log-level=verbose"
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop:
+              - ALL
+            privileged: true
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seLinuxOptions: {}
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+          envFrom:
+          livenessProbe:
+            exec:
+              command:
+                - pgrep
+                - thin_entrypoint
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - pgrep
+                - thin_entrypoint
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 1024Mi
+              memory: 192Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          volumeMounts:
+            - name: empty-dir
+              mountPath: /tmp
+              subPath: tmp-dir
+            - name: cni-net-dir
+              mountPath: /bitnami/multus-cni/host/etc/cni/net.d
+            - name: cni-bin-dir
+              mountPath: /bitnami/multus-cni/host/opt/cni/bin
+      volumes:
+        - name: empty-dir
+          emptyDir: {}
+        - name: cni-bin-dir
+          hostPath:
+            path: /opt/cni/bin
+        - name: cni-net-dir
+          hostPath:
+            path: /etc/cni/net.d

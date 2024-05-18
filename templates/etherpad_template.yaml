@@ -1,0 +1,214 @@
+---
+# Source: etherpad/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: etherpad
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etherpad
+      app.kubernetes.io/instance: release-name
+---
+# Source: etherpad/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etherpad
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+    DB_CHARSET: utf8mb4
+    DB_PORT: "3306"
+    DB_TYPE: mysql
+    PORT: "9000"
+    TITLE: Etherpad
+---
+# Source: etherpad/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: etherpad
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 9000
+  selector:
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+  type: NodePort
+---
+# Source: etherpad/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etherpad
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etherpad
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etherpad
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: etherpad
+          envFrom:
+            - configMapRef:
+                name: etherpad
+          image: "783633885093.dkr.ecr.us-west-2.amazonaws.com/etherpad:v0.0.1"
+          imagePullPolicy: Always
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          ports:
+            - containerPort: 9000
+              name: http
+              protocol: TCP
+          readinessProbe:
+            initialDelaySeconds: 5
+            successThreshold: 3
+            httpGet:
+              path: /
+              port: http
+          resources:
+            limits:
+              cpu: 1
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+---
+# Source: etherpad/templates/job.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etherpad-manager
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "@hourly"
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: etherpad-manager
+              command:
+                - /bin/bash
+                - etherpad-manage.sh
+              envFrom:
+                - configMapRef:
+                    name: etherpad
+              image: "783633885093.dkr.ecr.us-west-2.amazonaws.com/etherpad:v0.0.1"
+              imagePullPolicy: Always
+              resources:
+                limits:
+                  cpu: 1
+                  memory: 2Gi
+                requests:
+                  cpu: 500m
+                  memory: 1Gi
+          restartPolicy: Never
+---
+# Source: etherpad/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: etherpad
+  annotations:
+    cert-manager.io/issuer: letsencrypt
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "Content-Security-Policy: frame-ancestors 'none'";
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "pad.allizom.org"
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: oidc-gateway
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - "pad.allizom.org"
+      secretName: chart-pad-allizom-org
+---
+# Source: etherpad/templates/issuer.yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: it-se@mozilla.com
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+# Source: etherpad/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-etherpad-test-connection"
+  labels:
+    helm.sh/chart: etherpad-2.0.2
+    app.kubernetes.io/name: etherpad
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ['curl']
+      args: ['-L', 'etherpad:80']
+  restartPolicy: Never

@@ -1,0 +1,1228 @@
+---
+# Source: graylog/charts/opensearch/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: "opensearch-cluster-master-pdb"
+  labels:
+    helm.sh/chart: opensearch-2.8.0
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-cluster-master
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch
+      app.kubernetes.io/instance: release-name
+---
+# Source: graylog/charts/mongodb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+secrets:
+  - name: release-name-mongodb
+automountServiceAccountToken: true
+---
+# Source: graylog/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+---
+# Source: graylog/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+type: Opaque
+data:
+  graylog-root-username: "YWRtaW4="
+  graylog-password-secret: "Yk5TQjNIN1JPU1RhMFNHSQ=="
+  graylog-password-sha2: "OTc3M2M0ODJjZjQ4MDQ5MzgyZGZjYWI0NjI1Yjg3OGM4YzNiMTVmOWMzOGQ1YjJmMzI1MTk3N2ZmZGYxNGQ3ZQ=="
+---
+# Source: graylog/charts/mongodb/templates/common-scripts-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongodb-common-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: mongodb
+data:
+  startup-probe.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.hello().isWritablePrimary || db.hello().secondary' | grep 'true'
+  readiness-probe.sh: |
+    #!/bin/bash
+    # Run the proper check depending on the version
+    [[ $(mongod -version | grep "db version") =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] && VERSION=${BASH_REMATCH[1]}
+    . /opt/bitnami/scripts/libversion.sh
+    VERSION_MAJOR="$(get_sematic_version "$VERSION" 1)"
+    VERSION_MINOR="$(get_sematic_version "$VERSION" 2)"
+    VERSION_PATCH="$(get_sematic_version "$VERSION" 3)"
+    if [[ ( "$VERSION_MAJOR" -ge 5 ) || ( "$VERSION_MAJOR" -ge 4 && "$VERSION_MINOR" -ge 4 && "$VERSION_PATCH" -ge 2 ) ]]; then
+        mongosh $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.hello().isWritablePrimary || db.hello().secondary' | grep 'true'
+    else
+        mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.isMaster().ismaster || db.isMaster().secondary' | grep 'true'
+    fi
+  ping-mongodb.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "db.adminCommand('ping')"
+---
+# Source: graylog/charts/mongodb/templates/replicaset/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mongodb-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: mongodb
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    . /opt/bitnami/scripts/mongodb-env.sh
+    . /opt/bitnami/scripts/libfs.sh
+    . /opt/bitnami/scripts/liblog.sh
+    . /opt/bitnami/scripts/libvalidations.sh
+
+    if is_empty_value "$MONGODB_ADVERTISED_PORT_NUMBER"; then
+      export MONGODB_ADVERTISED_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    fi
+
+    info "Advertised Hostname: $MONGODB_ADVERTISED_HOSTNAME"
+    info "Advertised Port: $MONGODB_ADVERTISED_PORT_NUMBER"
+
+    # Check for existing replica set in case there is no data in the PVC
+    # This is for cases where the PVC is lost or for MongoDB caches without
+    # persistence
+    current_primary=""
+    if is_dir_empty "${MONGODB_DATA_DIR}/db"; then
+      info "Data dir empty, checking if the replica set already exists"
+      current_primary=$(mongosh admin --host "release-name-mongodb-0.release-name-mongodb-headless.default.svc.cluster.local:27017" --eval 'db.runCommand("ismaster")' | awk -F\' '/primary/ {print $2}')
+
+      if ! is_empty_value "$current_primary"; then
+        info "Detected existing primary: ${current_primary}"
+      fi
+    fi
+
+    if ! is_empty_value "$current_primary" && [[ "$MONGODB_ADVERTISED_HOSTNAME:$MONGODB_ADVERTISED_PORT_NUMBER" == "$current_primary" ]]; then
+        info "Advertised name matches current primary, configuring node as a primary"
+        export MONGODB_REPLICA_SET_MODE="primary"
+    elif ! is_empty_value "$current_primary" && [[ "$MONGODB_ADVERTISED_HOSTNAME:$MONGODB_ADVERTISED_PORT_NUMBER" != "$current_primary" ]]; then
+        info "Current primary is different from this node. Configuring the node as replica of ${current_primary}"
+        export MONGODB_REPLICA_SET_MODE="secondary"
+        export MONGODB_INITIAL_PRIMARY_HOST="${current_primary%:*}"
+        export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="${current_primary#*:}"
+        export MONGODB_SET_SECONDARY_OK="yes"
+    elif [[ "$MY_POD_NAME" = "release-name-mongodb-0" ]]; then
+        info "Pod name matches initial primary pod name, configuring node as a primary"
+        export MONGODB_REPLICA_SET_MODE="primary"
+    else
+        info "Pod name doesn't match initial primary pod name, configuring node as a secondary"
+        export MONGODB_REPLICA_SET_MODE="secondary"
+        export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    fi
+
+    if [[ "$MONGODB_REPLICA_SET_MODE" == "secondary" ]]; then
+        export MONGODB_INITIAL_PRIMARY_ROOT_USER="$MONGODB_ROOT_USER"
+        export MONGODB_INITIAL_PRIMARY_ROOT_PASSWORD="$MONGODB_ROOT_PASSWORD"
+        export MONGODB_ROOT_PASSWORD=""
+        export MONGODB_EXTRA_USERNAMES=""
+        export MONGODB_EXTRA_DATABASES=""
+        export MONGODB_EXTRA_PASSWORDS=""
+        export MONGODB_ROOT_PASSWORD_FILE=""
+        export MONGODB_EXTRA_USERNAMES_FILE=""
+        export MONGODB_EXTRA_DATABASES_FILE=""
+        export MONGODB_EXTRA_PASSWORDS_FILE=""
+    fi
+
+    exec /opt/bitnami/scripts/mongodb/entrypoint.sh /opt/bitnami/scripts/mongodb/run.sh
+  setup-hidden.sh: |-
+    #!/bin/bash
+
+    . /opt/bitnami/scripts/mongodb-env.sh
+
+    echo "Advertised Hostname: $MONGODB_ADVERTISED_HOSTNAME"
+    echo "Advertised Port: $MONGODB_ADVERTISED_PORT_NUMBER"
+    echo "Configuring node as a hidden node"
+    export MONGODB_REPLICA_SET_MODE="hidden"
+    export MONGODB_INITIAL_PRIMARY_ROOT_USER="$MONGODB_ROOT_USER"
+    export MONGODB_INITIAL_PRIMARY_ROOT_PASSWORD="$MONGODB_ROOT_PASSWORD"
+    export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    export MONGODB_ROOT_PASSWORD=""
+    export MONGODB_EXTRA_USERNAMES=""
+    export MONGODB_EXTRA_DATABASES=""
+    export MONGODB_EXTRA_PASSWORDS=""
+    export MONGODB_ROOT_PASSWORD_FILE=""
+    export MONGODB_EXTRA_USERNAMES_FILE=""
+    export MONGODB_EXTRA_DATABASES_FILE=""
+    export MONGODB_EXTRA_PASSWORDS_FILE=""
+    exec /opt/bitnami/scripts/mongodb/entrypoint.sh /opt/bitnami/scripts/mongodb/run.sh
+---
+# Source: graylog/charts/opensearch/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opensearch-cluster-master-config
+  labels:
+    helm.sh/chart: opensearch-2.8.0
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-cluster-master
+data:
+  opensearch.yml: |
+    cluster.name: opensearch-cluster
+    
+    # Bind to all interfaces because we don't know what IP address Docker will assign to us.
+    network.host: 0.0.0.0
+    
+    # Setting network.host to a non-loopback address enables the annoying bootstrap checks. "Single-node" mode disables them again.
+    # Implicitly done if ".singleNode" is set to "true".
+    # discovery.type: single-node
+    
+    # Start OpenSearch Security Demo Configuration
+    # WARNING: revise all the lines below before you go into production
+    plugins:
+      security:
+        ssl:
+          transport:
+            pemcert_filepath: esnode.pem
+            pemkey_filepath: esnode-key.pem
+            pemtrustedcas_filepath: root-ca.pem
+            enforce_hostname_verification: false
+          http:
+            enabled: true
+            pemcert_filepath: esnode.pem
+            pemkey_filepath: esnode-key.pem
+            pemtrustedcas_filepath: root-ca.pem
+        allow_unsafe_democertificates: true
+        allow_default_init_securityindex: true
+        authcz:
+          admin_dn:
+            - CN=kirk,OU=client,O=client,L=test,C=de
+        audit.type: internal_opensearch
+        enable_snapshot_restore_privilege: true
+        check_snapshot_restore_write_privileges: true
+        restapi:
+          roles_enabled: ["all_access", "security_rest_api_access"]
+        system_indices:
+          enabled: true
+          indices:
+            [
+              ".opendistro-alerting-config",
+              ".opendistro-alerting-alert*",
+              ".opendistro-anomaly-results*",
+              ".opendistro-anomaly-detector*",
+              ".opendistro-anomaly-checkpoints",
+              ".opendistro-anomaly-detection-state",
+              ".opendistro-reports-*",
+              ".opendistro-notifications-*",
+              ".opendistro-notebooks",
+              ".opendistro-asynchronous-search-response*",
+            ]
+    ######## End OpenSearch Security Demo Configuration ########
+---
+# Source: graylog/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+data:
+  log4j2.xml: |-
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Configuration packages="org.graylog2.log4j" shutdownHook="disable">
+        <Appenders>
+            <Console name="STDOUT" target="SYSTEM_OUT">
+                <PatternLayout pattern="%d %-7level [%c{1}] - %m - %X%n"/>
+            </Console>
+            <RollingFile name="rolling-file" fileName="/usr/share/graylog/log/server.log" filePattern="/usr/share/graylog/log/server.log.%i.gz">
+                <PatternLayout>
+                    <Pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5p [%c{1}] %m%n</Pattern>
+                </PatternLayout>
+                <Policies>
+                    <SizeBasedTriggeringPolicy size="50MB"/>
+                </Policies>
+                <DefaultRolloverStrategy max="10" fileIndex="min"/>
+            </RollingFile>
+            <!-- Internal Graylog log appender. Please do not disable. This makes internal log messages available via REST calls. -->
+            <Memory name="graylog-internal-logs" bufferSize="500"/>
+            <!-- Rotate audit logs daily -->
+            <RollingFile name="AUDITLOG" fileName="/usr/share/graylog/log/audit.log" filePattern="/usr/share/graylog/log/audit-%d{yyyy-MM-dd}.log.gz">
+                <PatternLayout>
+                    <Pattern>%d [%c{1}] - %m - %X%n</Pattern>
+                </PatternLayout>
+                <Policies>
+                    <TimeBasedTriggeringPolicy />
+                </Policies>
+            </RollingFile>
+        </Appenders>
+        <Loggers>
+            <!-- Application Loggers -->
+            <Logger name="org.graylog2" level="warn"/>
+            <Logger name="com.github.joschi.jadconfig" level="warn"/>
+            <!-- This emits a harmless warning for ActiveDirectory every time which we can't work around :( -->
+            <Logger name="org.apache.directory.api.ldap.model.message.BindRequestImpl" level="error"/>
+            <!-- Prevent DEBUG message about Lucene Expressions not found. -->
+            <Logger name="org.elasticsearch.script" level="warn"/>
+            <!-- Disable messages from the version check -->
+            <Logger name="org.graylog2.periodical.VersionCheckThread" level="off"/>
+            <!-- Suppress crazy byte array dump of Drools -->
+            <Logger name="org.drools.compiler.kie.builder.impl.KieRepositoryImpl" level="warn"/>
+            <!-- Silence chatty natty -->
+            <Logger name="com.joestelmach.natty.Parser" level="warn"/>
+            <!-- Silence Kafka log chatter -->
+            <Logger name="kafka.log.Log" level="warn"/>
+            <Logger name="kafka.log.OffsetIndex" level="warn"/>
+            <!-- Silence useless session validation messages -->
+            <Logger name="org.apache.shiro.session.mgt.AbstractValidatingSessionManager" level="warn"/>
+            <Root level="warn">
+                <AppenderRef ref="STDOUT"/>
+            </Root>
+            <!-- Security Loggers -->
+          <Logger name="org.graylog2.security.realm.PasswordAuthenticator" level="trace" additivity="false">
+                <AppenderRef ref="AUDITLOG"/>
+            </Logger>
+            <Logger name="org.graylog2.security.realm.AccessTokenAuthenticator" level="trace" additivity="false">
+                <AppenderRef ref="AUDITLOG"/>
+            </Logger>
+            <Logger name="org.graylog2.security.realm.RootAccountRealm" level="trace" additivity="false">
+                <AppenderRef ref="AUDITLOG"/>
+            </Logger>
+            <Logger name="org.graylog2.shared.security.ShiroAuthorizationFilter" level="trace" additivity="false">
+                <AppenderRef ref="AUDITLOG"/>
+            </Logger>
+        </Loggers>
+    </Configuration>
+  graylog.conf: |-
+    node_id_file = /usr/share/graylog/data/journal/node-id
+    root_username = admin
+    root_email = 
+    root_timezone = UTC
+  
+    http_bind_address = 0.0.0.0:9000
+    elasticsearch_hosts = http://opensearch-cluster-master-headless.default.svc.cluster.local:9200
+    elasticsearch_discovery_enabled = false
+    # elasticsearch_disable_version_check = true
+    allow_leading_wildcard_searches = false
+    allow_highlighting = false
+    output_batch_size = 500
+    output_flush_interval = 1
+    output_fault_count_threshold = 5
+    output_fault_penalty_seconds = 30
+    processbuffer_processors = 5
+    outputbuffer_processors = 3
+    processor_wait_strategy = blocking
+    ring_size = 65536
+    inputbuffer_ring_size = 65536
+    inputbuffer_processors = 2
+    inputbuffer_wait_strategy = blocking
+    message_journal_enabled = true
+    # Do not change `message_journal_dir` location
+    message_journal_dir = /usr/share/graylog/data/journal
+    message_journal_max_size = 5gb
+    lb_recognition_period_seconds = 3
+    # Use a replica set instead of a single host
+    mongodb_uri = mongodb://release-name-mongodb-headless.default.svc.cluster.local:27017/graylog?replicaSet=rs0
+    mongodb_max_connections = 1000
+    mongodb_threads_allowed_to_block_multiplier = 5
+    # Email transport
+    transport_email_enabled = false
+    transport_email_hostname = 
+    transport_email_port = 2587
+    transport_email_use_auth = true
+    transport_email_use_tls = true
+    transport_email_use_ssl = false
+    transport_email_auth_username = 
+    transport_email_auth_password = 
+    transport_email_subject_prefix = [graylog]
+    transport_email_from_email = 
+    gc_warning_threshold = 1s
+    content_packs_dir = /usr/share/graylog/data/contentpacks
+    content_packs_auto_load = grok-patterns.json
+    proxied_requests_thread_pool_size = 32
+  entrypoint.sh: |-
+    #!/usr/bin/env bash
+
+    GRAYLOG_HOME=/usr/share/graylog
+    export GRAYLOG_PLUGIN_DIR=${GRAYLOG_HOME}/plugin
+    # Graylog 4.0.2 images move plugin dir to `plugins-default`
+    find ${GRAYLOG_HOME}/plugins-default/ -type f -exec cp {} ${GRAYLOG_PLUGIN_DIR} \;
+    # Looking for Master IP
+    retry=1
+    for i in {0..2}
+    do
+      MASTER_IP=`/k8s/kubectl --namespace default get pod -o jsonpath='{range .items[*]}{.metadata.name} {.status.podIP}{"\n"}{end}' -l graylog-role=master --field-selector=status.phase=Running|awk '{print $2}'`
+      SELF_IP=`/k8s/kubectl --namespace default get pod $HOSTNAME -o jsonpath='{.status.podIP}'`
+      echo "Current master is $MASTER_IP"
+      echo "Self IP is $SELF_IP"
+      retry=$((retry+1))
+      [[ ! -z "$MASTER_IP" ]] && break
+      echo "[Try ${retry}/3] Waiting for master node..."
+      sleep 2
+    done
+    if [[ -z "$MASTER_IP" ]]; then
+      echo "Launching $HOSTNAME as master"
+      export GRAYLOG_IS_MASTER="true"
+      export GRAYLOG_IS_LEADER="true"
+      /k8s/kubectl --namespace default label --overwrite pod $HOSTNAME graylog-role="master"
+    else
+      # When container was recreated or restart, MASTER_IP == SELF_IP, running as master and no need to change label graylog-role="master"
+      if [ "$SELF_IP" == "$MASTER_IP" ];then
+        echo "Launching $HOSTNAME as master"
+        export GRAYLOG_IS_MASTER="true"
+        export GRAYLOG_IS_LEADER="true"
+      else
+        # MASTER_IP != SELF_IP, running as coordinating
+        echo "Launching $HOSTNAME as coordinating"
+        export GRAYLOG_IS_MASTER="false"
+        export GRAYLOG_IS_LEADER="false"
+        /k8s/kubectl --namespace default label --overwrite pod $HOSTNAME graylog-role="coordinating"
+      fi
+    fi
+    # Download plugins
+    # Start Graylog
+    echo "Starting graylog"
+    # Original docker-entrypoint.sh in Graylog Docker will error while executing since you can't chown readonly files in `config`
+    # exec /docker-entrypoint.sh graylog
+    echo "Graylog Home ${GRAYLOG_HOME}"
+    echo "Graylog Plugin Dir ${GRAYLOG_PLUGIN_DIR}"
+    echo "Graylog Elasticsearch Version ${GRAYLOG_ELASTICSEARCH_VERSION}"
+    "${JAVA_HOME}/bin/java" \
+      ${GRAYLOG_SERVER_JAVA_OPTS} \
+      -jar \
+      -Dlog4j.configurationFile=${GRAYLOG_HOME}/config/log4j2.xml \
+      -Djava.library.path=${GRAYLOG_HOME}/lib/sigar/ \
+      -Dgraylog2.installation_source=docker \
+      ${GRAYLOG_HOME}/graylog.jar \
+      server \
+      -f ${GRAYLOG_HOME}/config/graylog.conf
+---
+# Source: graylog/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-graylog
+  labels:
+    app.kubernetes.io/name: graylog
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "5.2.6"
+rules:
+- apiGroups:
+    - ""
+  resources:
+    - pods
+    - secrets
+  verbs:
+    - get
+    - list
+    - patch
+---
+# Source: graylog/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-graylog
+subjects:
+- kind: ServiceAccount
+  name: release-name-graylog
+---
+# Source: graylog/charts/mongodb/templates/arbiter/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mongodb-arbiter-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: arbiter
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-mongodb
+      port: 27017
+      targetPort: mongodb
+  selector:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: arbiter
+---
+# Source: graylog/charts/mongodb/templates/replicaset/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mongodb-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: "mongodb"
+      port: 27017
+      targetPort: mongodb
+  selector:
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: mongodb
+---
+# Source: graylog/charts/opensearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: opensearch-cluster-master
+  labels:
+    helm.sh/chart: opensearch-2.8.0
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-cluster-master
+  annotations:
+    {}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+  ports:
+  - name: http
+    protocol: TCP
+    port: 9200
+  - name: transport
+    protocol: TCP
+    port: 9300
+---
+# Source: graylog/charts/opensearch/templates/service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: opensearch-cluster-master-headless
+  labels:
+    helm.sh/chart: opensearch-2.8.0
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-cluster-master
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None # This is needed for statefulset hostnames like opensearch-0 to resolve
+  # Create endpoints also if the related pod isn't ready
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+  ports:
+  - name: http
+    port: 9200
+  - name: transport
+    port: 9300
+---
+# Source: graylog/templates/headless-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  ports:
+    - name: graylog
+      port: 9000
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+---
+# Source: graylog/templates/master-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graylog-master
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+    graylog-role: "master"
+spec:
+  ports:
+    - name: graylog
+      port: 9000
+      protocol: TCP
+      targetPort: 9000
+  selector:
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    graylog-role: "master"
+  type: "ClusterIP"
+---
+# Source: graylog/templates/web-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graylog-web
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+    app.kubernetes.io/component: "web"
+spec:
+  ports:
+    - name: graylog
+      port: 9000
+      protocol: TCP
+      targetPort: 9000
+  selector:
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+  type: "ClusterIP"
+---
+# Source: graylog/charts/mongodb/templates/arbiter/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mongodb-arbiter
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: arbiter
+spec:
+  serviceName: release-name-mongodb-arbiter-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: arbiter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb
+        helm.sh/chart: mongodb-13.6.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: arbiter
+    spec:
+      
+      serviceAccountName: release-name-mongodb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mongodb
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: arbiter
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      initContainers:
+      containers:
+        - name: mongodb-arbiter
+          image: docker.io/bitnami/mongodb:6.0.4-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_SERVICE_NAME
+              value: "release-name-mongodb-arbiter-headless"
+            - name: MONGODB_REPLICA_SET_MODE
+              value: "arbiter"
+            - name: MONGODB_INITIAL_PRIMARY_HOST
+              value: release-name-mongodb-0.release-name-mongodb-headless.$(MY_POD_NAMESPACE).svc.cluster.local
+            - name: MONGODB_REPLICA_SET_NAME
+              value: "rs0"
+            - name: MONGODB_ADVERTISED_HOSTNAME
+              value: "$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+          ports:
+            - containerPort: 27017
+              name: mongodb
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            tcpSocket:
+              port: mongodb
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            tcpSocket:
+              port: mongodb
+          resources:
+            limits: {}
+            requests: {}
+---
+# Source: graylog/charts/mongodb/templates/replicaset/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: mongodb
+    helm.sh/chart: mongodb-13.6.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: release-name-mongodb-headless
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb
+        helm.sh/chart: mongodb-13.6.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: mongodb
+    spec:
+      
+      serviceAccountName: release-name-mongodb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mongodb
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: mongodb
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      containers:
+        - name: mongodb
+          image: docker.io/bitnami/mongodb:6.0.4-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MY_POD_HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: K8S_SERVICE_NAME
+              value: "release-name-mongodb-headless"
+            - name: MONGODB_INITIAL_PRIMARY_HOST
+              value: release-name-mongodb-0.$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local
+            - name: MONGODB_REPLICA_SET_NAME
+              value: "rs0"
+            - name: MONGODB_ADVERTISED_HOSTNAME
+              value: "$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: MONGODB_SYSTEM_LOG_VERBOSITY
+              value: "0"
+            - name: MONGODB_DISABLE_SYSTEM_LOG
+              value: "no"
+            - name: MONGODB_DISABLE_JAVASCRIPT
+              value: "no"
+            - name: MONGODB_ENABLE_JOURNAL
+              value: "yes"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: MONGODB_ENABLE_DIRECTORY_PER_DB
+              value: "no"
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            exec:
+              command:
+                - /bitnami/scripts/ping-mongodb.sh
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bitnami/scripts/readiness-probe.sh
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /bitnami/mongodb
+              subPath: 
+            - name: common-scripts
+              mountPath: /bitnami/scripts
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+            
+      volumes:
+        - name: common-scripts
+          configMap:
+            name: release-name-mongodb-common-scripts
+            defaultMode: 0550
+        - name: scripts
+          configMap:
+            name: release-name-mongodb-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: datadir
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: graylog/charts/opensearch/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: opensearch-cluster-master
+  labels:
+    helm.sh/chart: opensearch-2.8.0
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: opensearch-cluster-master
+  annotations:
+    majorVersion: "2"
+spec:
+  serviceName: opensearch-cluster-master-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch
+      app.kubernetes.io/instance: release-name
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - metadata:
+      name: opensearch-cluster-master
+    spec:
+      accessModes:
+      - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "8Gi"
+  template:
+    metadata:
+      name: "opensearch-cluster-master"
+      labels:
+        helm.sh/chart: opensearch-2.8.0
+        app.kubernetes.io/name: opensearch
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "2.4.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: opensearch-cluster-master
+      annotations:
+        configchecksum: f9d79f19f73770154a729e3735a70c2ad6cedb23ca7adca6363d4822866ec49
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      serviceAccountName: ""
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/instance
+                  operator: In
+                  values:
+                  - release-name
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - opensearch
+      terminationGracePeriodSeconds: 120
+      volumes:
+      - name: config
+        configMap:
+          name: opensearch-cluster-master-config
+      enableServiceLinks: true
+      initContainers:
+      - name: fsgroup-volume
+        image: "busybox:latest"
+        command: ['sh', '-c']
+        args:
+          - 'chown -R 1000:1000 /usr/share/opensearch/data'
+        securityContext:
+          runAsUser: 0
+        resources: 
+           
+          {}
+        volumeMounts:
+          - name: "opensearch-cluster-master"
+            mountPath: /usr/share/opensearch/data
+
+      containers:
+      - name: "opensearch"
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+          runAsUser: 1000
+  
+        image: "opensearchproject/opensearch:2.4.0"
+        imagePullPolicy: "IfNotPresent"
+        readinessProbe:
+          failureThreshold: 3
+          periodSeconds: 5
+          tcpSocket:
+            port: 9200
+          timeoutSeconds: 3
+        startupProbe:
+          failureThreshold: 30
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          tcpSocket:
+            port: 9200
+          timeoutSeconds: 3
+        ports:
+        - name: http
+          containerPort: 9200
+        - name: transport
+          containerPort: 9300
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        env:
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: cluster.initial_master_nodes
+          value: "opensearch-cluster-master-0,opensearch-cluster-master-1,opensearch-cluster-master-2,"
+        - name: discovery.seed_hosts
+          value: "opensearch-cluster-master-headless"
+        - name: cluster.name
+          value: "opensearch-cluster"
+        - name: network.host
+          value: "0.0.0.0"
+        - name: OPENSEARCH_JAVA_OPTS
+          value: "-Xmx128M -Xms128M"
+        - name: node.roles
+          value: "master,ingest,data,remote_cluster_client,"
+        - name: plugins.security.ssl.http.enabled
+          value: "false"
+        - name: plugins.security.disabled
+          value: "true"
+        volumeMounts:
+        - name: "opensearch-cluster-master"
+          mountPath: /usr/share/opensearch/data
+        - name: config
+          mountPath: /usr/share/opensearch/config/opensearch.yml
+          subPath: opensearch.yml
+---
+# Source: graylog/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-graylog
+  labels:
+    helm.sh/chart: graylog-2.3.7
+    app.kubernetes.io/name: graylog
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/version: "5.2.6"
+spec:
+  serviceName: release-name-graylog
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graylog
+      app.kubernetes.io/instance: "release-name"
+      app.kubernetes.io/managed-by: "Helm"
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: graylog-2.3.7
+        app.kubernetes.io/name: graylog
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/version: "5.2.6"
+      annotations:
+    spec:
+      serviceAccountName: release-name-graylog
+
+      securityContext:
+        fsGroup: 1100
+        fsGroupChangePolicy: Always
+      initContainers:
+        - name: "setup"
+          image: alpine
+          imagePullPolicy: IfNotPresent
+          # Graylog journal will recursive in every subdirectories. Any invalid format directories will cause errors
+          command:
+            - /bin/sh
+            - -c
+            - |
+              rm -rf /usr/share/graylog/data/journal/lost+found
+              v1.28.0
+              wget https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl -O /k8s/kubectl
+              chmod +x /k8s/kubectl
+
+              GRAYLOG_HOME=/usr/share/graylog
+              chown -R 1100:1100 ${GRAYLOG_HOME}/data/
+          securityContext:
+            runAsUser: 0 # We require permission to change the volume owner
+          env:
+          volumeMounts:
+            - name: journal
+              mountPath: /usr/share/graylog/data/journal
+            - name: kubectl
+              mountPath: /k8s
+      containers:
+        - name: graylog-server
+          image: "graylog/graylog:5.2.6"
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /entrypoint.sh
+          env:
+            - name: GRAYLOG_SERVER_JAVA_OPTS
+              value: "-Dlog4j2.formatMsgNoLookups=true -Djdk.tls.acknowledgeCloseNotify=true -XX:+UnlockExperimentalVMOptions -XX:-OmitStackTraceInFastThrow -XX:+UseG1GC -server -Xms16g -Xmx16g"
+            - name: GRAYLOG_PASSWORD_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-graylog
+                  key: graylog-password-secret
+            - name: GRAYLOG_ROOT_PASSWORD_SHA2
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-graylog
+                  key: graylog-password-sha2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsGroup: 1100
+            runAsNonRoot: true
+            runAsUser: 1100
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - containerPort: 9000
+              name: graylog
+          resources:
+            limits:
+              cpu: "1"
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /api/system/lbstatus
+              port: 9000
+            periodSeconds: 60
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/system/lbstatus
+              port: 9000
+            initialDelaySeconds: 0
+            periodSeconds: 30
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/system/lbstatus
+              port: 9000
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: journal
+              mountPath: /usr/share/graylog/data/journal
+            - name: config
+              mountPath: /usr/share/graylog/config
+            - name: entrypoint
+              mountPath: /entrypoint.sh
+              subPath: entrypoint.sh
+            - name: kubectl
+              mountPath: /k8s
+          
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-graylog
+            items:
+              - key: graylog.conf
+                path: graylog.conf
+                mode: 292 # 0444
+              - key: log4j2.xml
+                path: log4j2.xml
+                mode: 292 # 0444
+        - name: entrypoint
+          configMap:
+            name: release-name-graylog
+            items:
+              - key: entrypoint.sh
+                path: entrypoint.sh
+                mode: 365 # 0555
+        - name: kubectl
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: journal
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "20Gi"

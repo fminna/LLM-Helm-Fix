@@ -1,0 +1,598 @@
+---
+# Source: mission-control-watchtower/templates/mission-control.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Connection
+metadata:
+  name: mission-control-db
+spec:
+  postgres:
+    database:
+      value: mission-control
+    insecureTLS: true
+    host:
+      value: postgres
+    username:
+      valueFrom:
+        secretKeyRef:
+          name: incident-commander-postgres
+          key: POSTGRES_USER
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: incident-commander-postgres
+          key: POSTGRES_PASSWORD
+---
+# Source: mission-control-watchtower/templates/playbooks.yaml
+apiVersion: mission-control.flanksource.com/v1
+kind: Playbook
+metadata:
+  name: clear-event-queue
+  namespace: default
+spec:
+  parameters:
+    - name: max_age
+      label: Max Age (days)
+      default: '30'
+    - name: last_max_attempt
+      label: Reset attempts where last tried is before (days)
+      default: '7'
+  title: Clear Event Queue
+  category: Mission Control
+  description: Deletes old events and fully retried events
+  actions:
+    - name: Delete stale events
+      sql:
+        connection: "connection://mission-control-db"
+        driver: postgres
+        query: >-
+          DELETE FROM event_queue
+          WHERE created_at < NOW() - INTERVAL '$(.params.max_age) day'
+    - name: Reset attempts
+      sql:
+        connection: "connection://mission-control-db"
+        driver: postgres
+        query: >-
+          UPDATE event_queue SET attempts = 0
+          WHERE attempts > 0 AND
+          last_attempt < NOW() - INTERVAL '$(.params.last_max_attempt) day'
+---
+# Source: mission-control-watchtower/templates/mission-control.yaml
+apiVersion: canaries.flanksource.com/v1
+kind: Topology
+metadata:
+  name: mission-control
+  labels:
+    helm.sh/chart: mission-control-watchtower-0.1.12
+    app.kubernetes.io/name: mission-control-watchtower
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  icon: mission-control
+  schedule: '@every 5m'
+  type: Topology
+  properties:
+  - name: URL
+    type: url
+    configLookup:
+      config:
+        name: incident-manager-ui
+        tags:
+          app.kubernetes.io/instance: mission-control
+          app.kubernetes.io/name: incident-manager-ui
+        type: Kubernetes::Ingress
+      display:
+        javascript: config.spec.rules[0].host
+  components:
+  - components:
+    - icon: group
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: |
+              JSON.stringify(results.rows.map(function(r) {return {name: r.name}}))
+          name: Team names query
+          query: SELECT name FROM teams
+          results: -1
+      name: Teams
+      type: lookup
+    icon: incidents
+    name: Incident Commander
+    checks:
+    - inline:
+        http:
+        - endpoint: http://mission-control:8080/health
+          name: incident-commander-http-check
+          responseCodes:
+          - 200
+        schedule: '@every 1m'
+    properties:
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Incident count query
+          query: SELECT count(*) FROM incidents WHERE (resolved IS NULL) OR (closed
+            IS NULL)
+          results: 1
+      name: Incidents
+    - name: Docs
+      text: https://docs.flanksource.com
+      type: url
+    - configLookup:
+        config:
+          name: mission-control
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: mission-control
+          type: Kubernetes::Deployment
+        display:
+          javascript: |
+            config.spec.template.spec.containers[0]['image'].split(':')[1]
+      headline: true
+      name: Version
+    selectors:
+    - labelSelector: app.kubernetes.io/name=mission-control
+    type: API
+  - checks:
+    - inline:
+        http:
+        - endpoint: http://canary-checker:8080/health
+          name: canary-checker-http-check
+          responseCodes:
+          - 200
+        schedule: '@every 1m'
+    components:
+    - name: Canaries
+      icon: canary-checker
+      checks:
+        - inline:
+            postgres:
+              - query: |
+                  WITH cte AS (
+                    SELECT name, resource_id, resource_type, created_at, details, status, ROW_NUMBER() OVER (PARTITION by resource_id, name ORDER BY created_at DESC) AS rn
+                    FROM job_history
+                    WHERE
+                      resource_id in (select id::text from canaries where deleted_at is null) AND
+                      status NOT IN ('RUNNING', 'SKIPPED') AND
+                      resource_type = 'canary'
+                  )
+                  SELECT * FROM cte WHERE rn = 1;
+                connection: "connection://mission-control-db"
+                name: CanarySync Check
+                transform:
+                  expr: |
+                    results.rows.map(r, {
+                      'name': r.name + ':' + r.resource_id,
+                      'icon': 'canary-checker',
+                      'message': r.created_at + ' | ' + r.details.toJSON(),
+                      'description': r.details.toJSON(),
+                      'pass': r.status=='SUCCESS',
+                    }).toJSON()
+    - forEach:
+        properties:
+        - name: Type
+          text: SystemTemplate
+      icon: k8s-customresourcedefinition
+      checks:
+        - inline:
+            postgres:
+              - query: |
+                  WITH cte AS (
+                    SELECT name, resource_id, resource_type, created_at, details, status, ROW_NUMBER() OVER (PARTITION by resource_id, name ORDER BY created_at DESC) AS rn
+                    FROM job_history
+                    WHERE
+                      resource_id in (select id::text from topologies where deleted_at is null) AND
+                      status NOT IN ('RUNNING', 'SKIPPED') AND
+                      resource_type = 'topology'
+                  )
+                  SELECT * FROM cte WHERE rn = 1;
+                connection: "connection://mission-control-db"
+                name: TopologyChecks
+                transform:
+                  expr: |
+                    results.rows.map(r, {
+                      'name': r.name + ':' + r.resource_id,
+                      'icon': 'traces',
+                      'message': r.created_at + ' | ' + r.details.toJSON(),
+                      'description': r.details.toJSON(),
+                      'pass': r.status=='SUCCESS',
+                    }).toJSON()
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            expr: |
+              results.rows.map(r, {
+                'name': r.name,
+                'properties': [
+                  { 'name': 'Last runtime', 'text': r.time_end != null ? string(r.time_end) : 'N/A' },
+                  { 'name': 'Duration', 'text': r.duration_millis != null ? string(r.duration_millis) : 'N/A', 'unit': 'ms', 'headline': true},
+                  { 'name': 'Success Count', 'value': r.success_count, 'headline': true},
+                  { 'name': 'Error Count', 'value': r.error_count, 'headline': true},
+                ],
+              }).toJSON()
+          name: Topologies count query
+          query: |
+            SELECT * FROM (
+              SELECT
+                ROW_NUMBER() OVER (PARTITION BY t.name ORDER BY time_end DESC) AS rn, t.name, jh.status, jh.success_count,
+                jh.error_count, jh.duration_millis, jh.time_end
+              FROM topologies t
+              INNER JOIN job_history jh ON t.id::text = jh.resource_id) AS s WHERE rn = 1
+          results: 1
+      name: Topologies
+      type: lookup
+    icon: heart
+    name: Canary Checker
+    properties:
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Component count query
+          query: SELECT count(*) FROM components WHERE deleted_at IS NULL
+          results: 1
+      name: Components
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Check count query
+          query: SELECT count(*) FROM checks WHERE deleted_at IS NULL
+          results: 1
+      name: Checks
+    - configLookup:
+        config:
+          name: canary-checker
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: canary-checker
+          type: Kubernetes::Deployment
+        display:
+          javascript: |
+            config.spec.template.spec.containers[0]['image'].split(':')[1]
+      headline: true
+      name: Version
+    - name: Docs
+      text: https://docs.flanksource.com/canary-checker/overview
+      type: url
+    selectors:
+    - labelSelector: app.kubernetes.io/name=canary-checker
+    type: API
+
+  - name: Event Queue
+    icon: switch
+    properties:
+      - name: Backlog
+        lookup:
+          postgres:
+            - query: SELECT count(*) FROM event_queue
+              connection: "connection://mission-control-db"
+              display:
+                expr: results.rows[0].count
+              test:
+                expr: results.rows[0].count < 200
+    checks:
+      - inline:
+          postgres:
+            - query: SELECT distinct(name), count(*) FROM event_queue GROUP BY name
+              connection: "connection://mission-control-db"
+              name: Event Queue Checks
+              transformDeleteStrategy: MarkHealthy
+              transform:
+                expr: |
+                  results.rows.map(r, {
+                    'name': r.name,
+                    'icon': 'switch',
+                    'message': string(r.count) + ' items in queue',
+                    'pass': r.count < 200,
+                  }).toJSON()
+
+  - name: APM Hub
+    icon: logs
+    properties:
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Backends count query
+          query: SELECT count(*) FROM logging_backends WHERE deleted_at IS NULL
+          results: 1
+      name: Backends
+    - configLookup:
+        config:
+          name: apm-hub
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: apm-hub
+          type: Kubernetes::Deployment
+        display:
+          javascript: |
+            config.spec.template.spec.containers[0]['image'].split(':')[1]
+      headline: true
+      name: Version
+    - name: Docs
+      text: https://docs.flanksource.com/apm-hub/overview
+      type: url
+    selectors:
+    - labelSelector: app.kubernetes.io/name=apm-hub
+    type: API
+  - checks:
+    - inline:
+        http:
+        - display: {}
+          endpoint: http://config-db:8080/live
+          name: config-db-http-check
+          responseCodes:
+          - 200
+        schedule: '@every 1m'
+    - inline:
+        postgres:
+          - query: |
+              WITH cte AS (
+                SELECT name, resource_id, resource_type, created_at, details, status, ROW_NUMBER() OVER (PARTITION by resource_id, name ORDER BY created_at DESC) AS rn
+                FROM job_history
+                WHERE
+                  resource_id in (select id::text from config_scrapers where deleted_at is null) AND
+                  status NOT IN ('RUNNING', 'SKIPPED') AND
+                  resource_type = 'config_scraper'
+              )
+              SELECT * FROM cte WHERE rn = 1
+            connection: "connection://mission-control-db"
+            name: Config Scraper Checks
+            transform:
+              expr: |
+                results.rows.map(r, {
+                  'name': r.name + ':' + r.resource_id,
+                  'icon': 'config',
+                  'message': r.created_at + ' | ' + r.details.toJSON(),
+                  'description': r.details.toJSON(),
+                  'pass': r.status == 'SUCCESS' ,
+                }).toJSON()
+
+    components:
+    - icon: k8s-customresourcedefinition
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: |
+              JSON.stringify(results.rows.map(function(r) {return {
+                name: r.name,
+                properties: [
+                {
+                  name: 'Last runtime',
+                  text: String(r.time_end),
+                },
+                {
+                  name: 'Duration',
+                  text: String(r.duration_millis),
+                  unit: 'ms',
+                  headline: true,
+                },
+                {
+                  name: 'Success Count',
+                  value: r.success_count,
+                  headline: true,
+                },
+                {
+                  name: 'Error Count',
+                  value: r.error_count,
+                  headline: true,
+                },
+              ],
+              }}))
+          name: Config scrapers count query
+          query: |
+            SELECT * FROM (
+              SELECT
+                ROW_NUMBER() OVER (PARTITION BY c.name ORDER BY time_end DESC) AS rn, c.name, jh.status, jh.success_count,
+                jh.error_count, jh.duration_millis, jh.time_end
+              FROM config_scrapers c
+              INNER JOIN job_history jh ON c.id::text = jh.resource_id) AS s WHERE rn = 1
+          results: 1
+      name: ConfigScrapers
+      type: lookup
+    icon: config
+    name: Config DB
+    properties:
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Config Items count query
+          query: SELECT count(*) FROM config_items WHERE deleted_at IS NULL
+          results: 1
+      name: Config Items
+    - configLookup:
+        config:
+          name: config-db
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: config-db
+          type: Kubernetes::Deployment
+        display:
+          javascript: |
+            config.spec.template.spec.containers[0]['image'].split(':')[1]
+      headline: true
+      name: Version
+    - name: Docs
+      text: https://docs.flanksource.com/config-db/overview
+      type: url
+    selectors:
+    - labelSelector: app.kubernetes.io/name=config-db
+    type: API
+  - icon: postgres
+    name: PostgreSQL
+    configs:
+      - namespace: default
+        name: postgresql-0
+        type: Kubernetes::Pod
+    properties:
+    - lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].version
+          name: Version query
+          query: SELECT VERSION()
+          results: 1
+          test: {}
+          transform: {}
+      name: Version
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].pg_size_pretty
+          name: Size query
+          query: SELECT pg_size_pretty(pg_database_size('mission_control'))
+          results: 1
+          test: {}
+          transform: {}
+      name: Size
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].sum
+          name: Active connections query
+          query: SELECT sum(numbackends) FROM pg_stat_database
+          results: 1
+      name: Connections
+    selectors:
+    - labelSelector: app=postgresql
+      fieldSelector: namespace=default
+    type: Database
+  - icon: html
+    name: UI
+    properties:
+    - configLookup:
+        config:
+          name: incident-manager-ui
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: incident-manager-ui
+          type: Kubernetes::Deployment
+        display:
+          javascript: |
+            config.spec.template.spec.containers[0]['image'].split(':')[1]
+      headline: true
+      name: Version
+    selectors:
+    - labelSelector: app.kubernetes.io/name=incident-manager-ui
+    type: Website
+
+  - name: Kratos
+    icon: ory-kratos
+    type: Service
+    properties:
+    - name: Version
+      configLookup:
+        config:
+          name: kratos
+          tags:
+            app.kubernetes.io/instance: mission-control
+            app.kubernetes.io/name: kratos
+          type: Kubernetes::Deployment
+        display:
+          javascript: labels['app.kubernetes.io/version']
+      headline: true
+    - headline: true
+      lookup:
+        postgres:
+        - connection: "connection://mission-control-db"
+          display:
+            javascript: results.rows[0].count
+          name: Count
+          query: SELECT COUNT(*) FROM identities
+          results: 1
+      name: Identities
+    selectors:
+    - labelSelector: app.kubernetes.io/name=kratos
+
+  - name: Jobs
+    type: Jobs
+    icon: clock
+    components:
+      - name: JobGroups
+        lookup:
+          postgres:
+          - connection: "connection://mission-control-db"
+            query: |
+              WITH ordered_history AS (
+                SELECT
+                  job_history.*,
+                  ROW_NUMBER() OVER (PARTITION by name, resource_type, resource_id ORDER BY created_at DESC) AS rn
+                FROM job_history
+                WHERE status NOT IN ('RUNNING', 'SKIPPED')
+              )
+              SELECT * from ordered_history where rn = 1 and resource_id = '';
+            display:
+              expr: |
+                results.rows.map(r, {
+                  'name': r.name,
+                  'icon': 'clock',
+                  'type': 'JobHistory',
+                  'status': r.status in ['SUCCESS', 'FINISHED'] ? 'healthy': 'unhealthy',
+                  'status_reason': r.status in ['SUCCESS', 'FINISHED'] ? '': r.details.toJSON(),
+                  'properties': [
+                    {'name': 'success_count', 'value': r.success_count, 'headline': true},
+                    {'name': 'error_count', 'value': r.error_count, 'headline': true},
+                    {'name': 'duration_ms', 'value': r.duration_millis},
+                    {'name': 'last_run', 'text': string(r.time_end)},
+                    {'name': 'count'},
+                    {'name': 'rate/hr'},
+                    {'name': 'pass rate'},
+                  ],
+                }).toJSON()
+
+        properties:
+          - name: count
+            lookup:
+              prometheus:
+              - query: 'count by (name) (job)'
+                url: 
+                display:
+                  expr: |
+                    dyn(results).map(r, {
+                      'name': r.name,
+                      'properties': [{'name': 'count', 'value': int(r.value)}]
+                    }).toJSON()
+          - name: rate
+            lookup:
+              prometheus:
+              - query: 'sum(increase(job[1h])) by (name)'
+                url: 
+                display:
+                  expr: |
+                    dyn(results).map(r, {
+                      'name': r.name,
+                      'properties': [{'name': 'rate/hr', 'value': math.Ceil(int(r.value))}]
+                    }).toJSON()
+
+          - name: pass-rate
+            lookup:
+              prometheus:
+              - query: '100 * sum by (name) (count_over_time(job{status=~"FINISHED|SUCCESS"}[1h])) / sum by (name) (count_over_time(job{}[1h]))'
+                url: 
+                display:
+                  expr: |
+                    dyn(results).map(r, {
+                      'name': r.name,
+                      'properties': [{'name': 'pass rate', 'value': int(r.value)}]
+                    }).toJSON()

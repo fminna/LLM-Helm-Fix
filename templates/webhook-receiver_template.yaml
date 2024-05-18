@@ -1,0 +1,181 @@
+---
+# Source: webhook-receiver/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: webhook-receiver/templates/configmap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  hooks.yaml: |
+    - execute-command: /data/status.sh
+      id: status
+      include-command-output-in-response: true
+      response-message: Online
+    - command-working-directory: /data
+      execute-command: /data/helloworld.sh
+      id: webhook
+      pass-arguments-to-command:
+      - name: head_commit.id
+        source: payload
+      - name: pusher.name
+        source: payload
+      - name: pusher.email
+        source: payload
+      response-headers:
+      - name: Access-Control-Allow-Origin
+        value: '*'
+      response-message: I got your payload! Hello!
+  file__data_status.sh: |
+        #!/bin/sh
+        echo Online we are!
+        
+  file__data_helloworld.sh: |
+        #!/bin/sh
+        "echo Command: $@"
+---
+# Source: webhook-receiver/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+---
+# Source: webhook-receiver/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: webhook-receiver
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: webhook-receiver
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-webhook-receiver
+      securityContext:
+        {}
+      imagePullSecrets:
+      - name: webhook-receiver-pullsecret
+      containers:
+        - name: webhook-receiver
+          args:
+            - -verbose
+            - -hooks=/etc/webhook/hooks.yaml
+            - -hotreload
+            - -template
+          securityContext:
+            {}
+          image: "almir/webhook:2.8.0"
+          imagePullPolicy: IfNotPresent
+          env:
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          volumeMounts:
+            - name: configs
+              mountPath: "/etc/webhook/hooks.yaml"
+              subPath: "hooks.yaml"
+            - name: configs
+              mountPath: "/data/status.sh"
+              subPath: "file__data_status.sh"
+            - name: configs
+              mountPath: "/data/helloworld.sh"
+              subPath: "file__data_helloworld.sh"
+          resources:
+            {}
+      volumes:
+        - name: configs
+          configMap:
+            name: release-name-webhook-receiver
+            defaultMode: 0755
+---
+# Source: webhook-receiver/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-webhook-receiver
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingressClassName: 
+  rules:
+    - host: "webhook-receiver.chart.local"
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: release-name-webhook-receiver
+                port:
+                  number: 9000
+---
+# Source: webhook-receiver/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-webhook-receiver-test-connection"
+  labels:
+    helm.sh/chart: webhook-receiver-2.0.0
+    app.kubernetes.io/name: webhook-receiver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-webhook-receiver:9000/hooks/status']
+  restartPolicy: Never

@@ -1,0 +1,338 @@
+---
+# Source: soda-agent/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    helm.sh/chart: soda-agent-1.1.0
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.7"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: soda-agent/templates/secret-agent-id.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "soda-agent-id"
+  namespace: default
+  labels:
+    helm.sh/chart: soda-agent-1.1.0
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.7"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  DD_KEY: ""
+  DD_ENV: ""  
+  SODA_AGENT_ID: ""
+---
+# Source: soda-agent/templates/secret-agent-sa.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "soda-agent-sa"
+  namespace: default
+  labels:
+    helm.sh/chart: soda-agent-1.1.0
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.7"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+---
+# Source: soda-agent/templates/secret-apikey-id.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "soda-agent-apikey"
+  namespace: default
+  labels:
+    helm.sh/chart: soda-agent-1.1.0
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.7"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  SODA_API_KEY_ID: ""
+  SODA_API_KEY_SECRET: ""
+---
+# Source: soda-agent/templates/configmap-orchestrator.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soda-agent-orchestrator
+  namespace: default
+data:
+  agent-orchestrator.yaml: |
+    pod:
+      schedulerName: default-scheduler
+      serviceAccountName: release-name
+    scanLauncher:
+      image:
+        repository: sodadata/soda-scan-launcher
+        tag: v2.0.15
+        pullPolicy: IfNotPresent
+      resources:
+        limits:
+          cpu: 250m
+          memory: 250Mi
+        requests:
+          cpu: 250m
+          memory: 250Mi
+    verifier:
+      image:
+        repository: busybox
+        tag: stable
+        pullPolicy: IfNotPresent
+---
+# Source: soda-agent/templates/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: soda-agent-role
+rules:
+- apiGroups:
+    - "batch"
+  resources:
+    - "jobs"
+    - "jobs/status"
+    - "cronjobs"
+  verbs:
+    - "*"
+- apiGroups:
+    - ""
+  resources:
+    - "pods"
+    - "pods/log"
+    - "pods/status"
+    - "configmaps"
+  verbs:
+    - "*"
+- apiGroups:
+    - ""
+  resources:
+    - "secrets"
+  verbs:
+    - "get"
+    - "list"
+    - "patch"
+    - "update"
+    - "create"
+    - "delete"
+---
+# Source: soda-agent/templates/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: soda-agent-role
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+roleRef:
+  kind: Role
+  name: soda-agent-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: soda-agent/templates/deployment-orchestrator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soda-agent-orchestrator
+  namespace: default
+  labels:
+    helm.sh/chart: soda-agent-1.1.0
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.4.7"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: soda-agent
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/apikey: 31753584acfb59e12c606850f24aa3c79210ee4c007be6a19f781dd53600e265
+        checksum/config: f63be5091df798bd0f4010c3839b0be7101e0275bb8b1c84d418f34077478832
+      labels:
+        app.kubernetes.io/name: soda-agent
+        app.kubernetes.io/instance: release-name
+        agent.soda.io/component: "orchestrator"
+        agent.soda.io/service: "queue"
+    spec:
+      schedulerName: default-scheduler
+      serviceAccountName: release-name
+      securityContext:
+        {}
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+        - name: sidecar-config
+          configMap:
+            name: soda-agent-orchestrator-logging
+            items:
+            - key: "fluent-bit.conf"
+              path: "fluent-bit.conf"
+        - name: orchestrator-config
+          configMap:
+            name: soda-agent-orchestrator
+            items:
+            - key: agent-orchestrator.yaml
+              path: agent-orchestrator.yaml
+      containers:
+        - name: soda-agent-orchestrator
+          securityContext:
+            {}
+          image: "sodadata/agent-orchestrator:v2.1.0"
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: shared-data
+              mountPath: /var/log/app
+            - name: orchestrator-config
+              mountPath: /etc/agent-orchestrator
+          env:
+          - name: SODA_AGENT_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: SODA_AGENT_POD_UID
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.uid
+          - name: SODA_API_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: soda-agent-apikey
+                key: SODA_API_KEY_ID
+          - name: SODA_API_KEY_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: soda-agent-apikey
+                key: SODA_API_KEY_SECRET
+          - name: SODA_CLOUD_ENDPOINT
+            value: "https://cloud.soda.io"
+          - name: SODA_AGENT_NAME
+            value: ""
+          - name: SODA_AGENT_NAMESPACE
+            value: "default"
+          - name: SODA_CLOUD_POLLING_INTERVAL
+            value: "5"
+          - name: SODA_SCAN_LAUNCHER_IMAGE
+            value: "sodadata/soda-scan-launcher"
+          - name: SODA_SCAN_LAUNCHER_VERSION
+            value: "v2.0.15"
+          - name: LOG_LEVEL
+            value: "INFO"
+          - name: LOG_FORMAT
+            value: "raw"
+          - name: SODA_ENABLE_UNIFIED_ENDPOINTS
+            value: "0"
+          - name: SODA_HELM_CHART_VERSION
+            value: "1.1.0"
+          - name: SODA_AGENT_TYPE
+            value: "selfHosted"
+          - name: SODA_AGENT_EXTERNAL_CONFIG_FILE
+            value: "/etc/agent-orchestrator/agent-orchestrator.yaml"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          ports:
+            - name: management
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            initialDelaySeconds: 60
+            failureThreshold: 60
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+            initialDelaySeconds: 60
+            failureThreshold: 60
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+            initialDelaySeconds: 60
+            failureThreshold: 60
+            periodSeconds: 15
+---
+# Source: soda-agent/templates/hooks/post-upgrade.yaml
+# Part of replacing the scheduledSodaScan capability for cloudManagedSodaScan
+# this ensures all scheduled cronjobs are removed.
+# See https://sodadata.atlassian.net/browse/CLOUD-5951
+apiVersion: v1
+kind: Pod
+metadata:
+  name: soda-hook-cloud-5951-post-upgrade
+  annotations:
+    "helm.sh/hook": "post-upgrade"
+    "helm.sh/hook-delete-policy": "hook-succeeded,hook-failed"
+  labels:
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+spec:
+  schedulerName: default-scheduler
+  serviceAccountName: release-name
+  containers:
+    - name: soda-hook-cloud-5951-post-upgrade-job
+      image: k8s.gcr.io/hyperkube:v1.12.1
+      imagePullPolicy: IfNotPresent
+      command:
+      - /bin/sh
+      - -c
+      - >
+          if false; then
+            for i in `kubectl get cronjobs --no-headers -o custom-columns=":metadata.name" -l agent.soda.io/component=cronjob`;do kubectl delete cronjob/$i; done
+          fi;
+          exit 0;
+
+  restartPolicy: OnFailure
+  terminationGracePeriodSeconds: 0
+---
+# Source: soda-agent/templates/hooks/pre-delete-hook.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: soda-hook-pre-delete
+  annotations:
+    "helm.sh/hook": "pre-delete"
+    "helm.sh/hook-delete-policy": "hook-succeeded,hook-failed"
+  labels:
+    app.kubernetes.io/name: soda-agent
+    app.kubernetes.io/instance: release-name
+spec:
+  schedulerName: default-scheduler
+  serviceAccountName: release-name
+  containers:
+    - name: soda-hook-pre-delete-container
+      image: k8s.gcr.io/hyperkube:v1.12.1
+      imagePullPolicy: IfNotPresent
+      command:
+      - /bin/sh
+      - -c
+      - >
+          for i in `kubectl get cronjobs --no-headers -o custom-columns=":metadata.name" -l agent.soda.io/component=cronjob`;do kubectl delete cronjob/$i; done;
+          for i in `kubectl get jobs --no-headers -o custom-columns=":metadata.name" -l agent.soda.io/component=job`; do kubectl delete job/$i; done;
+          for i in `kubectl get pods --no-headers -o custom-columns=":metadata.name" -l agent.soda.io/component=pod`; do kubectl delete pod/$i; done;
+          exit 0;
+
+  restartPolicy: OnFailure
+  terminationGracePeriodSeconds: 0

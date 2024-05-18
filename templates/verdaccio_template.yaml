@@ -1,0 +1,198 @@
+---
+# Source: verdaccio/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-verdaccio
+  labels:
+    helm.sh/chart: verdaccio-4.16.1
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "5.29.0"
+    app.kubernetes.io/managed-by: Helm
+    app: release-name-verdaccio
+data:
+  config.yaml: |-
+    # This is the config file used for the docker images
+    # It allows all users to do anything, so don't use it on production systems.
+    #
+    # Do not configure host and port under `listen` in this file
+    # as it will be ignored when using docker.
+    # see https://github.com/verdaccio/verdaccio/blob/master/docs/docker.md#docker-and-custom-port-configuration
+    #
+    # Look here for more config file examples:
+    # https://github.com/verdaccio/verdaccio/tree/master/conf
+    #
+    
+    # path to a directory with all packages
+    storage: /verdaccio/storage/data
+    
+    web:
+      # WebUI is enabled as default, if you want disable it, just uncomment this line
+      #enable: false
+      title: Verdaccio
+    
+    auth:
+      htpasswd:
+        # Do not change this path if secrets htpasswd is used.
+        file: /verdaccio/storage/htpasswd
+        # Maximum amount of users allowed to register, defaults to "+infinity".
+        # You can set this to -1 to disable registration.
+        #max_users: 1000
+    
+    # a list of other known repositories we can talk to
+    uplinks:
+      npmjs:
+        url: https://registry.npmjs.org/
+        agent_options:
+          keepAlive: true
+          maxSockets: 40
+          maxFreeSockets: 10
+    
+    packages:
+      '@*/*':
+        # scoped packages
+        access: $all
+        publish: $authenticated
+        proxy: npmjs
+    
+      '**':
+        # allow all users (including non-authenticated users) to read and
+        # publish all packages
+        #
+        # you can specify usernames/groupnames (depending on your auth plugin)
+        # and three keywords: "$all", "$anonymous", "$authenticated"
+        access: $all
+    
+        # allow all known users to publish packages
+        # (anyone can register by default, remember?)
+        publish: $authenticated
+    
+        # if package is not available locally, proxy requests to 'npmjs' registry
+        proxy: npmjs
+    
+    # To use `npm audit` uncomment the following section
+    middlewares:
+      audit:
+        enabled: true
+    
+    # log settings
+    log: {type: stdout, format: pretty, level: http}
+    # log: {type: file, path: verdaccio.log, level: info}
+---
+# Source: verdaccio/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-verdaccio
+  labels:
+    helm.sh/chart: verdaccio-4.16.1
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "5.29.0"
+    app.kubernetes.io/managed-by: Helm
+    app: release-name-verdaccio
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+---
+# Source: verdaccio/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-verdaccio
+  labels:
+    helm.sh/chart: verdaccio-4.16.1
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "5.29.0"
+    app.kubernetes.io/managed-by: Helm
+    app: release-name-verdaccio
+spec:
+  ports:
+    - port: 4873
+      targetPort: http
+      protocol: TCP
+      name: 
+  selector:
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: release-name
+  type: ClusterIP
+---
+# Source: verdaccio/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-verdaccio
+  labels:
+    helm.sh/chart: verdaccio-4.16.1
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "5.29.0"
+    app.kubernetes.io/managed-by: Helm
+    app: release-name-verdaccio
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: verdaccio
+      app.kubernetes.io/instance: release-name
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  template:
+    metadata:
+      annotations:
+        checksum/config: 34af8ea958dae53151bcfe0d57983ce5047b51139cc50c097fe6d0f0925cd2f2
+        checksum/htpasswd-secret: 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+        
+      labels:
+        helm.sh/chart: verdaccio-4.16.1
+        app.kubernetes.io/name: verdaccio
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "5.29.0"
+        app.kubernetes.io/managed-by: Helm
+        app: release-name-verdaccio
+    spec:
+      serviceAccountName: default
+      
+      securityContext:
+        fsGroup: 101
+      containers:
+        - name: verdaccio
+          image: "verdaccio/verdaccio:5.29.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4873
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /-/ping
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /-/ping
+              port: http
+          securityContext:
+            runAsUser: 10001
+          volumeMounts:
+            - mountPath: /verdaccio/storage
+              name: storage
+              readOnly: false
+            - mountPath: /verdaccio/conf
+              name: config
+              readOnly: true
+          env:
+            - name: VERDACCIO_PORT
+              value: "4873"
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-verdaccio
+      - name: storage
+        persistentVolumeClaim:
+          claimName: release-name-verdaccio

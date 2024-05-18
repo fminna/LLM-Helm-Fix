@@ -1,0 +1,2338 @@
+---
+# Source: codecov/charts/redis/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: codecov/charts/timescaledb/templates/serviceaccount-timescaledb.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: timescale-codecov
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: rbac
+---
+# Source: codecov/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-codecov
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: codecov/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.8.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgres-password: "dGVzdHBhc3N3b3Jk"
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: codecov/charts/redis/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  redis-password: "UkVESVNfUEFTU1dPUkQ="
+---
+# Source: codecov/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: codecov/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: codecov/charts/redis/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: codecov/charts/timescaledb/templates/configmap-patroni.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescale-codecov-patroni
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: patroni
+data:
+  patroni.yaml: |
+    bootstrap:
+      dcs:
+        loop_wait: 10
+        maximum_lag_on_failover: 33554432
+        postgresql:
+          parameters:
+            archive_command: /etc/timescaledb/scripts/pgbackrest_archive.sh %p
+            archive_mode: "on"
+            archive_timeout: 1800s
+            autovacuum_analyze_scale_factor: 0.02
+            autovacuum_max_workers: 10
+            autovacuum_naptime: 5s
+            autovacuum_vacuum_cost_limit: 500
+            autovacuum_vacuum_scale_factor: 0.05
+            hot_standby: "on"
+            log_autovacuum_min_duration: 1min
+            log_checkpoints: "on"
+            log_connections: "on"
+            log_disconnections: "on"
+            log_line_prefix: '%t [%p]: [%c-%l] %u@%d,app=%a [%e] '
+            log_lock_waits: "on"
+            log_min_duration_statement: 1s
+            log_statement: ddl
+            max_connections: 100
+            max_prepared_transactions: 150
+            shared_preload_libraries: timescaledb,pg_stat_statements
+            ssl: "on"
+            ssl_cert_file: /etc/certificate/tls.crt
+            ssl_key_file: /etc/certificate/tls.key
+            tcp_keepalives_idle: 900
+            tcp_keepalives_interval: 100
+            temp_file_limit: 1GB
+            timescaledb.passfile: ../.pgpass
+            unix_socket_directories: /var/run/postgresql
+            unix_socket_permissions: "0750"
+            wal_level: hot_standby
+            wal_log_hints: "on"
+          use_pg_rewind: true
+          use_slots: true
+        retry_timeout: 10
+        ttl: 30
+      method: restore_or_initdb
+      post_init: /etc/timescaledb/scripts/post_init.sh
+      restore_or_initdb:
+        command: |
+          /etc/timescaledb/scripts/restore_or_initdb.sh --encoding=UTF8 --locale=C.UTF-8
+        keep_existing_recovery_conf: true
+    kubernetes:
+      role_label: role
+      scope_label: cluster-name
+      use_endpoints: true
+    log:
+      level: WARNING
+    postgresql:
+      authentication:
+        replication:
+          username: standby
+        superuser:
+          username: postgres
+      basebackup:
+      - waldir: /var/lib/postgresql/wal/pg_wal
+      callbacks:
+        on_reload: /etc/timescaledb/scripts/patroni_callback.sh
+        on_restart: /etc/timescaledb/scripts/patroni_callback.sh
+        on_role_change: /etc/timescaledb/scripts/patroni_callback.sh
+        on_start: /etc/timescaledb/scripts/patroni_callback.sh
+        on_stop: /etc/timescaledb/scripts/patroni_callback.sh
+      create_replica_methods:
+      - pgbackrest
+      - basebackup
+      listen: 0.0.0.0:5432
+      pg_hba:
+      - local     all             postgres                              peer
+      - local     all             all                                   md5
+      - hostnossl all,replication all                all                reject
+      - hostssl   all             all                127.0.0.1/32       md5
+      - hostssl   all             all                ::1/128            md5
+      - hostssl   replication     standby            all                md5
+      - hostssl   all             all                all                md5
+      pgbackrest:
+        command: /etc/timescaledb/scripts/pgbackrest_restore.sh
+        keep_data: true
+        no_master: true
+        no_params: true
+      recovery_conf:
+        restore_command: /etc/timescaledb/scripts/pgbackrest_archive_get.sh %f "%p"
+      use_unix_socket: true
+    restapi:
+      listen: 0.0.0.0:8008
+...
+---
+# Source: codecov/charts/timescaledb/templates/configmap-pgbackrest.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescale-codecov-pgbackrest
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: pgbackrest
+data:
+  pgbackrest.conf: |
+    [global]
+    compress-level=3
+    compress-type=lz4
+    process-max=4
+    repo1-cipher-type=none
+    repo1-path=/default/timescale-codecov/
+    repo1-retention-diff=2
+    repo1-retention-full=2
+    spool-path=/var/run/postgresql
+    start-fast=y
+
+    [poddb]
+    pg1-port=5432
+    pg1-host-user=postgres
+    pg1-path=/var/lib/postgresql/data
+    pg1-socket-path=/var/run/postgresql
+
+    link-all=y
+
+    [global:archive-push]
+
+    [global:archive-get]
+...
+---
+# Source: codecov/charts/timescaledb/templates/configmap-scripts.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescale-codecov-scripts
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: scripts
+data:
+  tstune.sh: |-
+    #!/bin/sh
+    
+    set -eu
+    
+    # Exit if required variable is not set externally
+    : "$TSTUNE_FILE"
+    : "$WAL_VOLUME_SIZE"
+    : "$DATA_VOLUME_SIZE"
+    : "$RESOURCES_CPU_REQUESTS"
+    : "$RESOURCES_MEMORY_REQUESTS"
+    : "$RESOURCES_CPU_LIMIT"
+    : "$RESOURCES_MEMORY_LIMIT"
+    
+    # Figure out how many cores are available
+    CPUS="$RESOURCES_CPU_REQUESTS"
+    if [ "$RESOURCES_CPU_REQUESTS" -eq 0 ]; then
+        CPUS="${RESOURCES_CPU_LIMIT}"
+    fi
+    # Figure out how much memory is available
+    MEMORY="$RESOURCES_MEMORY_REQUESTS"
+    if [ "$RESOURCES_MEMORY_REQUESTS" -eq 0 ]; then
+        MEMORY="${RESOURCES_MEMORY_LIMIT}"
+    fi
+    
+    # Ensure tstune config file exists
+    touch "${TSTUNE_FILE}"
+    
+    # Ensure tstune-generated config is included in postgresql.conf
+    if [ -f "${PGDATA}/postgresql.base.conf" ] && ! grep "include_if_exists = '${TSTUNE_FILE}'" postgresql.base.conf -qxF; then
+        echo "include_if_exists = '${TSTUNE_FILE}'" >> "${PGDATA}/postgresql.base.conf"
+    fi
+    
+    # If there is a dedicated WAL Volume, we want to set max_wal_size to 60% of that volume
+    # If there isn't a dedicated WAL Volume, we set it to 20% of the data volume
+    if [ "${WAL_VOLUME_SIZE}" = "0" ]; then
+        WALMAX="${DATA_VOLUME_SIZE}"
+        WALPERCENT=20
+    else
+        WALMAX="${WAL_VOLUME_SIZE}"
+        WALPERCENT=60
+    fi
+    
+    WALMAX=$(numfmt --from=auto "${WALMAX}")
+    
+    # Wal segments are 16MB in size, in this way we get a "nice" number of the nearest
+    # 16MB
+    # walmax / 100 * walpercent / 16MB # below is a refactored with increased precision
+    WALMAX=$(( WALMAX * WALPERCENT * 16 / 16777216 / 100  ))
+    WALMIN=$(( WALMAX / 2 ))
+    
+    echo "max_wal_size=${WALMAX}MB" >> "${TSTUNE_FILE}"
+    echo "min_wal_size=${WALMIN}MB" >> "${TSTUNE_FILE}"
+    
+    # Run tstune
+    timescaledb-tune -quiet -conf-path "${TSTUNE_FILE}" -cpus "${CPUS}" -memory "${MEMORY}MB" -yes "$@"
+    
+  pgbackrest_archive.sh: |-
+    #!/bin/sh
+    
+    # If no backup is configured, archive_command would normally fail. A failing archive_command on a cluster
+    # is going to cause WAL to be kept around forever, meaning we'll fill up Volumes we have quite quickly.
+    #
+    # Therefore, if the backup is disabled, we always return exitcode 0 when archiving
+    
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - archive - $1"
+    }
+    
+    [ -z "$1" ] && log "Usage: $0 <WALFILE or DIRECTORY>" && exit 1
+    
+    : "${ENV_FILE:=${HOME}/.pgbackrest_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+        echo "Sourcing ${ENV_FILE}"
+        . "${ENV_FILE}"
+    fi
+    
+    # PGBACKREST_BACKUP_ENABLED variable is passed in StatefulSet template
+    [ "${PGBACKREST_BACKUP_ENABLED}" = "true" ] || exit 0
+    
+    exec pgbackrest --stanza=poddb archive-push "$@"
+    
+  pgbackrest_archive_get.sh: |-
+    #!/bin/sh
+    # PGBACKREST_BACKUP_ENABLED variable is passed in StatefulSet template
+    [ "${PGBACKREST_BACKUP_ENABLED}" = "true" ] || exit 1
+    
+    : "${ENV_FILE:=${HOME}/.pgbackrest_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+    echo "Sourcing ${ENV_FILE}"
+    . "${ENV_FILE}"
+    fi
+    
+    exec pgbackrest --stanza=poddb archive-get "${1}" "${2}"
+    
+  pgbackrest_bootstrap.sh: |-
+    #!/bin/sh
+    set -e
+    
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - bootstrap - $1"
+    }
+    
+    terminate() {
+        log "Stopping"
+        exit 1
+    }
+    # If we don't catch these signals, and we're still waiting for PostgreSQL
+    # to be ready, we will not respond at all to a regular shutdown request,
+    # therefore, we explicitly terminate if we receive these signals.
+    trap terminate TERM QUIT
+    
+    while ! pg_isready -q; do
+        log "Waiting for PostgreSQL to become available"
+        sleep 3
+    done
+    
+    # We'll be lazy; we wait for another while to allow the database to promote
+    # to primary if it's the only one running
+    sleep 10
+    
+    # If we are the primary, we want to create/validate the backup stanza
+    if [ "$(psql -c "SELECT pg_is_in_recovery()::text" -AtXq)" = "false" ]; then
+        pgbackrest check || {
+            log "Creating pgBackrest stanza"
+            pgbackrest --stanza=poddb stanza-create --log-level-stderr=info || exit 1
+            log "Creating initial backup"
+            pgbackrest --type=full backup || exit 1
+        }
+    fi
+    
+    log "Starting pgBackrest api to listen for backup requests"
+    exec python3 /scripts/pgbackrest-rest.py --stanza=poddb --loglevel=debug
+    
+  pgbackrest_restore.sh: |
+    #!/bin/sh
+    # PGBACKREST_BACKUP_ENABLED variable is passed in StatefulSet template
+    [ "${PGBACKREST_BACKUP_ENABLED}" = "true" ] || exit 1
+    
+    : "${ENV_FILE:=${HOME}/.pod_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+    echo "Sourcing ${ENV_FILE}"
+    . "${ENV_FILE}"
+    fi
+    
+    # PGDATA and WALDIR are set in the StatefulSet template and are sourced from the ENV_FILE
+    # PGDATA=
+    # WALDIR=
+    
+    # A missing PGDATA points to Patroni removing a botched PGDATA, or manual
+    # intervention. In this scenario, we need to recreate the DATA and WALDIRs
+    # to keep pgBackRest happy
+    [ -d "${PGDATA}" ] || install -o postgres -g postgres -d -m 0700 "${PGDATA}"
+    [ -d "${WALDIR}" ] || install -o postgres -g postgres -d -m 0700 "${WALDIR}"
+    
+    exec pgbackrest --force --delta --log-level-console=detail restore
+    
+  restore_or_initdb.sh: |
+    #!/bin/sh
+    
+    : "${ENV_FILE:=${HOME}/.pod_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+        echo "Sourcing ${ENV_FILE}"
+        . "${ENV_FILE}"
+    fi
+    
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - restore_or_initdb - $1"
+    }
+    
+    # PGDATA and WALDIR are set in the StatefulSet template and are sourced from the ENV_FILE
+    # PGDATA=
+    # WALDIR=
+    
+    # A missing PGDATA points to Patroni removing a botched PGDATA, or manual
+    # intervention. In this scenario, we need to recreate the DATA and WALDIRs
+    # to keep pgBackRest happy
+    [ -d "${PGDATA}" ] || install -o postgres -g postgres -d -m 0700 "${PGDATA}"
+    [ -d "${WALDIR}" ] || install -o postgres -g postgres -d -m 0700 "${WALDIR}"
+    
+    if [ "${BOOTSTRAP_FROM_BACKUP}" = "1" ]; then
+        log "Attempting restore from backup"
+        # we want to override the environment with the environment
+        # shellcheck disable=SC2046
+        export $(env -i envdir /etc/pgbackrest/bootstrap env) > /dev/null
+        # PGBACKREST_REPO1_PATH is set in the StatefulSet template and sourced from the ENV_FILE
+    
+        if [ -z "${PGBACKREST_REPO1_PATH}" ]; then
+            log "Unconfigured repository path"
+            cat << "__EOT__"
+    
+    TimescaleDB Single Helm Chart error:
+    
+    You should configure the bootstrapFromBackup in your Helm Chart section by explicitly setting
+    the repo1-path to point to the backups.
+    
+    For more information, consult the admin guide:
+    https://github.com/timescale/helm-charts/blob/main/charts/timescaledb-single/docs/admin-guide.md#bootstrap-from-backup
+    
+    __EOT__
+    
+            exit 1
+        fi
+    
+        log "Listing available backup information"
+        pgbackrest info
+        EXITCODE=$?
+        if [ ${EXITCODE} -ne 0 ]; then
+            exit $EXITCODE
+        fi
+    
+        pgbackrest --log-level-console=detail restore
+        EXITCODE=$?
+        if [ ${EXITCODE} -eq 0 ]; then
+            log "pgBackRest restore finished succesfully, starting instance in recovery"
+            # We want to ensure we do not overwrite a current backup repository with archives, therefore
+            # we block archiving from succeeding until Patroni can takeover
+            touch "${PGDATA}/recovery.signal"
+            pg_ctl -D "${PGDATA}" start -o '--archive-command=/bin/false'
+    
+            while ! pg_isready -q; do
+                log "Waiting for PostgreSQL to become available"
+                sleep 3
+            done
+    
+            # It is not trivial to figure out to what point we should restore, pgBackRest
+            # should be fetching WAL segments until the WAL is exhausted. We'll ask pgBackRest
+            # what the Maximum Wal is that it currently has; as soon as we see that, we can consider
+            # the restore to be done
+            while true; do
+                MAX_BACKUP_WAL="$(pgbackrest info --output=json | python3 -c "import json,sys;obj=json.load(sys.stdin); print(obj[0]['archive'][0]['max']);")"
+                log "Testing whether WAL file ${MAX_BACKUP_WAL} has been restored ..."
+                [ -f "${PGDATA}/pg_wal/${MAX_BACKUP_WAL}" ] && break
+                sleep 30;
+            done
+    
+            # At this point we know the final WAL archive has been restored, we should be done.
+            log "The WAL file ${MAX_BACKUP_WAL} has been successully restored, shutting down instance"
+            pg_ctl -D "${PGDATA}" promote
+            pg_ctl -D "${PGDATA}" stop -m fast
+            log "Handing over control to Patroni ..."
+        else
+            log "Bootstrap from backup failed"
+            exit 1
+        fi
+    else
+        # Patroni attaches --scope and --datadir to the arguments, we need to strip them off as
+        # initdb has no business with these parameters
+        initdb_args=""
+        for value in "$@"
+        do
+            case $value in
+                "--scope"*)
+                    ;;
+                "--datadir"*)
+                    ;;
+                *)
+                    initdb_args="${initdb_args} $value"
+                    ;;
+            esac
+        done
+    
+        log "Invoking initdb"
+        # shellcheck disable=SC2086
+        initdb --auth-local=peer --auth-host=md5 --pgdata="${PGDATA}" --waldir="${WALDIR}" ${initdb_args}
+    fi
+    
+    echo "include_if_exists = '${TSTUNE_FILE}'" >> "${PGDATA}/postgresql.conf"
+    
+  post_init.sh: |-
+    #!/bin/sh
+    : "${ENV_FILE:=${HOME}/.pod_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+        echo "Sourcing ${ENV_FILE}"
+        . "${ENV_FILE}"
+    fi
+    
+    log() {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - post_init - $1"
+    }
+    
+    log "Creating extension TimescaleDB in template1 and postgres databases"
+    psql -d "$URL" <<__SQL__
+        \connect template1
+        -- As we're still only initializing, we cannot have synchronous_commit enabled just yet.
+        SET synchronous_commit to 'off';
+        CREATE EXTENSION timescaledb;
+    
+        \connect postgres
+        SET synchronous_commit to 'off';
+        CREATE EXTENSION timescaledb;
+    __SQL__
+    
+    # POSTGRES_TABLESPACES is a comma-separated list of tablespaces to create
+    # variable is passed in StatefulSet template
+    : "${POSTGRES_TABLESPACES:=""}"
+    for tablespace in $POSTGRES_TABLESPACES
+    do
+        log "Creating tablespace ${tablespace}"
+        tablespacedir="${PGDATA}/tablespaces/${tablespace}/data"
+        psql -d "$URL" --set tablespace="${tablespace}" --set directory="${tablespacedir}" --set ON_ERROR_STOP=1 <<__SQL__
+        SET synchronous_commit to 'off';
+        CREATE TABLESPACE :"tablespace" LOCATION :'directory';
+    __SQL__
+    done
+    
+    # This directory may contain user defined post init steps
+    for file in /etc/timescaledb/post_init.d/*
+    do
+        [ -d "$file" ] && continue
+        [ ! -r "$file" ] && continue
+    
+        case "$file" in
+        *.sh)
+            if [ -x "$file" ]; then
+            log "Call post init script [ $file ]"
+            "$file" "$@"
+            EXITCODE=$?
+            else
+            log "Source post init script [ $file ]"
+            . "$file"
+            EXITCODE=$?
+            fi
+            ;;
+        *.sql)
+            log "Apply post init sql [ $file ]"
+            # Disable synchronous_commit since we're initializing
+            PGOPTIONS="-c synchronous_commit=local" psql -d "$URL" -f "$file"
+            EXITCODE=$?
+            ;;
+        *.sql.gz)
+            log "Decompress and apply post init sql [ $file ]"
+            gunzip -c "$file" | PGOPTIONS="-c synchronous_commit=local" psql -d "$URL"
+            EXITCODE=$?
+            ;;
+        *)
+            log "Ignore unknown post init file type [ $file ]"
+            EXITCODE=0
+            ;;
+        esac
+        EXITCODE=$?
+        if [ "$EXITCODE" != "0" ]
+        then
+            log "ERROR: post init script $file exited with exitcode $EXITCODE"
+            exit $EXITCODE
+        fi
+    done
+    
+    # We exit 0 this script, otherwise the database initialization fails.
+    exit 0
+    
+  patroni_callback.sh: |-
+    #!/bin/sh
+    set -e
+    
+    : "${ENV_FILE:=${HOME}/.pod_environment}"
+    if [ -f "${ENV_FILE}" ]; then
+        echo "Sourcing ${ENV_FILE}"
+        . "${ENV_FILE}"
+    fi
+    
+    for suffix in "$1" all
+    do
+        CALLBACK="/etc/timescaledb/callbacks/${suffix}"
+        if [ -f "${CALLBACK}" ]
+        then
+        "${CALLBACK}" "$@"
+        fi
+    done
+    
+  lifecycle_preStop.sql: |-
+    -- Doing a checkpoint (at the primary and the current instance) before starting
+    -- the shutdown process will speed up the CHECKPOINT that is part of the shutdown
+    -- process and the recovery after the pod is rescheduled.
+    --
+    -- We issue the CHECKPOINT at the primary always because:
+    --
+    -- > Restartpoints can't be performed more frequently than checkpoints in the
+    -- > master because restartpoints can only be performed at checkpoint records.
+    -- https://www.postgresql.org/docs/current/wal-configuration.html
+    --
+    -- While we're doing these preStop CHECKPOINTs we can still serve read/write
+    -- queries to clients, whereas as soon as we initiate the shutdown, we terminate
+    -- connections.
+    --
+    -- This therefore reduces downtime for the clients, at the cost of increasing (slightly)
+    -- the time to stop the pod, and reducing write performance on the primary.
+    --
+    -- To further reduce downtime for clients, we will issue a switchover iff we are currently
+    -- running as the primary. This again should be relatively fast, as we've just issued and
+    -- waited for the CHECKPOINT to complete.
+    --
+    -- This is quite a lot of logic and work in a preStop command; however, if the preStop command
+    -- fails for whatever reason, the normal Pod shutdown will commence, so it is only able to
+    -- improve stuff without being able to break stuff.
+    -- (The $(hostname) inside the switchover call safeguards that we never accidentally
+    -- switchover the wrong primary).
+    
+    \pset pager off
+    \set ON_ERROR_STOP true
+    \set hostname `hostname`
+    \set dsn_fmt 'user=postgres host=%s application_name=lifecycle:preStop@%s connect_timeout=5 options=''-c log_min_duration_statement=0'''
+    
+    SELECT
+        pg_is_in_recovery() AS in_recovery,
+        format(:'dsn_fmt', patroni_scope,                       :'hostname') AS primary_dsn,
+        format(:'dsn_fmt', '/var/run/postgresql', :'hostname') AS local_dsn
+    FROM
+        current_setting('cluster_name') AS cs(patroni_scope)
+    \gset
+    
+    \timing on
+    \set ECHO queries
+    
+    -- There should be a CHECKPOINT at the primary
+    \if :in_recovery
+        \connect :"primary_dsn"
+        CHECKPOINT;
+    \endif
+    
+    -- There should also be a CHECKPOINT locally,
+    -- for the primary, this may mean we do a double checkpoint,
+    -- but the second one would be cheap anyway, so we leave that as is
+    \connect :"local_dsn"
+    SELECT 'Issuing checkpoint';
+    CHECKPOINT;
+    
+    \if :in_recovery
+        SELECT 'We are a replica: Successfully invoked checkpoints at the primary and locally.';
+    \else
+        SELECT 'We are a primary: Successfully invoked checkpoints, now issuing a switchover.';
+        \! curl -s http://localhost:8008/switchover -XPOST -d '{"leader": "$(hostname)"}'
+    \endif
+    
+...
+---
+# Source: codecov/templates/configMap.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: release-name-codecov
+  labels:
+    app.kubernetes.io/name: codecov
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  codecov.yml: |
+    # please read https://docs.codecov.io/docs/configuration to have further understanding
+    # if there's anything secret needs to set, please use envrinment variable
+    # https://docs.codecov.com/docs/configuration#overview
+    setup:
+      # do not set codecov_url, this value is controlled by codecov_host and codecov_scheme
+      # codecov_url: http://set-this-value-only-if-you-know-what-you-are-doing.com
+      # codecov_api_url: <codecov-url> # this defaults to <codecov-url> and is designed to work out of the box like this
+      # api_allowed_hosts: [] # this defaults to <codecov-url> and is designed to work out of the box like this
+      # Replace with your Codecov Enterprise License key. This is required for the containers to function.
+      # https://docs.codecov.io/docs/configuration#section-enterprise-license
+      enterprise_license: "F5O0Fu5ASFTPtWXM51BK8YQlq7IM2s+8TBGULrf9Um7wHjfPwI+Z3E4PfF/dPs6Uc5A+MLti+2etHq5dnFEfZgoiIVCLZ8x+0BVmUSWwPS42vJXnf1veY9Bglang4mDIhmfWfp5l6AT6cxmAVFpGrwobiK6OcN9pjWx4iWabazmsOiF9LM++v0WtuHNvhgzRcKmnJPgqahEB7qqF6KQ1hg=="
+      # https://docs.codecov.com/docs/configuration#instance-wide-admins
+      admins:
+        - service: github
+          username: "LeoQuote"
+      # Replace with a random string
+      # https://docs.codecov.io/docs/configuration#section-cookie-secret
+      http:
+        cookie_secret: "some-random-string"
+      timeseries:
+        # timeseries are disabled by default as the timescaledb helm chart is not working
+        enabled: false
+    # global coverage.yml config
+    site:
+      comment:
+        # default layout is wierd with duplicated reach
+        layout: "reach,diff,flags,tree"
+    github:
+      client_id: "Iv1.42f4f7d056e37182"
+      client_secret: "secretxxx"
+      # global_upload_token: "<upload-token>"
+      webhook_secret: "verysecret"
+      integration:
+        id: 22
+        pem: /config/file.pem
+---
+# Source: codecov/charts/timescaledb/templates/role-timescaledb.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: timescale-codecov
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: rbac
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+  # delete is required only for 'patronictl remove'
+  - delete
+- apiGroups: [""]
+  resources:
+  - endpoints
+  - endpoints/restricted
+  verbs:
+  - create
+  - get
+  - patch
+  - update
+  # the following three privileges are necessary only when using endpoints
+  - list
+  - watch
+  # delete is required only for for 'patronictl remove'
+  - delete
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+# Source: codecov/charts/timescaledb/templates/rolebinding-timescaledb.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: timescale-codecov
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: rbac
+subjects:
+  - kind: ServiceAccount
+    name: timescale-codecov
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: timescale-codecov
+---
+# Source: codecov/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.8.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: codecov/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.8.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: codecov/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+---
+# Source: codecov/charts/redis/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: master
+---
+# Source: codecov/charts/timescaledb/templates/svc-timescaledb-config.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescale-codecov-config
+  namespace: default
+  labels:
+    component: patroni
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: patroni
+spec:
+  selector:
+    app: timescale-codecov
+    cluster-name: timescale-codecov
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: patroni
+    port: 8008
+    protocol: TCP
+---
+# Source: codecov/charts/timescaledb/templates/svc-timescaledb-replica.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescale-codecov-replica
+  namespace: default
+  labels:
+    component: postgres
+    role: replica
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: postgres
+spec:
+  selector:
+    app: timescale-codecov
+    cluster-name: timescale-codecov
+    role: replica
+  type: ClusterIP
+  ports:
+  - name: postgresql
+    # This always defaults to 5432
+    port: 5432
+    targetPort: postgresql
+    protocol: TCP
+---
+# Source: codecov/charts/timescaledb/templates/svc-timescaledb.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescale-codecov
+  namespace: default
+  labels:
+    role: master
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: timescaledb
+spec:
+  selector:
+    app: timescale-codecov
+    cluster-name: timescale-codecov
+    role: master
+  type: ClusterIP
+  ports:
+  - name: postgresql
+    # This always defaults to 5432
+    port: 5432
+    targetPort: postgresql
+    protocol: TCP
+---
+# Source: codecov/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  # codecov-api would confict with codecov-api program
+  # use another name
+  name: release-name-codecov-api-svc
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: api
+---
+# Source: codecov/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-codecov-gateway
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: gateway
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: gateway
+---
+# Source: codecov/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-codecov-frontend
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+---
+# Source: codecov/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-codecov-api
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codecov
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      annotations:
+        checksum/config: 02098791538c9bd5ecdd601ee26757abd450be014a9f6de0a4ccab3bc92628e3
+      labels:
+        app.kubernetes.io/name: codecov
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: release-name-codecov
+      securityContext:
+        {}
+      containers:
+        - name: codecov-api
+          securityContext:
+            {}
+          image: "codecov/self-hosted-api:24.4.1"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: placeholder
+              value: "1"
+            - name: setup__codecov_url
+              value: "https://codecov.example.com"
+            - name: services__redis_url
+              value: redis://:REDIS_PASSWORD@release-name-codecov-redis-master:6379/0
+            - name: services__database_url
+              value: postgres://postgres:testpassword@release-name-codecov-postgresql:5432/codecov
+            - name: services__timeseries_database_url
+              value: postgres://postgres:testpassword@timescale-codecov:5432/postgres?sslmode=require
+            - name: services__minio__host
+              value: 
+            - name: services__minio__port
+              value: 
+          volumeMounts:
+            - name: codecov
+              mountPath: /config
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+      volumes:
+        - name: codecov
+          configMap:
+            name: release-name-codecov
+
+# worker
+---
+# Source: codecov/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-codecov-worker
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codecov
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        checksum/config: 02098791538c9bd5ecdd601ee26757abd450be014a9f6de0a4ccab3bc92628e3
+      labels:
+        app.kubernetes.io/name: codecov
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: release-name-codecov
+      securityContext:
+        {}
+      containers:
+        - name: codecov
+          securityContext:
+            {}
+          image: "codecov/self-hosted-worker:24.4.1"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUN_ENV
+              value: "ENTERPRISE"
+            - name: setup__codecov_url
+              value: "https://codecov.example.com"
+            - name: services__redis_url
+              value: redis://:REDIS_PASSWORD@release-name-codecov-redis-master:6379/0
+            - name: services__database_url
+              value: postgres://postgres:testpassword@release-name-codecov-postgresql:5432/codecov
+            - name: services__timeseries_database_url
+              value: postgres://postgres:testpassword@timescale-codecov:5432/postgres?sslmode=require
+            - name: services__minio__host
+              value: 
+            - name: services__minio__port
+              value: 
+          volumeMounts:
+          - name: codecov
+            mountPath: /config
+            readOnly: true
+          resources:
+            {}
+      volumes:
+        - name: codecov
+          configMap:
+            name: release-name-codecov
+
+# gateway
+---
+# Source: codecov/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-codecov-gateway
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codecov
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codecov
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: gateway
+    spec:
+      serviceAccountName: release-name-codecov
+      securityContext:
+        {}
+      containers:
+        - name: codecov
+          securityContext:
+            {}
+          image: "codecov/self-hosted-gateway:24.4.1"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: CODECOV_API_HOST
+            value: release-name-codecov-api-svc
+          - name: CODECOV_API_PORT
+            value: "80"
+          - name: CODECOV_IA_HOST
+            value: release-name-codecov-api-svc
+          - name: CODECOV_IA_PORT
+            value: "80"
+          - name: CODECOV_DEFAULT_HOST
+            value: release-name-codecov-frontend
+          - name: CODECOV_DEFAULT_PORT
+            value: "80"
+          - name: CODECOV_MINIO_HOST
+            value: 
+          - name: CODECOV_MINIO_PORT
+            value: 
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /gateway_health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /gateway_health
+              port: http
+          resources:
+            {}
+
+# frontend
+---
+# Source: codecov/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-codecov-frontend
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codecov
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codecov
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: frontend
+    spec:
+      serviceAccountName: release-name-codecov
+      securityContext:
+        {}
+      containers:
+        - name: codecov
+          securityContext:
+            {}
+          image: "codecov/self-hosted-frontend:24.4.1"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: CODECOV_BASE_HOST
+            value: codecov.example.com
+          - name: CODECOV_API_HOST
+            value: codecov.example.com
+          - name: CODECOV_IA_HOST
+            value: codecov.example.com
+          - name: CODECOV_SCHEME
+            value: https
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /frontend_health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /frontend_health
+              port: http
+          resources:
+            {}
+---
+# Source: codecov/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-12.8.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-12.8.5
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:15.4.0-debian-11-r10
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "codecov"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -d "dbname=codecov" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -d "dbname=codecov" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: data
+          emptyDir: {}
+---
+# Source: codecov/charts/redis/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-17.15.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: master
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        helm.sh/chart: redis-17.15.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 86bcc953bb473748a3d3dc60b7c11f34e60c93519234d4c37f42e22ada559d47
+        checksum/health: aff24913d801436ea469d8d374b2ddb3ec4c43ee7ab24663d5f8ff1a1b6991a9
+        checksum/scripts: 560c33ff34d845009b51830c332aa05fa211444d1877d3526d3599be7543aaa5
+        checksum/secret: 8f2033f08665cc106e3d23620e1196022786e7a39a3b825157aee73f0349f50d
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-redis
+      automountServiceAccountToken: true
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.2.0-debian-11-r3
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: redis-tmp-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: redis-data
+          emptyDir: {}
+---
+# Source: codecov/charts/timescaledb/templates/statefulset-timescaledb.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescale-codecov
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: timescaledb
+spec:
+  serviceName: timescale-codecov
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: timescale-codecov
+      release: release-name
+  template:
+    metadata:
+      name: timescale-codecov
+      labels:
+        
+        app: timescale-codecov
+        chart: timescaledb-0.33.1
+        release: release-name
+        heritage: Helm
+        cluster-name: timescale-codecov
+        app.kubernetes.io/name: "timescale-codecov"
+        app.kubernetes.io/version: 0.33.1
+        app.kubernetes.io/component: timescaledb
+    spec:
+      serviceAccountName: timescale-codecov
+      securityContext:
+        # The postgres user inside the TimescaleDB image has uid=1000.
+        # This configuration ensures the permissions of the mounts are suitable
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      initContainers:
+      - name: tstune
+        securityContext:
+          allowPrivilegeEscalation: false
+        image: "timescale/timescaledb-ha:pg14.6-ts2.9.1-p1"
+        env:
+        - name: TSTUNE_FILE
+          value: /var/run/postgresql/timescaledb.conf
+        - name: WAL_VOLUME_SIZE
+          value: "0"
+        - name: DATA_VOLUME_SIZE
+          value: 2Gi
+        - name: RESOURCES_CPU_REQUESTS
+          valueFrom:
+            resourceFieldRef:
+              containerName: timescaledb
+              resource: requests.cpu
+              divisor: "1"
+        - name: RESOURCES_MEMORY_REQUESTS
+          valueFrom:
+            resourceFieldRef:
+              containerName: timescaledb
+              resource: requests.memory
+              divisor: 1Mi
+        - name: RESOURCES_CPU_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: timescaledb
+              resource: limits.cpu
+              divisor: "1"
+        - name: RESOURCES_MEMORY_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: timescaledb
+              resource: limits.memory
+              divisor: 1Mi
+        # Command below will run the timescaledb-tune utility and configure min/max wal size based on PVCs size
+        command:
+          - sh
+          - "-c"
+          - '/etc/timescaledb/scripts/tstune.sh '
+        volumeMounts:
+        - name: socket-directory
+          mountPath: /var/run/postgresql
+        - name: timescaledb-scripts
+          mountPath: /etc/timescaledb/scripts
+          readOnly: true
+        resources:
+          
+          {}
+      # Issuing the final checkpoints on a busy database may take considerable time.
+      # Unfinished checkpoints will require more time during startup, so the tradeoff
+      # here is time spent in shutdown/time spent in startup.
+      # We choose shutdown here, especially as during the largest part of the shutdown
+      # we can still serve clients.
+      terminationGracePeriodSeconds: 600
+      containers:
+      - name: timescaledb
+        securityContext:
+          allowPrivilegeEscalation: false
+        image: "timescale/timescaledb-ha:pg14.6-ts2.9.1-p1"
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - psql
+              - -X
+              - --file
+              - "/etc/timescaledb/scripts/lifecycle_preStop.sql"
+        # When reusing an already existing volume it sometimes happens that the permissions
+        # of the PGDATA and/or wal directory are incorrect. To guard against this, we always correctly
+        # set the permissons of these directories before we hand over to Patroni.
+        # We also create all the tablespaces that are defined, to ensure a smooth restore/recovery on a
+        # pristine set of Volumes.
+        # As PostgreSQL requires to have full control over the permissions of the tablespace directories,
+        # we create a subdirectory "data" in every tablespace mountpoint. The full path of every tablespace
+        # therefore always ends on "/data".
+        # By creating a .pgpass file in the $HOME directory, we expose the superuser password
+        # to processes that may not have it in their environment (like the preStop lifecycle hook).
+        # To ensure Patroni will not mingle with this file, we give Patroni its own pgpass file.
+        # As these files are in the $HOME directory, they are only available to *this* container,
+        # and they are ephemeral.
+        command:
+          - /bin/bash
+          - "-c"
+          - |
+            
+            install -o postgres -g postgres -d -m 0700 "/var/lib/postgresql/data" "/var/lib/postgresql/wal/pg_wal" || exit 1
+            TABLESPACES=""
+            for tablespace in ; do
+              install -o postgres -g postgres -d -m 0700 "/var/lib/postgresql/tablespaces/${tablespace}/data"
+            done
+
+            # Environment variables can be read by regular users of PostgreSQL. Especially in a Kubernetes
+            # context it is likely that some secrets are part of those variables.
+            # To ensure we expose as little as possible to the underlying PostgreSQL instance, we have a list
+            # of allowed environment variable patterns to retain.
+            #
+            # We need the KUBERNETES_ environment variables for the native Kubernetes support of Patroni to work.
+            #
+            # NB: Patroni will remove all PATRONI_.* environment variables before starting PostgreSQL
+
+            # We store the current environment, as initscripts, callbacks, archive_commands etc. may require
+            # to have the environment available to them
+            set -o posix
+            export -p > "${HOME}/.pod_environment"
+            export -p | grep PGBACKREST > "${HOME}/.pgbackrest_environment"
+
+            for UNKNOWNVAR in $(env | awk -F '=' '!/^(PATRONI_.*|HOME|PGDATA|PGHOST|LC_.*|LANG|PATH|KUBERNETES_SERVICE_.*|AWS_ROLE_ARN|AWS_WEB_IDENTITY_TOKEN_FILE)=/ {print $1}')
+            do
+                unset "${UNKNOWNVAR}"
+            done
+
+            touch /var/run/postgresql/timescaledb.conf
+            touch /var/run/postgresql/wal_status
+
+            echo "*:*:*:postgres:${PATRONI_SUPERUSER_PASSWORD}" >> ${HOME}/.pgpass
+            chmod 0600 ${HOME}/.pgpass
+
+            export PATRONI_POSTGRESQL_PGPASS="${HOME}/.pgpass.patroni"
+
+            exec patroni /etc/timescaledb/patroni.yaml
+        env:
+        # We use mixed case environment variables for Patroni User management,
+        # as the variable themselves are documented to be PATRONI_<username>_OPTIONS.
+        # Where possible, we want to have lowercase usernames in PostgreSQL as more complex postgres usernames
+        # requiring quoting to be done in certain contexts, which many tools do not do correctly, or even at all.
+        # https://patroni.readthedocs.io/en/latest/ENVIRONMENT.html#bootstrap-configuration
+        - name: PATRONICTL_CONFIG_FILE
+          value: "/etc/timescaledb/patroni.yaml"
+        - name: PATRONI_admin_OPTIONS
+          value: createrole,createdb
+        - name: PATRONI_REPLICATION_USERNAME
+          value: standby
+        # To specify the PostgreSQL and Rest API connect addresses we need
+        # the PATRONI_KUBERNETES_POD_IP to be available as a bash variable, so we can compose an
+        # IP:PORT address later on
+        - name: PATRONI_KUBERNETES_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: PATRONI_POSTGRESQL_CONNECT_ADDRESS
+          value: "$(PATRONI_KUBERNETES_POD_IP):5432"
+        - name: PATRONI_RESTAPI_CONNECT_ADDRESS
+          value: "$(PATRONI_KUBERNETES_POD_IP):8008"
+        - name: PATRONI_KUBERNETES_PORTS
+          value: '[{"name": "postgresql", "port": 5432}]'
+        - name: PATRONI_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PATRONI_POSTGRESQL_DATA_DIR
+          value: "/var/lib/postgresql/data"
+        - name: PATRONI_KUBERNETES_NAMESPACE
+          value: default
+        - name: PATRONI_KUBERNETES_LABELS
+          value: "{app: timescale-codecov, cluster-name: timescale-codecov, release: release-name}"
+        - name: PATRONI_SCOPE
+          value: timescale-codecov
+        - name: PGBACKREST_CONFIG
+          value: /etc/pgbackrest/pgbackrest.conf
+        # PGDATA and PGHOST are not required to let Patroni/PostgreSQL run correctly,
+        # but for interactive sessions, callbacks and PostgreSQL tools they should be correct.
+        - name: PGDATA
+          value: "$(PATRONI_POSTGRESQL_DATA_DIR)"
+        - name: PGHOST
+          value: "/var/run/postgresql"
+        - name: WALDIR
+          value: "/var/lib/postgresql/wal/pg_wal"
+        - name: BOOTSTRAP_FROM_BACKUP
+          value: "0"
+        - name: PGBACKREST_BACKUP_ENABLED
+          value: "false"
+        - name: TSTUNE_FILE
+          value: /var/run/postgresql/timescaledb.conf
+          # pgBackRest is also called using the archive_command if the backup is enabled.
+          # this script will also need access to the environment variables specified for
+          # the backup. This can be removed once we do not directly invoke pgBackRest
+          # from inside the TimescaleDB container anymore
+        envFrom:
+        - secretRef:
+            name: "timescale-codecov-credentials"
+            optional: false
+        - secretRef:
+            name: "timescale-codecov-pgbackrest"
+            optional: true
+        ports:
+        - containerPort: 8008
+          name: patroni
+        - containerPort: 5432
+          name: postgresql
+        readinessProbe:
+          exec:
+            command:
+              - pg_isready
+              - -h
+              - /var/run/postgresql
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        volumeMounts:
+        - name: storage-volume
+          mountPath: "/var/lib/postgresql"
+          subPath: ""
+        - mountPath: /etc/timescaledb/patroni.yaml
+          subPath: patroni.yaml
+          name: patroni-config
+          readOnly: true
+        - mountPath: /etc/timescaledb/scripts
+          name: timescaledb-scripts
+          readOnly: true
+        - mountPath: /etc/pgbackrest_secrets
+          name: pgbackrest-secrets
+          readOnly: true
+        - mountPath: "/etc/timescaledb/post_init.d"
+          name: post-init
+          readOnly: true
+        - mountPath: /etc/certificate
+          name: certificate
+          readOnly: true
+        - name: socket-directory
+          mountPath: /var/run/postgresql
+        
+        - mountPath: /etc/pgbackrest
+          name: pgbackrest
+          readOnly: true
+        - mountPath: /etc/pgbackrest/bootstrap
+          name: pgbackrest-bootstrap
+          readOnly: true
+        resources:
+          
+          {}
+      volumes:
+      - name: socket-directory
+        emptyDir: {}
+      - name: patroni-config
+        configMap:
+          name: timescale-codecov-patroni
+      - name: timescaledb-scripts
+        configMap:
+          name: timescale-codecov-scripts
+          defaultMode: 488 # 0750 permissions
+      
+      - name: post-init
+        projected:
+          defaultMode: 0750
+          sources:
+            
+            - configMap:
+                name: custom-init-scripts
+                optional: true
+            - secret:
+                name: custom-secret-scripts
+                optional: true
+      - name: pgbouncer
+        configMap:
+          name: timescale-codecov-pgbouncer
+          defaultMode: 416 # 0640 permissions
+          optional: true
+      - name: pgbackrest
+        configMap:
+          name: timescale-codecov-pgbackrest
+          defaultMode: 416 # 0640 permissions
+          optional: true
+      - name: pgbackrest-secrets
+        secret:
+          secretName: timescale-codecov-pgbackrest-secrets
+          defaultMode: 416
+          optional: true
+      - name: certificate
+        secret:
+          secretName: "timescale-codecov-certificate"
+          defaultMode: 416 # 0640 permissions
+      - name: pgbackrest-bootstrap
+        secret:
+          secretName: pgbackrest-bootstrap
+          optional: True
+      - name: storage-volume
+        emptyDir: {}
+  volumeClaimTemplates:
+---
+# Source: codecov/charts/timescaledb/templates/configmap-pgbackrest.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+---
+# Source: codecov/charts/timescaledb/templates/configmap-pgbouncer.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+---
+# Source: codecov/charts/timescaledb/templates/pgbackrest.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+---
+# Source: codecov/templates/deployment.yaml
+# api
+---
+# Source: codecov/charts/timescaledb/templates/secret-certificate.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "timescale-codecov-certificate"
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: certificates
+  annotations:
+    "helm.sh/hook": pre-install,post-delete
+    "helm.sh/hook-weight": "0"
+type: kubernetes.io/tls
+stringData:
+  tls.crt: "-----BEGIN CERTIFICATE-----\nMIIDJDCCAgygAwIBAgIRANjQTL1QPIcmXruN87YjNLIwDQYJKoZIhvcNAQELBQAw\nHDEaMBgGA1UEAxMRdGltZXNjYWxlLWNvZGVjb3YwHhcNMjQwNTE1MDk1NjMyWhcN\nMjkwNTE1MDk1NjMyWjAcMRowGAYDVQQDExF0aW1lc2NhbGUtY29kZWNvdjCCASIw\nDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANDCgZiS5xwXed+RdOuCIa2U0pvp\nkePDefILhXghoAyOBiV1vfT5445LjhaJC0ikUe45LrRpC1g/uXLp/25cfHJ6Q9yn\nqiWjVvW2y80AZrx0GI6rR5EK6I6x+DkrGazqtdwmOW4MNQcfENwL9o/YXLzjdHh8\n4Mhyf6M94ciwb8RRbkIlrclaMpFexhTC8kAIWVTu45E2R8tR3yCo1MUKLhYE7snd\neCEeJ9iaBgHOPNX5DhEl2XMoSxfgOclxsDTFUXwcGE/Hltrr8qyCuy5UPlqx+V+U\nypjWZo4mEUCutdFMBp1twEziiRpeVae9qn2Ry2DOtJK5i/Tqwu6my9qy+B0CAwEA\nAaNhMF8wDgYDVR0PAQH/BAQDAgKkMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggrBgEF\nBQcDAjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBTpQpezL02B5rxAKenh48oP\njOKBsDANBgkqhkiG9w0BAQsFAAOCAQEAcupy/UMJe19JcNIyZ6mb5rgn4RHaazyl\nx7avmhan2k10ewtOdR+LkWs8RcFO0QZuyNvzRR0ZIvPHINb1uTd+/IrvZYY3hZ0M\n5Z58CFlGxcKAXPjf7Mu3exf2tggNsdzOh0+0DPDNQHN5lRfkxgJEYNDuooV2OQcq\n21p2jsAKKkMZDjG4UY/5DYfBhJM+MF+40dq2N3ZcKPCI2hA5l5LyE6iQOQ92ISDu\nE1VkTrnlFrdoaafx1SEKh5H+jCniVeoi9ZVMY/ODu6ykVZerqnu6b2SKoIUY33vU\nOSjzAkTvyVCQbpGRHUuMH1YPLog395bGMHsb0uAOX86sZnP4jL7Mzg==\n-----END CERTIFICATE-----\n"
+  tls.key: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0MKBmJLnHBd535F064IhrZTSm+mR48N58guFeCGgDI4GJXW9\n9PnjjkuOFokLSKRR7jkutGkLWD+5cun/blx8cnpD3KeqJaNW9bbLzQBmvHQYjqtH\nkQrojrH4OSsZrOq13CY5bgw1Bx8Q3Av2j9hcvON0eHzgyHJ/oz3hyLBvxFFuQiWt\nyVoykV7GFMLyQAhZVO7jkTZHy1HfIKjUxQouFgTuyd14IR4n2JoGAc481fkOESXZ\ncyhLF+A5yXGwNMVRfBwYT8eW2uvyrIK7LlQ+WrH5X5TKmNZmjiYRQK610UwGnW3A\nTOKJGl5Vp72qfZHLYM60krmL9OrC7qbL2rL4HQIDAQABAoIBAQC+FKzd2LzYZkPR\nHmeAXO//VmfiEO2GnqF1k6oGtU8+vz63cxrwaWwaT49j04rTrNLw/14YZSEwTG22\nRXwP5+RkdBFAY+XX+X8foj61Pa1N4MPPfANg/La93yxuGWF6ggfvGVrnafQKtO2r\n/rSVS2M9ljmhz8r4mNDBOYJRMt3BuOJkBShxB15kUaJEMaO7e8vAY0NMjbtYgX59\nTRJDnI78xD66eGj7uqAGs0mjkz4fVO7ezMR225nJbVmVEA37p6MGFBf7ITgkWbUv\neud2H+WXEHqE9FDdOPj4VQBNk9ONLqf6JSHMzYraSha53XCD6JEClC80HYi7B1Yh\nkr2gIUmdAoGBAO5zgQzcXsT8xWAns2pp0ok3gSRUMW3M3UbRiYxihScqUHZYzNC/\nya5j4TPYAuzpiwBBNpd1aS99tAInuk42i/Dob5EtbYrVkKTFM9pgePG7DFyPKUgb\nCKY7g6db2G4jtYlu6CmXfKoauncnW1RcNWyuF0L+7O3FBKZ5OfSeHDBPAoGBAOAf\nm1az6q+9FqxxOGOrzzT11w951Iqv58YwDjkdFxvx4bLFNresVr6zQJl4ivVgFt7p\nCYdlrmQamnEDe9l/dHGqUyuTNYvLEp2hBQRC4Qcag3p6ofFQXCVL3E4b67IC2x7Y\nLPKu5aSez0jL1ARL0a5+C/0SPJfV3h49TIx5fanTAoGAGYfidGcP+pV56J63lhg4\ng5qeyC3/kNsTgiajTJWr3hKoxNMjMuKmDHcDQNLLFWS4DlHtL3BRz9TstiJcz00F\n1Mh+UZQEm43cS9gVgjc8G93EKBDoAaFrXqkWoo+x77EBGfL3BqUCow/zkRh0real\njbpiITk8UwT6R3zJWMipCf8CgYAvTlySY21w5J+JjGhTmWsmCZH4QUXcdB6e1Xvb\nEEnVayuxeTEAec7hd6J2AlyKSFrreBK70nmJxZe9rPeSQ/XHHCVr+CmANT/bp6YQ\nbTFkN3NzAbl23vhkIuwATKJmM3Yev5BVNRdhtOeZvPQmZ/59LzvGkffaMJkuls+2\ngtpEYwKBgE++rcwGMLqd21SIUfIGfhbDYwu+3KYKPiiJjMxhFHiSemQwxNPWFczc\n/9uWPu+XSSdWBZ9GyWq8lmQ+Dontm/B491gmuNv5eYNWWXgtz0JZJ8nU1d390Sx0\n/+QIzV3b4N4LZln2K2NZvwBZC2epanMXH5h0pka2eqcT+B3WYndb\n-----END RSA PRIVATE KEY-----\n"
+...
+---
+# Source: codecov/charts/timescaledb/templates/secret-patroni.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "timescale-codecov-credentials"
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: patroni
+  annotations:
+    "helm.sh/hook": pre-install,post-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/resource-policy": keep
+type: Opaque
+stringData:
+  PATRONI_SUPERUSER_PASSWORD: "testpassword"
+  PATRONI_REPLICATION_PASSWORD: "jX0Gwa7RxskRrWbk"
+  PATRONI_admin_PASSWORD: "k2Z6XduaI6x8r879"
+...
+---
+# Source: codecov/charts/timescaledb/templates/secret-pgbackrest.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "timescale-codecov-pgbackrest"
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: pgbackrest
+  annotations:
+    "helm.sh/hook": pre-install,post-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/resource-policy": keep
+type: Opaque
+stringData:
+  {}
+...
+---
+# Source: codecov/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-codecov-test-connection"
+  labels:
+    helm.sh/chart: codecov-0.2.1
+    app.kubernetes.io/name: codecov
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "24.4.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-codecov-gateway:80']
+  restartPolicy: Never
+---
+# Source: codecov/charts/timescaledb/templates/job-update-patroni.yaml
+# This file and its contents are licensed under the Apache License 2.0.
+# Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "timescale-codecov-patroni-1"
+  namespace: default
+  labels:
+    
+    app: timescale-codecov
+    chart: timescaledb-0.33.1
+    release: release-name
+    heritage: Helm
+    cluster-name: timescale-codecov
+    app.kubernetes.io/name: "timescale-codecov"
+    app.kubernetes.io/version: 0.33.1
+    app.kubernetes.io/component: patroni
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        
+        app: timescale-codecov
+        chart: timescaledb-0.33.1
+        release: release-name
+        heritage: Helm
+        cluster-name: timescale-codecov
+        app.kubernetes.io/name: "timescale-codecov"
+        app.kubernetes.io/version: 0.33.1
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: timescale-codecov-patch-patroni-config
+        image: "curlimages/curl:7.87.0"
+        imagePullPolicy: Always
+        command: ["/bin/sh"]
+        # Patching the Patroni configuration is good, however it should not block an upgrade from going through
+        # Therefore we ensure we always exit with an exitcode 0, so that Helm is satisfied with this upgrade job
+        args:
+        - '-c'
+        - |
+          /usr/bin/curl --connect-timeout 30 --include --request PATCH --data \
+          "{\"loop_wait\":10,\"maximum_lag_on_failover\":33554432,\"postgresql\":{\"parameters\":{\"archive_command\":\"/etc/timescaledb/scripts/pgbackrest_archive.sh %p\",\"archive_mode\":\"on\",\"archive_timeout\":\"1800s\",\"autovacuum_analyze_scale_factor\":0.02,\"autovacuum_max_workers\":10,\"autovacuum_naptime\":\"5s\",\"autovacuum_vacuum_cost_limit\":500,\"autovacuum_vacuum_scale_factor\":0.05,\"hot_standby\":\"on\",\"log_autovacuum_min_duration\":\"1min\",\"log_checkpoints\":\"on\",\"log_connections\":\"on\",\"log_disconnections\":\"on\",\"log_line_prefix\":\"%t [%p]: [%c-%l] %u@%d,app=%a [%e] \",\"log_lock_waits\":\"on\",\"log_min_duration_statement\":\"1s\",\"log_statement\":\"ddl\",\"max_connections\":100,\"max_prepared_transactions\":150,\"shared_preload_libraries\":\"timescaledb,pg_stat_statements\",\"ssl\":\"on\",\"ssl_cert_file\":\"/etc/certificate/tls.crt\",\"ssl_key_file\":\"/etc/certificate/tls.key\",\"tcp_keepalives_idle\":900,\"tcp_keepalives_interval\":100,\"temp_file_limit\":\"1GB\",\"timescaledb.passfile\":\"../.pgpass\",\"unix_socket_directories\":\"/var/run/postgresql\",\"unix_socket_permissions\":\"0750\",\"wal_level\":\"hot_standby\",\"wal_log_hints\":\"on\"},\"use_pg_rewind\":true,\"use_slots\":true},\"retry_timeout\":10,\"ttl\":30}" \
+          "http://timescale-codecov-config:8008/config"
+          exit 0

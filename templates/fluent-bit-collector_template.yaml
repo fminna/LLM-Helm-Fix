@@ -1,0 +1,243 @@
+---
+# Source: fluent-bit-collector/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-fluent-bit-collector
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: fluent-bit-collector/templates/configmap-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fluent-bit-collector-config
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  fluent-bit.conf: |-
+    [SERVICE]
+        daemon false
+        http_Port 2020
+        http_listen 0.0.0.0
+        http_server true
+        log_level info
+        parsers_file /fluent-bit/etc/parsers.conf
+        parsers_file /fluent-bit/etc/conf/custom-parsers.conf
+
+    [INPUT]
+        name              systemd
+        systemd_filter    _SYSTEMD_UNIT=containerd.service
+        systemd_filter    _SYSTEMD_UNIT=kubelet.service
+        tag               host.*
+        strip_underscores true
+        lowercase         true
+    
+    [INPUT]
+        name             tail
+        path             /var/log/containers/*.log
+        tag_regex        (?<pod_name>[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)_(?<namespace_name>[^_]+)_(?<container_name>.+)-
+        tag              kube.<namespace_name>.<pod_name>.<container_name>
+        read_from_head   true
+        multiline.parser cri
+        skip_long_lines  true
+        skip_empty_lines true
+    
+    [INPUT]
+        name         opentelemetry
+        listen       127.0.0.1
+        port         4318
+        tag          otel
+    
+    [FILTER]
+        name                kubernetes
+        match               kube.*
+        kube_tag_prefix     kube.
+        regex_parser        kubernetes-tag
+        k8s-logging.parser  true
+        k8s-logging.exclude true
+    
+    [OUTPUT]
+        name   stdout
+        match  *
+
+  custom-parsers.conf: |-
+    [PARSER]
+        name   kubernetes-tag
+        format regex
+        regex  ^(?<namespace_name>[^.]+)\.(?<pod_name>[^.]+)\.(?<container_name>[^.]+)
+---
+# Source: fluent-bit-collector/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fluent-bit-collector-scripts
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+---
+# Source: fluent-bit-collector/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-fluent-bit-collector
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: fluent-bit-collector/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-fluent-bit-collector
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-fluent-bit-collector
+subjects:
+  - kind: ServiceAccount
+    name: release-name-fluent-bit-collector
+    namespace: default
+---
+# Source: fluent-bit-collector/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-fluent-bit-collector
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-collector-0.11.3
+    app.kubernetes.io/name: fluent-bit-collector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluent-bit-collector
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluent-bit-collector
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: 0b56c28b2ef8eab20650e97a1c84462f7c3cd05180e55ffdb924d06944abbcc2
+    spec:
+      serviceAccountName: release-name-fluent-bit-collector
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: false
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+          image: cr.fluentbit.io/fluent/fluent-bit:3.0.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          command:
+            - /fluent-bit/bin/fluent-bit
+          args:
+            - --workdir=/fluent-bit/etc
+            - --config=/fluent-bit/etc/conf/fluent-bit.conf
+          ports:
+            - name: http
+              containerPort: 2020
+              protocol: TCP
+            - name: http-otel
+              containerPort: 4318
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 12
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/conf
+            - name: machine-id
+              mountPath: /etc/machine-id
+              readOnly: true
+            - name: logs
+              mountPath: /var/log
+              readOnly: true
+            - name: data
+              mountPath: /fluent-bit/data
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-fluent-bit-collector-config
+        - name: machine-id
+          hostPath:
+            path: /etc/machine-id
+            type: File
+        - name: logs
+          hostPath:
+            path: /var/log
+        - name: data
+          hostPath:
+            path: /var/fluent-bit

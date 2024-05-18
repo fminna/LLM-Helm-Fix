@@ -1,0 +1,368 @@
+---
+# Source: radar-s3-connector/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: release-name-radar-s3-connector
+  labels:
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.6.0-hotfix"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      helm.sh/chart: radar-s3-connector-0.3.2
+      app.kubernetes.io/name: radar-s3-connector
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "7.6.0-hotfix"
+      app.kubernetes.io/managed-by: Helm
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-kafka
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cp-schema-registry
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: catalog-server
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: 'default'
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: minio
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  policyTypes:
+  - Egress
+---
+# Source: radar-s3-connector/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-radar-s3-connector
+  labels:
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.6.0-hotfix"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  
+  awsAccessKey: "YWNjZXNzX2tleQ=="
+  awsSecretKey: "c2VjcmV0"
+---
+# Source: radar-s3-connector/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-radar-s3-connector
+  labels:
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.6.0-hotfix"
+    app.kubernetes.io/managed-by: Helm
+data:
+  sink-s3.properties: |
+    name=radar-s3-sink-connector
+    connector.class=io.confluent.connect.s3.S3SinkConnector
+    tasks.max=4
+    topics=
+    flush.size=10000
+    s3.bucket.name=radar_intermediate_storage
+    s3.part.size=5242880
+    s3.object.tagging=false
+    connect.meta.data=false
+    store.url=http://minio:9000/
+    storage.class=io.confluent.connect.s3.storage.S3Storage
+    format.class=io.confluent.connect.s3.format.avro.AvroFormat
+    transforms=combineKeyValue
+    transforms.combineKeyValue.type=org.radarbase.kafka.connect.transforms.CombineKeyValue
+    rotate.schedule.interval.ms=900000
+    timezone=UTC
+    avro.codec=deflate
+    errors.tolerance=all
+    errors.log.enable=true
+    errors.deadletterqueue.topic.name=dead_letter_queue_s3
+    errors.deadletterqueue.topic.replication.factor=3
+    errors.deadletterqueue.context.headers.enable=true
+    errors.retry.delay.max.ms=60000
+    errors.retry.timeout=300000
+  healthcheck.sh: |
+    #!/bin/sh
+    STATUS=$(curl -sf localhost:8083/connectors/radar-s3-sink-connector/status | grep -o '\"state\":\"[^\"]*\"')
+    if echo "$STATUS" | tr '\\n' ',' | grep -q FAILED; then
+      exit 1
+    elif [ $(echo "$STATUS" | grep RUNNING | wc -l) -le 1 ]; then
+      exit 1
+    fi
+  add-topics-to-config.sh: |
+    #!/usr/bin/env sh
+    SOURCE=$1
+    TARGET=$2
+    set -e
+    TOPICS="$(curl -sf http://catalog-server:9010/source-types | jq -r '[to_entries | .[] | select(.key | test("^.*-source-types$")) | .value[].data[].topic] | sort | unique | join(",")')"
+    if [ "$TOPICS" == "" ]; then
+      echo "No topics found!"
+      exit 1
+    fi
+    sed "s/^topics=.\+\$/\\0,$TOPICS/" "$SOURCE" | sed "s/^topics=\$/\\0$TOPICS/" > "$TARGET"
+    echo "Configured the following topics"
+    grep "topics=" "$TARGET"
+---
+# Source: radar-s3-connector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-radar-s3-connector
+  labels:
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.6.0-hotfix"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8083
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+---
+# Source: radar-s3-connector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-radar-s3-connector
+  labels:
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/name: radar-s3-connector
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "7.6.0-hotfix"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radar-s3-connector
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/configmap: 4223604db9ccc9558baf8893cfb644230914f343e275861f1b5eb26f1ffc36bf
+        checksum/secret: 74c2d941238b8c7f68b08ed1b99acc769184a5389447de1b4ef9a2fb9310d08a
+      labels:
+        app.kubernetes.io/name: radar-s3-connector
+        app.kubernetes.io/instance: release-name
+    spec:
+      securityContext:
+        {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: "app.kubernetes.io/name"
+                    operator: In
+                    values:
+                    - radar-s3-connector
+                  - key: "app.kubernetes.io/instance"
+                    operator: In
+                    values:
+                    - release-name
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: radar-s3-connector
+          securityContext:
+            {}
+          image: "radarbase/kafka-connect-transform-s3:7.6.0-hotfix"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: CONNECT_BOOTSTRAP_SERVERS
+            value: "PLAINTEXT://cp-kafka-headless:9092"
+          - name: CONNECT_REQUEST_TIMEOUT_MS
+            value: "20000"
+          - name: CONNECT_RETRY_BACKOFF_MS
+            value: "500"
+          - name: CONNECT_PRODUCER_BOOTSTRAP_SERVERS
+            value: "PLAINTEXT://cp-kafka-headless:9092"
+          - name: CONNECT_PRODUCER_REQUEST_TIMEOUT_MS
+            value: "20000"
+          - name: CONNECT_PRODUCER_RETRY_BACKOFF_MS
+            value: "500"
+          - name: CONNECT_CONSUMER_BOOTSTRAP_SERVERS
+            value: "PLAINTEXT://cp-kafka-headless:9092"
+          - name: CONNECT_CONSUMER_REQUEST_TIMEOUT_MS
+            value: "20000"
+          - name: CONNECT_CONSUMER_RETRY_BACKOFF_MS
+            value: "500"
+          - name: CONNECT_REST_PORT
+            value: "8083"
+          - name: CONNECT_GROUP_ID
+            value: "default"
+          - name: CONNECT_CONFIG_STORAGE_TOPIC
+            value: "default.config"
+          - name: CONNECT_OFFSET_STORAGE_TOPIC
+            value: "default.offsets"
+          - name: CONNECT_STATUS_STORAGE_TOPIC
+            value: "default.status"
+          - name: CONNECT_KEY_CONVERTER
+            value: "io.confluent.connect.avro.AvroConverter"
+          - name: CONNECT_VALUE_CONVERTER
+            value: "io.confluent.connect.avro.AvroConverter"
+          - name: CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE
+            value: "false"
+          - name: CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE
+            value: "false"
+          - name: CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL
+            value: "http://cp-schema-registry:8081"
+          - name: CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL
+            value: "http://cp-schema-registry:8081"
+          - name: CONNECT_KEY_CONVERTER_ENHANCED_AVRO_SCHEMA_SUPPORT
+            value: "false"
+          - name: CONNECT_VALUE_CONVERTER_ENHANCED_AVRO_SCHEMA_SUPPORT
+            value: "false"
+          - name: CONNECT_INTERNAL_KEY_CONVERTER
+            value: "org.apache.kafka.connect.json.JsonConverter"
+          - name: CONNECT_INTERNAL_VALUE_CONVERTER
+            value: "org.apache.kafka.connect.json.JsonConverter"
+          - name: CONNECT_OFFSET_FLUSH_INTERVAL_MS
+            value: "10000"
+          - name: CONNECT_OFFSET_STORAGE_FILE_FILENAME
+            value: "/tmp/connect2.offset"
+          - name: CONNECT_REST_ADVERTISED_HOST_NAME
+            value: release-name-radar-s3-connector
+          - name: CONNECT_PLUGIN_PATH
+            value: "/usr/share/kafka-connect/plugins"
+          - name: CONNECTOR_PROPERTY_FILE_PREFIX
+            value: "sink-s3/sink-s3"
+          - name: CONNECT_VALUE_CONVERTER_CONNECT_META_DATA
+            value: "false"
+          - name: KAFKA_HEAP_OPTS
+            value: "-Xms3g -Xmx4g"
+          - name: KAFKA_BROKERS
+            value: ""
+          - name: CONNECT_LOG4J_LOGGERS
+            value: "org.reflections=ERROR"
+          - name: AWS_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: release-name-radar-s3-connector
+                key: awsAccessKey
+          - name: AWS_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: release-name-radar-s3-connector
+                key: awsSecretKey
+          - name: CONNECT_SECURITY_PROTOCOL
+            value: PLAINTEXT
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - /etc/kafka-connect/sink-s3/original/healthcheck.sh
+            initialDelaySeconds: 40
+            periodSeconds: 60
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - /etc/kafka-connect/sink-s3/original/healthcheck.sh
+            initialDelaySeconds: 40
+            periodSeconds: 60
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 3Gi
+          volumeMounts:
+            - name: config-original
+              mountPath: /etc/kafka-connect/sink-s3/original
+            - name: config-updated
+              mountPath: /etc/kafka-connect/sink-s3
+      initContainers:
+        - name: init-topics
+          image: linuxserver/yq:3.2.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /etc/kafka-connect/sink-s3/original/add-topics-to-config.sh
+            - /etc/kafka-connect/sink-s3/original/sink-s3.properties
+            - /etc/kafka-connect/sink-s3/sink-s3.properties
+          volumeMounts:
+            - name: config-original
+              mountPath: /etc/kafka-connect/sink-s3/original
+            - name: config-updated
+              mountPath: /etc/kafka-connect/sink-s3
+      volumes:
+        - name: config-original
+          configMap:
+            name: release-name-radar-s3-connector
+        - name: config-updated
+          emptyDir: {}
+---
+# Source: radar-s3-connector/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-radar-s3-connector-test-connection"
+  labels:
+    app.kubernetes.io/name: radar-s3-connector
+    helm.sh/chart: radar-s3-connector-0.3.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-radar-s3-connector:8083']
+  restartPolicy: Never

@@ -1,0 +1,162 @@
+---
+# Source: gitlist/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlist
+  labels:
+    app.kubernetes.io/name: gitlist
+    helm.sh/chart: gitlist-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: gitlist
+      port: 80
+      targetPort: gitlist
+      nodePort: null
+    - name: rsync
+      port: 22
+      targetPort: rsync
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: gitlist
+    app.kubernetes.io/instance: release-name
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 7200
+---
+# Source: gitlist/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-gitlist
+  labels:
+    app.kubernetes.io/name: gitlist
+    helm.sh/chart: gitlist-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: gitlist
+  annotations:
+    helm.sh/hook-weight: "0"
+spec:
+  strategy:
+    type: 
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitlist
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: gitlist
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitlist
+        helm.sh/chart: gitlist-1.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: gitlist
+    spec:
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gitlist
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      containers:
+        - name: gitlist
+          image: svtechnmaa/svtech_gitlist:v1.0.0
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - bash
+            - -ec
+            - |
+                mkdir -p /opt/gitlist/backup_config
+                check_exists=`ls -la /opt/gitlist/backup_config | grep .git | wc -l`
+
+                if [ $check_exists == 0 ]; then
+                  cd /opt/gitlist/backup_config
+                  git init /opt/gitlist/backup_config
+                  git config --global user.name "NMS"
+                  git config --global user.email 'NMS@localhost'
+                  echo 'Repository for backup Juniper devices' > /opt/gitlist/backup_config/README
+                  echo 'Repository for backup Juniper devices' > /opt/gitlist/backup_config/.git/description
+                  git add /opt/gitlist/backup_config/README
+                  git commit -m initial
+                fi
+
+                FULL_NAME=release-name-gitlist
+                POD_INDEX=${POD_NAME: -1}
+                replicaCount=2
+
+                echo "" > /opt/gitlist/backup_config/.git/hooks/post-commit
+                chmod 775 /opt/gitlist/backup_config/.git/hooks/post-commit
+                echo "chown gitlist:gitlist /opt/gitlist -R" >> /opt/gitlist/backup_config/.git/hooks/post-commit
+                echo "chmod 775 /opt/gitlist -R" >> /opt/gitlist/backup_config/.git/hooks/post-commit
+
+                for ((i=0; i<$replicaCount; i++)); do
+                  if [ $i != $POD_INDEX ]; then
+
+                    full_pod_name="${FULL_NAME}-${i}.release-name-gitlist.default.svc.cluster.local"
+                    command="sshpass -p 'juniper@123' rsync -e 'ssh -o StrictHostKeyChecking=no' -avh -O --delete --no-o --no-g --no-perms --exclude 'post-commit' /opt/gitlist gitlist@$full_pod_name:/opt"
+                    echo $command >> /opt/gitlist/backup_config/.git/hooks/post-commit
+
+                  fi
+                done
+
+                chown gitlist:gitlist /opt/gitlist -R
+                chmod 775 /opt/gitlist -R
+
+                service ssh start
+                exec apache2-foreground
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: TZ
+              value: Asia/Ho_Chi_Minh
+
+          ports:
+            - name: gitlist
+              containerPort: 80
+            - name: rsync
+              containerPort: 22
+---
+# Source: gitlist/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitlist-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: default
+  rules:
+  - http:
+      paths:
+      - path: /gitlist
+        pathType: Prefix
+        backend:
+          service:
+            name: gitlist
+            port:
+              number: 80

@@ -1,0 +1,364 @@
+---
+# Source: seldon-core-oauth-gateway/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: seldon
+  namespace: default
+---
+# Source: seldon-core-oauth-gateway/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: redis
+    chart: redis-6.4.5
+    heritage: Helm
+    release: release-name
+  name: release-name-redis
+data:
+  redis.conf: |-
+    # User-supplied configuration:
+    # maxmemory-policy volatile-lru
+  master.conf: |-
+    dir /data
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+  replica.conf: |-
+    dir /data
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+---
+# Source: seldon-core-oauth-gateway/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: redis
+    chart: redis-6.4.5
+    heritage: Helm
+    release: release-name
+  name: release-name-redis-health
+data:
+  ping_local.sh: |-
+    response=$(
+      timeout -s 9 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_master.sh: |-
+    response=$(
+      timeout -s 9 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: seldon-core-oauth-gateway/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: seldon-wide
+  namespace: default
+rules:
+- apiGroups: ["*"]
+  resources:
+  - deployments
+  - services
+  - horizontalpodautoscalers
+  verbs: ["*"]
+- apiGroups:
+  - machinelearning.seldon.io
+  resources: ["*"]
+  verbs: ["*"]
+---
+# Source: seldon-core-oauth-gateway/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: seldon-crd-default
+  namespace: default
+rules:
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs: ["create"]
+---
+# Source: seldon-core-oauth-gateway/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: seldon
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: seldon-wide
+subjects:
+  - kind: ServiceAccount
+    name: seldon
+    namespace: default
+---
+# Source: seldon-core-oauth-gateway/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: seldon-default
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: seldon-crd-default
+subjects:
+  - kind: ServiceAccount
+    name: seldon
+    namespace: default
+---
+# Source: seldon-core-oauth-gateway/charts/redis/templates/redis-master-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  labels:
+    app: redis
+    chart: redis-6.4.5
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: redis
+  selector:
+    app: redis
+    release: "release-name"
+    role: master
+---
+# Source: seldon-core-oauth-gateway/templates/apife-deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    app.kubernetes.io/name: release-name
+    app.kubernetes.io/component: seldon-core-apiserver
+    app: seldon-apiserver-container-app
+  name: release-name-seldon-apiserver
+spec:
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  - name: grpc
+    port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: seldon-apiserver-container-app
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}
+---
+# Source: seldon-core-oauth-gateway/templates/apife-deployment.yaml
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  labels: &Labels
+    app.kubernetes.io/name: release-name
+    app.kubernetes.io/component: seldon-core-apiserver
+    app: seldon-apiserver-container-app
+    chart: seldon-core-oauth-gateway-0.3.1
+    release: release-name
+    heritage: Helm
+    component: seldon-core
+  name: release-name-seldon-apiserver
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels: *Labels
+  template:
+    metadata:
+      annotations:
+
+        prometheus.io/path: /prometheus
+        prometheus.io/port: "8080"
+        prometheus.io/scrape: "true"
+      labels: *Labels
+    spec:
+      containers:
+      - env:
+        - name: SELDON_ENGINE_KAFKA_SERVER
+          value: kafka:9092
+        - name: SELDON_CLUSTER_MANAGER_REDIS_HOST
+          value: release-name-redis-master
+        - name: ENGINE_SERVER_GRPC_PORT
+          value: '5001'
+        - name: ENGINE_SERVER_PORT
+          value: '8000'
+        - name: SELDON_SINGLE_NAMESPACE
+          value: 'false'
+        - name: SELDON_CLUSTER_MANAGER_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: seldonio/apife:0.3.1
+        imagePullPolicy: IfNotPresent
+        name: seldon-apiserver-container
+        volumeMounts:
+          - name: podinfo
+            mountPath: /etc/podinfo
+            readOnly: false
+        securityContext:
+          runAsUser: 8888
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        - containerPort: 5000
+          protocol: TCP
+      dnsPolicy: ClusterFirst
+      serviceAccountName: seldon
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: podinfo
+          downwardAPI:
+            items:
+              - path: "annotations"
+                fieldRef:
+                  fieldPath: metadata.annotations
+---
+# Source: seldon-core-oauth-gateway/charts/redis/templates/redis-master-statefulset.yaml
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  labels:
+    app: redis
+    chart: redis-6.4.5
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  selector:
+    matchLabels:
+      release: "release-name"
+      role: master
+      app: redis
+  serviceName: release-name-redis-master
+  template:
+    metadata:
+      labels:
+        release: "release-name"
+        chart: redis-6.4.5
+        role: master
+        app: redis
+      annotations:
+        checksum/health: 768c728dd384aed7e3d830d67a966795bd9eddb1597997d0a7b500ff6ce7dc64
+        checksum/configmap: 42344423af9d79b54b13cfdda80411a1e8aa339c256537421a882bcb7136708d
+        checksum/secret: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    spec:      
+      serviceAccountName: "default"
+      containers:
+      - name: release-name-redis
+        image: "docker.io/bitnami/redis:4.0.14"
+        imagePullPolicy: "Always"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          if [[ -n $REDIS_PASSWORD_FILE ]]; then
+            password_aux=`cat ${REDIS_PASSWORD_FILE}`
+            export REDIS_PASSWORD=$password_aux
+          fi
+          ARGS=("--port" "${REDIS_PORT}")
+          ARGS+=("--protected-mode" "no")
+          ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+          ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+          /run.sh ${ARGS[@]}
+        env:
+        - name: REDIS_REPLICATION_MODE
+          value: master
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: REDIS_PORT
+          value: "6379"
+        ports:
+        - name: redis
+          containerPort: 6379
+        livenessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+          exec:
+            command:
+            - sh
+            - -c
+            - /health/ping_local.sh 5
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 5
+          exec:
+            command:
+            - sh
+            - -c
+            - /health/ping_local.sh 5
+        resources:
+          null
+        volumeMounts:
+        - name: health
+          mountPath: /health
+        - name: redis-data
+          mountPath: /data
+          subPath: 
+        - name: config
+          mountPath: /opt/bitnami/redis/etc
+      volumes:
+      - name: health
+        configMap:
+          name: release-name-redis-health
+          defaultMode: 0755
+      - name: config
+        configMap:
+          name: release-name-redis
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: "redis"
+          component: "master"
+          release: "release-name"
+          heritage: "Helm"
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+  updateStrategy:
+    type: RollingUpdate

@@ -1,0 +1,585 @@
+---
+# Source: boot/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+  namespace: default
+---
+# Source: boot/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-ssh-keys
+  namespace: default
+stringData:
+  user_ca.pub: |
+  authorized_keys: |
+---
+# Source: boot/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-config
+  namespace: default
+data:
+  group: |
+    root:x:0:
+    jump:x:10000000:
+  passwd: |
+    root:x:0:0:root:/root:/sbin/nologin
+    jump:x:10000000:10000000::/home/jump:/sbin/nologin
+  sshd_config: |
+    Port 2223
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    UsePAM no
+
+    Match User jump
+      PermitTTY no
+      X11Forwarding no
+      PermitTunnel no
+      GatewayPorts no
+      ForceCommand /sbin/nologin
+
+    TrustedUserCAKeys /etc/ssh/user_ca.pub
+    AuthorizedKeysFile /etc/ssh/authorized_keys
+---
+# Source: boot/templates/roles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: default
+rules:
+- apiGroups:
+  - boot.aerokube.com
+  resources:
+  - licenses
+  verbs:
+  - get
+  - watch
+  - list
+- apiGroups:
+  - boot.aerokube.com
+  resources:
+  - licenses/status
+  verbs:
+  - patch
+- apiGroups:
+  - boot.aerokube.com
+  resources:
+  - operatingsystems
+  - operatingsystems/status
+  - virtualmachines
+  - virtualmachines/status
+  verbs:
+  - get
+  - watch
+  - list
+  - patch
+---
+# Source: boot/templates/roles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: default
+#  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: default
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: boot/templates/roles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name
+  namespace: default
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - configmaps
+  verbs:
+  - get
+  - watch
+  - list
+  - create
+  - update
+  - patch
+  - delete
+---
+# Source: boot/templates/roles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name
+  namespace: default
+roleRef:
+  kind: Role
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: boot/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  selector:
+    app: release-name
+  ports:
+  - name: ssh
+    protocol: TCP
+    port: 2222
+  type: LoadBalancer
+---
+# Source: boot/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm
+  namespace: default
+spec:
+  selector:
+    boot.aerokube.com/type: virtualmachine
+  clusterIP: None
+---
+# Source: boot/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: release-name
+  replicas: 2
+  template:
+    metadata:
+      annotations:
+        checksum/config: a6a71a3c1a80fa473410d6ce94ecb458b4fd5072eafd0456e227e19c95a6af20
+        checksum/secret: 8a647ccac6a45ec7d73548ab4feda694298e0250d4a544a97437ba2f447dea84
+      labels:
+        app: release-name
+    spec:
+      serviceAccountName: release-name
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 10000000
+        runAsGroup: 10000000
+        fsGroup: 10000000
+      containers:
+      - name: boot
+        image: quay.io/aerokube/boot:1.0.1
+        command:
+        - /boot
+        - -ca-secret-name
+        - release-name-vm-ssh-host-ca-keys
+        securityContext:
+          privileged: false
+          runAsUser: 10000000
+          runAsGroup: 10000000
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - all
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+      - name: reloader
+        image: quay.io/aerokube/reloader:1.0.1
+        command: ["/reloader", "-listen", ":2222", "-port", "2223"]
+        ports:
+        - containerPort: 2222
+        securityContext:
+          privileged: false
+          runAsUser: 10000000
+          runAsGroup: 10000000
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - all
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      - name: jumphost
+        image: quay.io/aerokube/jumphost:1.0.1
+        lifecycle:
+          preStop:
+            exec:
+              command: ["flock", "/tmp/.boot-lock", "true"]
+        securityContext:
+          privileged: false
+          runAsUser: 10000000
+          runAsGroup: 10000000
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - all
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        workingDir: /home/jump
+        volumeMounts:
+        - name: config
+          mountPath: /etc/group
+          subPath: group
+        - name: config
+          mountPath: /etc/passwd
+          subPath: passwd
+        - name: config
+          mountPath: /etc/ssh/sshd_config
+          subPath: sshd_config
+        - name: ssh-host-keys
+          mountPath: /etc/ssh/ssh_host_ecdsa_key
+          subPath: ssh_host_ecdsa_key
+        - name: ssh-host-keys
+          mountPath: /etc/ssh/ssh_host_ed25519_key
+          subPath: ssh_host_ed25519_key
+        - name: ssh-host-keys
+          mountPath: /etc/ssh/ssh_host_rsa_key
+          subPath: ssh_host_rsa_key
+        - name: ssh-keys
+          mountPath: /etc/ssh/authorized_keys
+          subPath: authorized_keys
+        - name: ssh-keys
+          mountPath: /etc/ssh/user_ca.pub
+          subPath: user_ca.pub
+        - name: home
+          mountPath: /home
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-config
+          defaultMode: 0644
+      - name: ssh-host-keys
+        secret:
+          defaultMode: 0600
+          secretName: release-name-ssh-host-keys
+      - name: ssh-keys
+        secret:
+          defaultMode: 0600
+          secretName: release-name-ssh-keys
+      - name: home
+        emptyDir: {}
+      - name: tmp
+        emptyDir:
+          medium: Memory
+---
+# Source: boot/templates/license.yaml
+apiVersion: boot.aerokube.com/v1
+kind: License
+metadata:
+  name: default
+spec:
+  data: Ulh3SnN6S3JYTVg5UmIzaHNiWUpOaE1rcGltQzJxRVZVbGdHMVliNlZDbnNjVkc5b1M1eGNEbTRZYkN6c2RaTmtaaGs0cDExQWRlOTA2YVNxK3NNV2JORHd0NkFEUEZTNk16UXVCcWhQMVovajhhdWlJZDJzdW9yVEFRTFppSnp2NHloMkdZYXNVVlNhRk05Q2ZOUk4rd1JCNHlXRlFwRmNwbVRFWk9hdXRQWjJvVUM0TldGdXR2OUtiangrT0hkRmJNK2xtQUhCYVArWDhlUTJoNnFzRlExdHl2Zm11QmtVWUNhRHBSTEhzVTdLQXVEZFZKWlhUSU9PRjNjUlFIODhyYmZKTkZVWm1sNG5UZnJHM2RFRTJmYkMyakNwVndLWmJaMkgrVi9zeGRXd0dDblZMNFAyYXVyNjQ4cDhnb0xvRGdZMGlnRmM1WXFPODVGK0U4TlRPWWpyMGtPRThnY1lRcU1JT1JWZEkwQ0ZNVkk3SkFpbHI0UzhHcHduY2Vwcks3ZERtbnVLNmRIeGVnZHhqSGNIN1laZlR6U2prZ001S2R5Q1RCSlF0RXB2VjkvUlF5MUV3M3RIcCtTRWcvTjl3eUF5VE4xUFl4Q0xtU2t0QjFNblZVeURZby9sWXlCYlQrSGNlSUExdktTVThDQlZFaFNRZmdRS1BmbUxFblBuSmxhVHZmWXhnVUF3b3B3dmFwaHFmaExRNTVEM2d6RzA4ZDlsNTVGVGE3Vlo4b2Vpd2FabUFDWHZRZ3NlMTUzT29SdDV1M1VsNGNVTmFUOGUxbWgva2JKajJ1Mjk2cysvalBBa3JVRnNVdWlNZHA1a2Zrc2hTQlhybDZyVlFJYytDcWE3MUFBdWpyT1lPNm1JZ3BNZXAvYUI4cXhRR29uTUVzVGRrRlVKR289O2V5SnNhV05sYm5ObFpTSTZJa1JsWm1GMWJIUWlMQ0p3Y205a2RXTjBJam9pUW05dmRDSXNJbTFoZUZObGMzTnBiMjV6SWpveGZRPT0=
+---
+# Source: boot/templates/os.yaml
+apiVersion: boot.aerokube.com/v1
+kind: OperatingSystem
+metadata:
+  name: alpine
+  namespace: default
+spec:
+  repository: quay.io/boot/alpine
+  versions: 
+  - "3.18"
+  resources:
+    limits:
+      cpu: "0.25"
+      memory: "1Gi"
+    requests:
+      cpu: "0.25"
+      memory: "1Gi"
+---
+# Source: boot/templates/os.yaml
+apiVersion: boot.aerokube.com/v1
+kind: OperatingSystem
+metadata:
+  name: ubi
+  namespace: default
+spec:
+  repository: quay.io/boot/ubi
+  versions: 
+  - "9.2"
+  resources:
+    limits:
+      cpu: "0.25"
+      memory: "1Gi"
+    requests:
+      cpu: "0.25"
+      memory: "1Gi"
+---
+# Source: boot/templates/os.yaml
+apiVersion: boot.aerokube.com/v1
+kind: OperatingSystem
+metadata:
+  name: ubuntu
+  namespace: default
+spec:
+  repository: quay.io/boot/ubuntu
+  versions: 
+  - "22.04"
+  resources:
+    limits:
+      cpu: "0.25"
+      memory: "1Gi"
+    requests:
+      cpu: "0.25"
+      memory: "1Gi"
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "1"
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-generate-ssh-keys-user
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "4"
+data:
+  group: |
+    root:x:0:
+    user:x:10000000:
+  passwd: |
+    root:x:0:0:root:/root:/bin/bash
+    user:x:10000000:10000000::/tmp:/bin/bash
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-generate-boot-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "5"
+data:
+  generate-ssh-keys.sh: |
+    #!/bin/bash
+    mkdir -p ./etc/ssh &&
+    /usr/bin/ssh-keygen -A -f . &&
+    /usr/local/bin/kubectl create secret generic -n default release-name-ssh-host-keys \
+      --from-file=./etc/ssh/ssh_host_rsa_key \
+      --from-file=./etc/ssh/ssh_host_ed25519_key \
+      --from-file=./etc/ssh/ssh_host_ecdsa_key &&
+    rm -rf ./etc
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "7"
+data:
+  generate-ssh-keys.sh: |
+    #!/bin/bash
+    /usr/bin/ssh-keygen -t ed25519 -f ca_key -N '' &&
+    /usr/local/bin/kubectl create secret generic -n default release-name-vm-ssh-host-ca-keys --from-file=./ca_key --from-file=./ca_key.pub &&
+    /usr/bin/rm ./ca_key ./ca_key.pub
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "2"
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "3"
+roleRef:
+  kind: Role
+  name: release-name-generate-ssh-keys
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: release-name-generate-ssh-keys
+  namespace: default
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "6"
+spec:
+  template:
+    spec:
+      serviceAccountName: release-name-generate-ssh-keys
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 10000000
+        runAsGroup: 10000000
+      containers:
+      - name: keygen
+        image: quay.io/aerokube/keygen:1.0.1
+        command: ["/usr/local/bin/generate-ssh-keys.sh"]
+        workingDir: /tmp
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          runAsUser: 10000000
+          runAsGroup: 10000000
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - all
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        volumeMounts:
+        - name: release-name-generate-ssh-keys-user
+          mountPath: /etc/group
+          subPath: group
+        - name: release-name-generate-ssh-keys-user
+          mountPath: /etc/passwd
+          subPath: passwd
+        - name: release-name-generate-boot-ssh-keys
+          mountPath: /usr/local/bin/generate-ssh-keys.sh
+          subPath: generate-ssh-keys.sh
+      volumes:
+      - name: release-name-generate-boot-ssh-keys
+        configMap:
+          name: release-name-generate-boot-ssh-keys
+          defaultMode: 0755
+      - name: release-name-generate-ssh-keys-user
+        configMap:
+          name: release-name-generate-ssh-keys-user
+          defaultMode: 0644
+  backoffLimit: 0
+---
+# Source: boot/templates/generate-ssh-keys.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-generate-ssh-keys
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded,before-hook-creation
+    helm.sh/hook-weight: "8"
+spec:
+  template:
+    spec:
+      serviceAccountName: release-name-generate-ssh-keys
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 10000000
+        runAsGroup: 10000000
+      containers:
+      - name: keygen
+        image: quay.io/aerokube/keygen:1.0.1
+        command: ["/usr/local/bin/generate-ssh-keys.sh"]
+        workingDir: /tmp
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          runAsUser: 10000000
+          runAsGroup: 10000000
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - all
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        volumeMounts:
+        - name: release-name-generate-ssh-keys-user
+          mountPath: /etc/group
+          subPath: group
+        - name: release-name-generate-ssh-keys-user
+          mountPath: /etc/passwd
+          subPath: passwd
+        - name: release-name-generate-ssh-keys
+          mountPath: /usr/local/bin/generate-ssh-keys.sh
+          subPath: generate-ssh-keys.sh
+      volumes:
+      - name: release-name-generate-ssh-keys
+        configMap:
+          name: release-name-generate-ssh-keys
+          defaultMode: 0755
+      - name: release-name-generate-ssh-keys-user
+        configMap:
+          name: release-name-generate-ssh-keys-user
+          defaultMode: 0644
+  backoffLimit: 0

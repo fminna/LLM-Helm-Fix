@@ -1,0 +1,322 @@
+---
+# Source: openvpn-as/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-openvpn-as
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: openvpn-as/templates/secret-configure.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-openvpn-as-configure
+type: Opaque
+stringData:
+  configure-admin.sh: |
+    function createUser() {
+        echo "==> Creating user ${1} if not exists"
+        /usr/local/openvpn_as/scripts/sacli UserPropGet | grep "\"${1}\"" > /dev/null \
+            || /usr/local/openvpn_as/scripts/sacli --user ${1} --new_pass ${2} SetLocalPassword
+    }
+    function configure {
+        sleep 60
+
+        echo "==> Configure vpn"
+        /usr/local/openvpn_as/scripts/sacli --key "vpn.server.daemon.tcp.port" --value "9443"   ConfigPut
+        /usr/local/openvpn_as/scripts/sacli --key "vpn.server.daemon.udp.port" --value "1194"   ConfigPut
+        /usr/local/openvpn_as/scripts/sacli --key "admin_ui.https.port"        --value "943" ConfigPut
+        /usr/local/openvpn_as/scripts/sacli --key "cs.https.port"              --value "944"   ConfigPut
+
+        
+        echo "==> Configure vpn.client.routing.reroute_dns"
+        /usr/local/openvpn_as/scripts/sacli --key "vpn.client.routing.reroute_dns" --value "false" ConfigPut
+        
+        echo "==> Configure vpn.client.routing.reroute_gw"
+        /usr/local/openvpn_as/scripts/sacli --key "vpn.client.routing.reroute_gw" --value "false" ConfigPut
+        
+
+        echo "==> Configure admin user credentials"
+        createUser altmin passw0rd
+        echo "==> Enable admin privileges"
+        /usr/local/openvpn_as/scripts/sacli --user altmin --key "prop_superuser" --value "true" UserPropPut
+        echo "==> Disable PAM admin"
+        sed -i'' 's/boot_pam_users\.0=admin/boot_pam_users\.0=sdfsdfsdf/' /config/etc/as.conf
+        echo "==> Delete admin if existing"
+        /usr/local/openvpn_as/scripts/sacli  --user admin UserPropDelAll > /dev/null || true
+
+        echo "==> Configure users"
+        
+
+        echo "==> Restarting service"
+        kill $(cat /openvpn/pid/openvpn.pid)
+    }
+    configure &
+  99-backup.sh: |
+    function backup() {
+        cd /config/etc/db || exit
+        DBFILESBAK="*.db"
+        for f in $DBFILESBAK
+        do
+          echo "==> Backing up $f"
+          sqlite3 "$f" .dump > /backup/"$f"
+        done
+
+        echo "==> Backing up as.conf"
+        cp /config/etc/as.conf /backup/as.conf
+    }
+    function delay() {
+        sleep 180
+        backup
+    }
+    echo "==> Scheduling startup backup"
+    delay & disown
+
+    echo "==> Scheduling hourly backup"
+    function backupLoop() {
+      while true
+      do
+        sleep 3600
+        backup
+      done
+    }
+    backupLoop & disown
+---
+# Source: openvpn-as/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-openvpn-as
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+data:
+  25-restore-backup: |-
+    #!/usr/bin/with-contenv bash
+
+    mkdir -p /config/etc/db
+    cd /backup || exit
+    DBFILERES="*.db"
+    for f in $DBFILERES
+    do
+      echo "==> Restoring $f"
+      rm -f /config/etc/db/"$f"
+      sqlite3 </backup/"$f" /config/etc/db/"$f"
+    done
+
+    rm -f /config/etc/as.conf
+    echo "==> Restoring as.conf"
+    cp /backup/as.conf /config/etc/as.conf
+---
+# Source: openvpn-as/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-openvpn-as-state
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+---
+# Source: openvpn-as/templates/service-admin.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-openvpn-as-admin
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 943
+      targetPort: admin
+      protocol: TCP
+      name: admin
+  selector:
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+---
+# Source: openvpn-as/templates/service-gui.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-openvpn-as-gui
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 944
+      targetPort: gui
+      protocol: TCP
+      name: gui
+  selector:
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+---
+# Source: openvpn-as/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-openvpn-as-tcp
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9443
+      targetPort: vpn-tcp
+      protocol: TCP
+      name: vpn-tcp
+  selector:
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+---
+# Source: openvpn-as/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-openvpn-as-udp
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 1194
+      targetPort: vpn-udp
+      protocol: UDP
+      name: vpn-udp
+  selector:
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+---
+# Source: openvpn-as/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-openvpn-as
+  labels:
+    helm.sh/chart: openvpn-as-0.1.9
+    app.kubernetes.io/name: openvpn-as
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "version-2.8.6-916f8e7d-ubuntu18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openvpn-as
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/configure: c35906d85ca622de1780114127334f69265e4af476110b99679561d76f01545c
+      labels:
+        app.kubernetes.io/name: openvpn-as
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-openvpn-as
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: openvpn-as
+          securityContext:
+            capabilities:
+              add:
+              - NET_ADMIN
+          image: "ghcr.io/linuxserver/openvpn-as:version-2.8.6-916f8e7d-ubuntu18"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: admin
+              containerPort: 943
+              protocol: TCP
+            - name: gui
+              containerPort: 944
+              protocol: TCP
+            - name: vpn-tcp
+              containerPort: 9443
+              protocol: TCP
+            - name: vpn-udp
+              containerPort: 1194
+              protocol: UDP
+          livenessProbe:
+            initialDelaySeconds: 100
+            timeoutSeconds: 5
+            exec:
+              command: ["/usr/local/openvpn_as/scripts/sacli", "Status"]
+          readinessProbe:
+            initialDelaySeconds: 100
+            tcpSocket:
+              port: 943
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: "Europe/London"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: init
+              mountPath: /etc/cont-init.d/25-restore-backup
+              subPath: 25-restore-backup
+            - name: persistence
+              mountPath: /backup
+              subPath: backup
+            - name: persistence
+              mountPath: /usr/local/openvpn_as/etc/licenses/
+              subPath: licenses
+            - name: configure
+              mountPath: /config/custom-cont-init.d
+          resources:
+            {}
+      volumes:
+        - name: init
+          configMap:
+            name: release-name-openvpn-as
+            defaultMode: 0777
+        - name: configure
+          secret:
+            secretName: release-name-openvpn-as-configure
+            defaultMode: 0777
+        - name: persistence
+          persistentVolumeClaim:
+            claimName: release-name-openvpn-as-state

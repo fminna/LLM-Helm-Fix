@@ -1,0 +1,100 @@
+---
+# Source: datacube-processing/templates/processing-job.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-datacube-processing
+  labels:
+    app.kubernetes.io/name: datacube-processing
+    helm.sh/chart: datacube-processing-0.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    heritage: release-name-datacube-processing
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Allow
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  suspend: false
+  backoffLimit: 1
+  jobTemplate:
+    spec: 
+      template:
+        metadata:
+          name: release-name-datacube-processing
+          labels:
+            app.kubernetes.io/name: datacube-processing
+            app.kubernetes.io/instance: release-name
+            heritage: release-name-datacube-processing
+          annotations:
+            iam.amazonaws.com/role: "kubernetes-pipelines"
+        spec:
+          # Turning single-request-reopen option on would fix issue where in two requests from the same port are
+          # not handled correctly it will close the socket and open a new one before sending the second request.
+          dnsConfig:
+            options:
+              - name: single-request-reopen
+          restartPolicy: Never
+          initContainers:
+            - name: postgres-listener
+              image: alpine
+              command:
+                [
+                  "sh",
+                  "-c",
+                  "for i in $(seq 1 200); do nc -z -w3 db-dev-eks-datacube-default.cxhoeczwhtar.ap-southeast-2.rds.amazonaws.com 5432 && exit 0 || sleep 3; done; exit 1",
+                ]
+          containers:
+            - name: datacube-index
+              image: "opendatacube/pipelines:wofs-1.22"
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: 1000m
+                  memory: 16Gi
+                requests:
+                  cpu: 400m
+                  memory: 1Gi
+              env:
+                - name: LOG_LEVEL
+                  value: "INFO"
+                - name: AWS_DEFAULT_REGION
+                  value: "ap-southeast-2"
+                - name: SQS_QUEUE_URL
+                  value: "wofs"
+                - name: SQS_MESSAGE_PREFIX
+                  value: "L2/sentinel-2-nrt/S2MSIARD/*/*/ARD-METADATA.yaml"
+                - name: SQS_POLL_TIME_SEC
+                  value: "2"
+                - name: JOB_MAX_TIME_SEC
+                  value: "300"
+                - name: MAX_JOB_PER_WORKER
+                  value: "1"
+                - name: INPUT_S3_BUCKET
+                  value: "dea-public-data"
+                - name: OUTPUT_S3_BUCKET
+                  value: "dea-public-data-dev"
+                - name: OUTPUT_PATH
+                  value: "WOfS/WOFLs/v2.1.6/combined"
+                - name: FILE_PREFIX
+                  value: "S2_WATER_3577"
+                - name: DB_HOSTNAME
+                  value: "db-dev-eks-datacube-default.cxhoeczwhtar.ap-southeast-2.rds.amazonaws.com"
+                - name: DB_PORT
+                  value: "5432"
+                - name: DB_DATABASE
+                  value: "ows"
+                - name: DB_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: datacube
+                      key: postgres-username
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: datacube
+                      key: postgres-password
+                - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
+                  value: "30"
+                - name: AWS_METADATA_SERVICE_TIMEOUT
+                  value: "60"

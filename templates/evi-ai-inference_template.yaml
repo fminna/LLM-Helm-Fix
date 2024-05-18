@@ -1,0 +1,287 @@
+---
+# Source: evi-ai-inference/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: evi-ai-inference
+  namespace: hce-ai
+  labels:
+    account: ai-inference
+---
+# Source: evi-ai-inference/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: evi-minio-secret
+  namespace: hce-ai
+  labels: 
+    app: ai-inference
+type: Opaque
+data:
+  rootUser: 
+  rootPassword:
+---
+# Source: evi-ai-inference/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: hce-ai
+  name: ai-inference
+data:
+
+  AiInference.config: |
+    [Service]
+    logDir=.
+    logMaxFileSize=16777216
+    logMaxFileCount=8
+    logSeverity=0
+    [HTTP]
+    address=0.0.0.0
+    RESTfulPort=50051
+    gRPCPort=50052
+    [Pipeline]
+    maxConcurrentWorkload=8
+    pipelineManagerPoolSize=1
+    maxPipelineLifetime=30
+---
+# Source: evi-ai-inference/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: hce-ai
+  name: media-storage
+data:
+
+  media_storage_configmap.json: |
+    {
+        "version": 1,
+        "name": "row data source",
+        "video_image": {
+            "address": "minio-service.minio",
+            "port": "9000",
+            "rootUser": "/opt/hce-configs/credentials/minio/rootUser",
+            "rootPassword": "/opt/hce-configs/credentials/minio/rootPassword"
+        },
+        "video_image_attributes": {
+            "flask_server_address": "storage-rest.storage-rest",
+            "flask_server_port": "9900",
+            "prefix": "v1",
+            "media": "/media"
+        },
+        "mediatype": [
+            "image",
+            "video"
+        ],
+        "datasource": [
+            "person",
+            "vehicle"
+        ]
+    }
+---
+# Source: evi-ai-inference/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: evi-ai-inference
+  namespace: hce-ai
+  labels: 
+    app: ai-inference
+spec:
+  ports:
+  - name: restful
+    port: 50051
+    protocol: TCP
+    targetPort: 50051
+  - name: grpc
+    port: 50052
+    protocol: TCP
+    targetPort: 50052
+  type: ClusterIP
+  selector:
+    app: ai-inference
+    version: v1
+---
+# Source: evi-ai-inference/templates/deployment.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evi-ai-inference
+  namespace: hce-ai
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/ai-inference: runtime/default
+spec:
+  selector:
+    matchLabels:
+      app: ai-inference
+      version: v1
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ai-inference
+        sidecar.istio.io/inject: "true"
+        version: v1
+    spec:
+      nodeSelector:
+        feature.node.kubernetes.io/cpu-cpuid.AVX512VNNI: 'true'
+        feature.node.kubernetes.io/cpu-cpuid.AVX2: 'true'
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: evi-ai-inference
+      # tolerations:
+      # - key: "node"
+      #   operator: "Equal"
+      #   value: "hddl"
+      #   effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ai-inference
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: evi-ai-inference
+        image: "ai-inference-cpu:master-96802044e3c560ce54cdfb2c9d69e25819ef112a"
+        command: ["/opt/run_service.sh"]
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          # readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+        resources:
+          limits:
+            cpu: 120
+            memory: 128Gi
+          requests:
+            cpu: 10m
+            memory: 300Mi
+        env:
+        - name: FeatureStorage_HBaseVehicleFeatureServerAddress
+          value: "my-hbase-hbase-master.dev"
+        - name: FeatureStorage_HBaseVehicleFeatureServerPort
+          value: "9090"
+        - name: FeatureStorage_RestControllerBaseUrl
+          value: "storage-rest.storage-rest:9900"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port:  50051
+          initialDelaySeconds: 120
+          periodSeconds: 60
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port:  50051
+          failureThreshold: 5
+          periodSeconds: 60
+        volumeMounts:
+        - mountPath: /dev/dri/card0
+          name: dri
+        securityContext:
+          privileged: true
+        ports:
+        - containerPort: 50051
+          name: restful
+        - containerPort: 50052
+          name: grpc
+        volumeMounts:
+        - mountPath: /opt/hce-core/middleware/ai/ai_inference/source/low_latency_server/AiInference.config
+          subPath: AiInference.config
+          name: config-volume
+        - mountPath: /opt/hce-configs/media_storage_configmap.json
+          subPath: media_storage_configmap.json
+          name: config-volume-ms
+        - name: media-storage-secret
+          mountPath: /opt/hce-configs/credentials/minio
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ai-inference
+      - name: dri
+        hostPath:
+          path: /dev/dri/card0
+      - name: config-volume-ms
+        configMap:
+          name: media-storage
+      - name: media-storage-secret
+        secret:
+          secretName: evi-minio-secret
+          optional: true
+          items:
+          - key: rootUser
+            path: rootUser
+          - key: rootPassword
+            path: rootPassword
+---
+# Source: evi-ai-inference/templates/configmap.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-ai-inference/templates/deployment.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022-2023 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-ai-inference/templates/secret.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-ai-inference/templates/service.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022-2023 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.
+---
+# Source: evi-ai-inference/templates/serviceaccount.yaml
+# INTEL CONFIDENTIAL
+#
+# Copyright (C) 2022 Intel Corporation.
+#
+# This software and the related documents are Intel copyrighted materials, and your use of
+# them is governed by the express license under which they were provided to you (License).
+# Unless the License provides otherwise, you may not use, modify, copy, publish, distribute,
+# disclose or transmit this software or the related documents without Intel's prior written permission.
+#
+# This software and the related documents are provided as is, with no express or implied warranties,
+# other than those that are expressly stated in the License.

@@ -1,0 +1,199 @@
+---
+# Source: node-local-dns/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-node-local-dns
+  labels:
+    helm.sh/chart: node-local-dns-2.0.0
+    app.kubernetes.io/name: node-local-dns
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.23.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: node-local-dns/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-node-local-dns
+  labels:
+    helm.sh/chart: node-local-dns-2.0.0
+    app.kubernetes.io/name: node-local-dns
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.23.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  Corefile: |-
+    .:53 {
+      errors
+      cache 30 {
+      }
+      reload
+      log . combined {
+        class all
+      }
+      loop
+      bind 169.254.20.11
+      forward . __PILLAR__UPSTREAM__SERVERS__ {
+      }
+      prometheus :9253
+      health 169.254.20.11:8080
+    }
+    in-addr.arpa:53 {
+      errors
+      cache 30 {
+      }
+      reload
+      log . combined {
+        class all
+      }
+      loop
+      bind 169.254.20.11
+      forward . __PILLAR__UPSTREAM__SERVERS__ {
+      }
+      prometheus :9253
+      health 169.254.20.11:8080
+    }
+    ip6.arpa:53 {
+      errors
+      cache 30 {
+      }
+      reload
+      log . combined {
+        class all
+      }
+      loop
+      bind 169.254.20.11
+      forward . __PILLAR__UPSTREAM__SERVERS__ {
+      }
+      prometheus :9253
+      health 169.254.20.11:8080
+    }
+---
+# Source: node-local-dns/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-node-local-dns
+  labels:
+    helm.sh/chart: node-local-dns-2.0.0
+    app.kubernetes.io/name: node-local-dns
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.23.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-local-dns
+      app.kubernetes.io/instance: release-name
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9253"
+        checksum/configmaps: 5160d244f892cda1a1da7a0be39a8c31f0eedcc673a24260b4e0f3f57e1c1acd
+      labels:
+        app.kubernetes.io/name: node-local-dns
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        []
+      serviceAccountName: release-name-node-local-dns
+      securityContext:
+        {}
+      priorityClassName: system-node-critical
+      hostNetwork: true
+      dnsPolicy: Default
+      containers:
+        - name: node-local-dns
+          image: "registry.k8s.io/dns/k8s-dns-node-cache:1.23.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - -localip
+            - "169.254.20.11"
+            - -skipteardown=true
+            - -setupinterface=true
+            - -setupiptables=false
+            - -health-port
+            - "8080"
+            - -upstreamsvc
+            - "kube-dns"
+            - -conf
+            - /etc/Corefile
+            - -syncinterval
+            - 1ns
+            - -interfacename
+            - nodelocaldns
+            - -metrics-listen-address
+            - "0.0.0.0:9353"
+          ports:
+            - name: metrics
+              containerPort: 9253
+              protocol: TCP
+          securityContext:
+            privileged: true
+          livenessProbe:
+            httpGet:
+              host: 169.254.20.11
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+          readinessProbe:
+            null
+          resources:
+            requests:
+              cpu: 30m
+              memory: 50Mi
+          volumeMounts:
+            - mountPath: /run/xtables.lock
+              name: xtables-lock
+              readOnly: false
+            - name: config
+              mountPath: /etc/coredns
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+        - effect: NoSchedule
+          operator: Exists
+      volumes:
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+        - name: config
+          configMap:
+            name: release-name-node-local-dns
+            items:
+              - key: Corefile
+                path: Corefile.base
+---
+# Source: node-local-dns/templates/tests/test-dns-resolution.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-node-local-dns-dns-test"
+  labels:
+    helm.sh/chart: node-local-dns-2.0.0
+    app.kubernetes.io/name: node-local-dns
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.23.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: dns-test
+      image: tutum/dnsutils
+      command: ['dig']
+      args: ['google.com']
+  restartPolicy: Never

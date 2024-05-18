@@ -1,0 +1,171 @@
+---
+# Source: ssl-checker-bot/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-ssl-checker-bot
+  labels:
+    helm.sh/chart: ssl-checker-bot-1.0.0
+    app.kubernetes.io/name: ssl-checker-bot
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: ssl-checker-bot/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ssl-checker-bot
+  labels:
+    helm.sh/chart: ssl-checker-bot-1.0.0
+    app.kubernetes.io/name: ssl-checker-bot
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: ssl-checker-bot
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/type: webserver
+---
+# Source: ssl-checker-bot/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bot-release-name-ssl-checker-bot
+  labels:
+    helm.sh/chart: ssl-checker-bot-1.0.0
+    app.kubernetes.io/name: ssl-checker-bot
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ssl-checker-bot
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/type: bot
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ssl-checker-bot
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/type: bot
+    spec:
+      serviceAccountName: release-name-ssl-checker-bot
+      securityContext:
+        {}
+      initContainers:
+        - name: ssl-checker-bot-redis-ready
+          image: busybox:1.35
+          command: [ 'sh', '-c', 'echo -e "Checking for the availability of Redis Server"; while ! nc -z redis-headless.example.svc.cluster.local 6379; do sleep 1; printf "-"; done; echo -e "  >> Redis Server is ready";' ]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+      containers:
+        - name: ssl-checker-bot
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+          image: "marnixjanssen/ssl-checker-bot:latest"
+          imagePullPolicy: Always
+          command: ["dumb-init", "bot"]
+          env:
+            - name: HELM_CHART_VERSION
+              value: "v1.0.0"
+            - name: REDIS_URL
+              value: "redis://redis-headless.example.svc.cluster.local:6379"
+            - name: TELOXIDE_TOKEN
+              value: ""
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            limits:
+              memory: 25Mi
+            requests:
+              memory: 25Mi
+---
+# Source: ssl-checker-bot/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cron-release-name-ssl-checker-bot
+  labels:
+    helm.sh/chart: ssl-checker-bot-1.0.0
+    app.kubernetes.io/name: ssl-checker-bot
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 12 * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ssl-checker-bot
+            app.kubernetes.io/instance: release-name
+            app.kubernetes.io/type: cron
+        spec:
+          serviceAccountName: release-name-ssl-checker-bot
+          securityContext:
+            {}
+          initContainers:
+            - name: ssl-checker-bot-redis-ready
+              image: busybox:1.35
+              command: [ 'sh', '-c', 'echo -e "Checking for the availability of Redis Server"; while ! nc -z redis-headless.example.svc.cluster.local 6379; do sleep 1; printf "-"; done; echo -e "  >> Redis Server is ready";' ]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                privileged: false
+                readOnlyRootFilesystem: true
+          containers:
+            - name: ssl-checker-bot
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                privileged: false
+                readOnlyRootFilesystem: true
+              image: "marnixjanssen/ssl-checker-bot:latest"
+              imagePullPolicy: Always
+              command: ["dumb-init", "cron"]
+              env:
+                - name: HELM_CHART_VERSION
+                  value: "v1.0.0"
+                - name: REDIS_URL
+                  value: "redis://redis-headless.example.svc.cluster.local:6379"
+                - name: TELOXIDE_TOKEN
+                  value: ""
+                - name: RUST_LOG
+                  value: "info"
+              resources:
+                limits:
+                  memory: 25Mi
+                requests:
+                  memory: 25Mi
+          restartPolicy: Never

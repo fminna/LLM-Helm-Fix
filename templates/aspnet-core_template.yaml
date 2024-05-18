@@ -1,0 +1,153 @@
+---
+# Source: aspnet-core/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-aspnet-core
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: aspnet-core
+    helm.sh/chart: aspnet-core-3.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+---
+# Source: aspnet-core/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-aspnet-core
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: aspnet-core
+    helm.sh/chart: aspnet-core-3.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: aspnet-core
+    app.kubernetes.io/instance: release-name
+---
+# Source: aspnet-core/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-aspnet-core
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: aspnet-core
+    helm.sh/chart: aspnet-core-3.5.5
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aspnet-core
+      app.kubernetes.io/instance: release-name
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aspnet-core
+        helm.sh/chart: aspnet-core-3.5.5
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      
+      automountServiceAccountToken: true
+      serviceAccountName: release-name-aspnet-core
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: aspnet-core
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      initContainers:
+        - name: clone-repository
+          image: marketplace.azurecr.io/bitnami/git:2.38.0-debian-11-r2
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              [[ -f "/opt/bitnami/scripts/git/entrypoint.sh" ]] && source "/opt/bitnami/scripts/git/entrypoint.sh"
+              git clone https://github.com/dotnet/AspNetCore.Docs.git --branch main /repo
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+        - name: dotnet-publish
+          image: marketplace.azurecr.io/bitnami/dotnet-sdk:6.0.401-debian-11-r9
+          imagePullPolicy: "IfNotPresent"
+          workingDir: /repo
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              cd aspnetcore/fundamentals/servers/kestrel/samples/6.x/KestrelSample
+              dotnet publish -o /app 
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: aspnet-core
+          image: marketplace.azurecr.io/bitnami/aspnet-core:6.0.10-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          workingDir: /app
+          command:
+            - dotnet
+            - KestrelSample.dll
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 6
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: app
+              mountPath: /app
+      volumes:
+        - name: app
+          emptyDir: {}
+        - name: repo
+          emptyDir: {}

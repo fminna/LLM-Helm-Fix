@@ -1,0 +1,127 @@
+---
+# Source: jwt-to-rbac/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jwt-to-rbac
+---
+# Source: jwt-to-rbac/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwt-to-rbac
+data:
+  config.yaml: |-
+    app:
+      addr: :5555
+    log:
+      format: json
+      level: "4"
+      noColor: true
+    rbachandler:
+      customGroups: []
+      enableSetTTLAPI: false
+      githubOrg: ""
+      tokenTTL: 24h
+    tokenhandler:
+      caCertPath: ""
+      insecure: false
+      oidc:
+        clientID: ""
+        issuerURL: ""
+---
+# Source: jwt-to-rbac/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jwt-to-rbac-binding
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  namespace: default
+  name: jwt-to-rbac
+---
+# Source: jwt-to-rbac/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-jwt-to-rbac
+  labels:
+    app: jwt-to-rbac
+    chart: jwt-to-rbac-0.6.7
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5555
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: jwt-to-rbac
+    release: release-name
+---
+# Source: jwt-to-rbac/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-jwt-to-rbac
+  labels:
+    app: jwt-to-rbac
+    chart: jwt-to-rbac-0.6.7
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jwt-to-rbac
+      release: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 0da78e49c0fcd813933e1851943a6153272f317e07a3ec2a115123adce320b5
+      labels:
+        app: jwt-to-rbac
+        release: release-name
+    spec:
+      serviceAccountName: jwt-to-rbac
+      containers:
+        - name: jwt-to-rbac
+          image: "ghcr.io/banzaicloud/jwt-to-rbac:0.6.6"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 2
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: 5555
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /rbac
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /rbac
+              port: http
+          env:
+            - name: CONFIG_DIR
+              value: /etc/jwt-to-rbac
+          volumeMounts:
+            - mountPath: /etc/jwt-to-rbac
+              name: config
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: jwt-to-rbac
+            defaultMode: 420
+            items:
+              - key: config.yaml
+                path: config.yaml

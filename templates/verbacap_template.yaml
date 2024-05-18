@@ -1,0 +1,216 @@
+---
+# Source: verbacap/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-verbacap
+  labels:
+    helm.sh/chart: verbacap-1.0.7
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: verbacap/templates/volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: verbacap-data
+spec:
+  storageClassName: standard
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /tmp/foobar
+---
+# Source: verbacap/templates/volume.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: verbacap-data
+spec:
+  storageClassName: standard
+  volumeName: verbacap-data
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: verbacap/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-verbacap-app
+  labels:
+    helm.sh/chart: verbacap-1.0.7
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: verbacap-app
+    app.kubernetes.io/instance: release-name
+---
+# Source: verbacap/templates/deployment-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-verbacap-app
+  labels:
+    helm.sh/chart: verbacap-1.0.7
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: verbacap-app
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: verbacap-1.0.7
+        app.kubernetes.io/version: "1.5.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: verbacap-app
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-verbacap
+      securityContext:
+        {}
+      containers:
+        - name: verbacap-app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+            runAsUser: 1000
+          image: "ghcr.io/mirio/verbacap:v1.5.0"
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "/entrypoint.bash", "run"]
+          volumeMounts:
+            - name: data
+              mountPath: /persist
+            - name: static
+              mountPath: /home/app/staticfiles
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: "DATABASE_URL"
+              value: "postgres://postgres:ChangeM4@psql-postgresql:5432/postgres"
+            - name: "DJANGO_SECRET_KEY"
+              value: "ChangeM4"
+            - name: "DJANGO_DEBUG"
+              value: "false"
+            - name: "CELERY_BROKER_URL"
+              value: "redis://redis-master:6379/0"
+            - name: "DJANGO_ALLOWED_HOSTS"
+              value: "localhost,127.0.0.1,verbacap.example"
+            - name: "DEBUG_INTERNALIPS"
+              value: "127.0.0.1,"
+            - name: "CSRF_TRUSTED_ORIGINS"
+              value: "http://127.0.0.1:8080,http://127.0.0.1:8000,http://localhost:8080,http://localhost:8000,http://verbacap.example,https://verbacap.example"
+            - name: "PERSIST_AUDIO_ROOTDIR"
+              value: "/persist"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 60
+            httpGet:
+              path: /-/health/
+              port: http
+          readinessProbe:
+            initialDelaySeconds: 60
+            httpGet:
+              path: /-/health/
+              port: http
+          resources:
+            {}
+      volumes:
+        - name: static
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: data
+          persistentVolumeClaim:
+            claimName: verbacap-data
+---
+# Source: verbacap/templates/deployment-celery.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-verbacap-celery
+  labels:
+    helm.sh/chart: verbacap-1.0.7
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm-celery
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: verbacap-celery
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: verbacap-1.0.7
+        app.kubernetes.io/version: "1.5.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: verbacap-celery
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-verbacap
+      securityContext:
+        {}
+      containers:
+        - name: verbacap-celery
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+            runAsUser: 1000
+          image: "ghcr.io/mirio/verbacap:v1.5.0"
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "/entrypoint.bash", "celery"]
+          volumeMounts:
+            - name: data
+              mountPath: /persist
+          env:
+            - name: "DATABASE_URL"
+              value: "postgres://postgres:ChangeM4@psql-postgresql:5432/postgres"
+            - name: "DJANGO_SECRET_KEY"
+              value: "ChangeM4"
+            - name: "DJANGO_DEBUG"
+              value: "false"
+            - name: "CELERY_BROKER_URL"
+              value: "redis://redis-master:6379/0"
+            - name: "PERSIST_AUDIO_ROOTDIR"
+              value: "/persist"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            {}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: verbacap-data

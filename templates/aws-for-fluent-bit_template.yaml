@@ -1,0 +1,188 @@
+---
+# Source: aws-for-fluent-bit/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-aws-for-fluent-bit
+  namespace: default
+  labels:
+    helm.sh/chart: aws-for-fluent-bit-0.1.32
+    app.kubernetes.io/name: aws-for-fluent-bit
+    app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+    app.kubernetes.io/version: "2.31.12.20231011"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: aws-for-fluent-bit/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-aws-for-fluent-bit
+  namespace: default
+  labels:
+    helm.sh/chart: aws-for-fluent-bit-0.1.32
+    app.kubernetes.io/name: aws-for-fluent-bit
+    app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+    app.kubernetes.io/version: "2.31.12.20231011"
+    app.kubernetes.io/managed-by: Helm
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        HTTP_Server  On
+        HTTP_Listen  0.0.0.0
+        HTTP_PORT    2020
+        Health_Check On 
+        HC_Errors_Count 5 
+        HC_Retry_Failure_Count 5 
+        HC_Period 5 
+        
+        Parsers_File /fluent-bit/parsers/parsers.conf
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        DB                /var/log/flb_kube.db
+        multiline.parser  docker, cri
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc.cluster.local:443
+        Merge_Log           On
+        Merge_Log_Key       data
+        Keep_Log            On
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude On
+        Buffer_Size         32k
+    [OUTPUT]
+        Name                  cloudwatch_logs
+        Match                 *
+        region                us-east-1
+        log_group_name        /aws/eks/fluentbit-cloudwatch/logs
+        log_stream_prefix     fluentbit-
+        auto_create_group     true
+---
+# Source: aws-for-fluent-bit/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-aws-for-fluent-bit
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - pods
+      - pods/logs
+      - nodes
+      - nodes/proxy
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["podsecuritypolicies"]
+    verbs: ["use"]
+    resourceNames:
+      - release-name-aws-for-fluent-bit
+---
+# Source: aws-for-fluent-bit/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-aws-for-fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-aws-for-fluent-bit
+subjects:
+  - kind: ServiceAccount
+    name: release-name-aws-for-fluent-bit
+    namespace: default
+---
+# Source: aws-for-fluent-bit/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    helm.sh/chart: aws-for-fluent-bit-0.1.32
+    app.kubernetes.io/name: aws-for-fluent-bit
+    app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+    app.kubernetes.io/version: "2.31.12.20231011"
+    app.kubernetes.io/managed-by: Helm
+  name: release-name-aws-for-fluent-bit
+  namespace: default
+spec:
+  ports:
+  - name: monitor-agent
+    port: 2020
+    protocol: TCP
+    targetPort: 2020
+  selector:
+    app.kubernetes.io/name: aws-for-fluent-bit
+    app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+  sessionAffinity: None
+  type: ClusterIP
+---
+# Source: aws-for-fluent-bit/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-aws-for-fluent-bit
+  namespace: default
+  labels:
+    helm.sh/chart: aws-for-fluent-bit-0.1.32
+    app.kubernetes.io/name: aws-for-fluent-bit
+    app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+    app.kubernetes.io/version: "2.31.12.20231011"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aws-for-fluent-bit
+      app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+  template:
+    metadata:
+      annotations:
+        checksum/config: 36a8b6ce259d0218ff9fc61a360e0c4b812283541a59f343198201ff466d6015
+      labels:
+        app.kubernetes.io/name: aws-for-fluent-bit
+        app.kubernetes.io/instance: release-name-aws-for-fluent-bit
+    spec:
+      serviceAccountName: release-name-aws-for-fluent-bit
+      dnsPolicy: ClusterFirst
+      containers:
+        - name: aws-for-fluent-bit
+          imagePullPolicy: IfNotPresent
+          image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:2.31.12.20231011"
+          volumeMounts:
+            - name: fluentbit-config
+              mountPath: /fluent-bit/etc/
+            - mountPath: /var/log
+              name: varlog
+            - mountPath: /var/lib/docker/containers
+              name: varlibdockercontainers
+              readOnly: true
+          resources:
+            limits:
+              memory: 250Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+          livenessProbe:
+            failureThreshold: 2
+            httpGet:
+              path: /api/v1/health
+              port: 2020
+              scheme: HTTP
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+      volumes:
+        - name: fluentbit-config
+          configMap:
+            name: release-name-aws-for-fluent-bit
+        - hostPath:
+            path: /var/log
+          name: varlog
+        - hostPath:
+            path: /var/lib/docker/containers
+          name: varlibdockercontainers

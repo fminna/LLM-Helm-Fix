@@ -1,0 +1,204 @@
+---
+# Source: nginx/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-nginx
+  labels:
+    helm.sh/chart: nginx-0.2.0
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.20.2"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: nginx/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cmaps
+data:
+  check.html: OK
+  default.conf: |
+    server {
+        listen       80;
+        server_name  _;
+  
+        add_header Strict-Transport-Security "max-age=63072000" always;
+  
+        add_header Content-Security-Policy-Report-Only "default-src https:; script-src https: 'unsafe-eval' 'unsafe-inline'; style-src https: 'unsafe-inline'; img-src https: data:; font-src https: data:; report-uri /csp-report";
+  
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html index.htm;
+        }
+  
+        proxy_set_header                        X-Real-IP  $remote_addr;
+        proxy_set_header X-Forwarded-For        $proxy_add_x_forwarded_for;
+        proxy_set_header Host                   $http_host;
+        proxy_set_header X-Forwarded-Proto      https;
+        proxy_redirect                          off;
+        proxy_max_temp_file_size                0;
+        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503;
+    
+        #error_page  404              /404.html;
+  
+        # redirect server error pages to the static page /50x.html
+        #
+        error_page   500 502 503 504  /50x.html;
+  
+        location = /50x.html {
+            root   /usr/share/nginx/html;
+        }
+  
+        location /check/ {
+            alias /etc/nginx/;
+            index check.html;
+        }
+    }
+  nginx.conf: |
+    user  nginx;
+    worker_processes  auto;
+  
+    error_log  /var/log/nginx/error.log;
+    pid        /var/run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+  
+    events {
+        worker_connections 1024;
+    } 
+  
+    http {
+        include       /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        lua_package_path "/usr/local/lib/lua/?.lua;;";
+  
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request"'
+                          '$status $body_bytes_sent "$http_referer"'
+                          '"$http_user_agent" "$proxy_protocol_addr"';
+  
+        access_log  /var/log/nginx/access.log main;
+        sendfile        on;
+        #tcp_nopush     on;
+  
+        keepalive_timeout  65;
+  
+        #gzip  on;
+  
+        server_tokens off;
+        more_set_headers 'Server: Token TSM Center';
+        more_clear_headers    'X-Powered-By';
+  
+        #include /etc/nginx/conf.d/*.conf;
+        include /etc/nginx/sites-enabled/*.conf;
+    }
+---
+# Source: nginx/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-nginx
+  labels:
+    helm.sh/chart: nginx-0.2.0
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.20.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: release-name
+---
+# Source: nginx/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-nginx
+  labels:
+    helm.sh/chart: nginx-0.2.0
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.20.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      serviceAccountName: release-name-nginx
+      securityContext:
+        {}
+      containers:
+        - name: nginx
+          securityContext:
+            {}
+          image: "cloudandplatform/tms:nginx-1.20.2"
+          imagePullPolicy: IfNotPresent
+          command:
+            - nginx
+            - -g
+            - 'daemon off;'
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /etc/nginx/nginx.conf
+              name: nginx-conf
+              readOnly: false
+              subPath: nginx.conf
+            - mountPath: /etc/nginx/sites-enabled/default.conf
+              name: default-conf
+              readOnly: false
+              subPath: default.conf
+            - mountPath: /etc/nginx/check.html
+              name: check-html
+              readOnly: false
+              subPath: check.html
+          resources:
+            {}
+      volumes:
+        - configMap:
+            name: cmaps
+          name: check-html
+        - configMap:
+            name: cmaps
+          name: default-conf
+        - configMap:
+            name: cmaps
+          name: nginx-conf
+---
+# Source: nginx/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-nginx-test-connection"
+  labels:
+    helm.sh/chart: nginx-0.2.0
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.20.2"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-nginx:80']
+  restartPolicy: Never

@@ -1,0 +1,392 @@
+---
+# Source: proxysql/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-proxysql
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: proxysql/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-proxysql
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+data:
+  admin_credentials.cnf: YWRtaW5fY3JlZGVudGlhbHM9InByb3h5c3FsLWFkbWluOnByb3h5c3FsIgo=
+  proxysql_admin_user: cHJveHlzcWwtYWRtaW4=
+  proxysql_admin_password: cHJveHlzcWw=
+---
+# Source: proxysql/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-proxysql-scripts
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+data:
+  proxysql_cluster_healthcheck.sh: |
+    #!/bin/bash
+    
+    set -u
+    
+    export VERBOSE="${PROXYSQL_HEALTHCHECK_VERBOSE:-false}"
+    
+    # Set the database connection variables
+    export DB_USER="${PROXYSQL_HEALTHCHECK_DB_USER:-monitor}"
+    export DB_HOST="${PROXYSQL_HEALTHCHECK_DB_HOST:-127.0.0.1}"
+    export DB_PORT="${PROXYSQL_HEALTHCHECK_DB_PORT:-6032}"
+    export MYSQL_PWD="${PROXYSQL_HEALTHCHECK_DB_PASS:-monitor}"
+    
+    # Health check configuration with default values
+    PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT=${PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT:-10}
+    
+    # Locate mysql or mariadb client binary
+    function find_mysql_client() {
+        if command -v mysql >/dev/null 2>&1; then
+            echo "mysql"
+        elif command -v mariadb >/dev/null 2>&1; then
+            echo "mariadb"
+        else
+            log_error "Neither 'mysql' nor 'mariadb' client is installed."
+            exit 1
+        fi
+    }
+    
+    MYSQL_CLIENT=$(find_mysql_client)
+    
+    function log_info() {
+      echo "[$(date -Ins)] [INFO] $1"
+    }
+    
+    function log_error() {
+      echo "[$(date -Ins)] [ERROR] $1" >&2
+    }
+    
+    function mysql_cli() {
+      $MYSQL_CLIENT -u "$DB_USER" -h "$DB_HOST" -P "$DB_PORT" --skip-column-names --batch -e "$1"
+    }
+    
+    function get_current_proxysql_state() {
+      if [[ "$PROXYSQL_HEALTHCHECK_VERBOSE" == "true" ]]; then
+        local current_state_result
+        current_state_result=$(mysql_cli "SELECT hostname, port, name, version, FROM_UNIXTIME(epoch) epoch, checksum, FROM_UNIXTIME(changed_at) changed_at, FROM_UNIXTIME(updated_at) updated_at, diff_check, DATETIME('NOW') FROM stats_proxysql_servers_checksums WHERE diff_check > $PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT ORDER BY name;")
+        echo "$current_state_result"
+      fi
+    }
+    
+    function run_diff_check_count() {
+      local diff_check_count
+      diff_check_count=$(mysql_cli "SELECT COUNT(diff_check) FROM stats_proxysql_servers_checksums WHERE diff_check > $PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT;")
+    
+      if [[ "$diff_check_count" == 0 ]]; then
+        log_info "ProxySQL Cluster diff_check OK. diff_check < $PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT"
+        return 0
+      else
+        log_error "ProxySQL Cluster diff_check CRITICAL. diff_check >= $PROXYSQL_HEALTHCHECK_DIFF_CHECK_LIMIT."
+        get_current_proxysql_state
+        exit 1
+      fi
+    }
+    
+    function run_valid_config_count() {
+      # The query checks how many valid ProxySQL configurations exist, ignoring any that are outdated or incomplete.
+      local valid_config_count
+      valid_config_count=$(mysql_cli "SELECT COUNT(checksum) FROM stats_proxysql_servers_checksums WHERE version <> 0 AND checksum <> '' AND checksum IS NOT NULL AND checksum <> '0x0000000000000000' ORDER BY name, hostname;")
+    
+      # Check if this pod is marked as a core node and if this is its first run
+      if [[ "${PROXYSQL_IS_CORE_NODE:-false}" == "true" && "$valid_config_count" -eq 0 ]]; then
+        log_info "ProxySQL Core Node initialization in progress. No valid configurations yet."
+        return 0
+      fi
+    
+      if [[ "$valid_config_count" -ge 1 ]]; then
+        log_info "ProxySQL Cluster config version and checksum OK. valid_config_count ${valid_config_count} >= 1"
+        return 0
+      else
+        log_error "ProxySQL Cluster config version and checksum CRITICAL. valid_config_count ${valid_config_count} < 1"
+        get_current_proxysql_state
+        exit 1
+      fi
+    }
+    
+    # Call the health check function once for Kubernetes probes
+    run_valid_config_count
+    run_diff_check_count
+    
+  wait_queries_to_finish.sh: |
+    #!/usr/bin/env bash
+    
+    # This script continuously monitors for active TCP connections to a specified ProxySQL service port
+    # and, if any are found, it pauses execution for a random duration between one and three seconds
+    # before checking again. It exits when there are no more active connections to the specified port.
+    
+    set -euo pipefail
+    
+    PROXYSQL_SERVICE_PORT=${PROXYSQL_SERVICE_PORT_PROXY:-6033}
+    SLEEP_MAX=3 # Maximum sleep duration in seconds.
+    HEX_PORT=$(printf ':%04X' $PROXYSQL_SERVICE_PORT) # Convert the port number to a padded hexadecimal string.
+    
+    echo "Waiting for ProxySQL queries to finish..."
+    
+    # Retrieves IP addresses of established connections to the ProxySQL service port
+    function get_connected_ips() {
+      local connected_ips=()
+      # Loop over all proxysql process IDs
+      for pid in $(pidof proxysql 2>/dev/null || echo ""); do
+        # Read related tcp connection information, filter by established connections on proxy port, extract IPs, and remove duplicates
+        while read -r ip; do
+          connected_ips+=("$ip")
+        done < <(awk 'toupper($0) ~ /'"$HEX_PORT"' [0-9A-F]+:[0-9A-F]+ 01/ {print substr($3,1,length($3)-5)}' /proc/${pid}/net/tcp | sort -u)
+      done
+      echo "${connected_ips[@]}"
+    }
+    
+    # Converts a hexadecimal IP address to its decimal representation
+    function convert_hex_ip_to_decimal() {
+      local hex_ip=$1
+      local dec_ip=""
+    
+      # Handle endianness and convert each pair of hex characters to decimal
+      for i in {6..1..2}; do
+        dec_ip+=".$((16#${hex_ip:i-2:2}))"
+      done
+      echo "${dec_ip:1}" # Remove the leading dot before returning the decimal IP
+    }
+    
+    # Main loop that checks for and handles active ProxySQL connections
+    while true; do
+      connected_ips_hex=( $(get_connected_ips) ) # Retrieve list of currently connected IP addresses in hexadecimal format
+    
+      # If no connections are found, then exit
+      if [ ${#connected_ips_hex[@]} -eq 0 ]; then
+        echo "Done. Exiting..."
+        exit 0
+      fi
+    
+      # Convert all hexadecimal IP addresses to decimal notation
+      connected_ips_dec=()
+      for ip_hex in "${connected_ips_hex[@]}"; do
+        connected_ips_dec+=( "$(convert_hex_ip_to_decimal "$ip_hex")" )
+      done
+    
+      # Print the number of unique connected IPs
+      echo "Connected IPs: ${#connected_ips_dec[@]}"
+      echo "Sleeping..."
+      sleep $(( RANDOM % SLEEP_MAX + 1 ))
+    done
+---
+# Source: proxysql/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-proxysql
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+data: 
+  proxysql.cnf: |
+    datadir="/var/lib/proxysql"
+    
+    admin_variables=
+    {
+      @include "/etc/proxysql/admin_credentials.cnf"
+      mysql_ifaces="0.0.0.0:6032"
+      debug=false
+    }
+    
+    mysql_variables=
+    {
+      
+      interfaces="0.0.0.0:6033"
+      default_query_delay=0
+      default_query_timeout=3600000
+      max_connections=2048
+      monitor_enabled=false
+      threads=4
+    }
+    
+    mysql_servers =
+    (
+    )
+    
+    mysql_users:
+    (
+    )
+    
+    mysql_query_rules:
+    (
+    )
+    
+    proxysql_servers=
+    (
+      {
+        hostname="proxysql-core-0.release-name-proxysql-core"
+        port=6032
+        weight=100
+      },
+      {
+        hostname="proxysql-core-1.release-name-proxysql-core"
+        port=6032
+        weight=100
+      },
+      {
+        hostname="proxysql-core-2.release-name-proxysql-core"
+        port=6032
+        weight=100
+      }, 
+    )
+    
+    scheduler=
+    (
+    )
+    
+    mysql_replication_hostgroups=
+    (
+    )
+---
+# Source: proxysql/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-proxysql"
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: proxy
+      port: 6033
+      targetPort: proxy
+    - name: admin
+      port: 6032
+      targetPort: admin
+    - name: web
+      port: 6080
+      targetPort: web
+  selector:
+    app: proxysql
+    release: release-name
+---
+# Source: proxysql/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-proxysql
+  labels:
+    app: proxysql
+    release: release-name
+    helm.sh/chart: proxysql-0.11.2
+    app.kubernetes.io/version: "2.5.5"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app: proxysql
+      release: release-name
+  template:
+    metadata:
+      annotations:
+        # Automatically Roll Deployments
+        checksum/config: cd8d8cf270615a487c9c8eb4069e94226f91c164c1861d1b75e53481105f028d
+        checksum/config.scripts: 1eeeb1068796f747a48d490ebaf417fd9a6b1405516a259c2efcd9a21a321ebe
+        checksum/secret: b0ce17753eaa6082244f0fc3d06a175a25284b58c66442fd9a4ff3660401ff1f
+      labels:
+        app: proxysql
+        release: release-name
+    spec:
+      serviceAccountName: release-name-proxysql
+      securityContext:
+        fsGroup: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+      dnsPolicy: ClusterFirst
+      shareProcessNamespace: true
+      containers:
+        - name: proxysql
+          command:
+            - "proxysql"
+            - "-c"
+            - "/etc/proxysql/proxysql.cnf"
+            - "-f"
+            - "--idle-threads"
+          envFrom:
+          securityContext:
+            {}
+          image: docker.io/proxysql/proxysql:2.5.5
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "/usr/local/bin/wait_queries_to_finish.sh"]
+          ports:
+            - name: proxy
+              containerPort: 6033
+              protocol: TCP
+            - name: admin
+              containerPort: 6032
+              protocol: TCP
+            - name: web
+              containerPort: 6080
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /data/proxysql
+            - name: conf
+              mountPath: /etc/proxysql/proxysql.cnf
+              subPath: proxysql.cnf
+            - name: secrets
+              mountPath: /etc/proxysql/admin_credentials.cnf
+              subPath: admin_credentials.cnf
+            - name: scripts
+              mountPath: /usr/local/bin/wait_queries_to_finish.sh
+              subPath: wait_queries_to_finish.sh
+            - name: scripts
+              mountPath: /usr/local/bin/proxysql_cluster_healthcheck.sh
+              subPath: proxysql_cluster_healthcheck.sh
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: release-name-proxysql
+            defaultMode: 0640
+        - name: conf
+          configMap:
+            name: release-name-proxysql
+        - name: scripts
+          configMap:
+            name: release-name-proxysql-scripts
+            items:
+              - key: wait_queries_to_finish.sh
+                path: wait_queries_to_finish.sh
+                mode: 0777
+              - key: proxysql_cluster_healthcheck.sh
+                path: proxysql_cluster_healthcheck.sh
+                mode: 0777

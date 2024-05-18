@@ -1,0 +1,340 @@
+---
+# Source: quorumkeymanager/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-quorumkeymanager
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: quorumkeymanager/templates/migration-certs.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-quorumkeymanager-migration-certs
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+type: Opaque
+data:
+  ca.crt: 
+  client.crt: 
+  client.key:
+---
+# Source: quorumkeymanager/templates/postgres-certs.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-quorumkeymanager-postgres-certs
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+type: Opaque
+data:
+  ca.crt: 
+  client.crt: 
+  client.key:
+---
+# Source: quorumkeymanager/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "watch", "list"]
+---
+# Source: quorumkeymanager/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+# This role binding allows "jane" to read pods in the "default" namespace.
+# You need to already have a Role named "pod-reader" in that namespace.
+kind: RoleBinding
+metadata:
+  name: read-pods
+subjects:
+  - kind: ServiceAccount
+    name: release-name-quorumkeymanager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-reader
+---
+# Source: quorumkeymanager/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-quorumkeymanager
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http-svc
+      protocol: TCP
+      name: http-svc
+    - port: 8081
+      targetPort: http-metrics
+      protocol: TCP
+      name: http-metrics
+  selector:
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+---
+# Source: quorumkeymanager/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-quorumkeymanager
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quorumkeymanager
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/manifests: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      labels:
+        app.kubernetes.io/name: quorumkeymanager
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: existing-secret
+      serviceAccountName: release-name-quorumkeymanager
+      securityContext:
+        {}
+      initContainers:
+        - name: release-name-quorumkeymanager-init
+          image: "groundnuty/k8s-wait-for:1.3"
+          imagePullPolicy: IfNotPresent
+          args: 
+          - "job"
+          - "release-name-quorumkeymanager-migrate-20240515100703"
+      containers:
+        - name: quorumkeymanager
+          securityContext:
+            {}
+          image: "docker.io/consensys/quorum-key-manager:v21.12.1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - --manifest-path
+            - /manifests/manifests.yaml
+          ports:
+            - name: http-svc
+              containerPort: 8080
+              protocol: TCP
+            - name: http-metrics
+              containerPort: 8081
+              protocol: TCP
+          volumeMounts:
+            - name: vault-tls
+              mountPath: /vault/tls
+            - name: postgres-certs
+              mountPath: /postgres/certs
+              readOnly: true
+            - name: manifests-config
+              mountPath: /manifests
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http-metrics
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http-metrics
+          resources:
+            {}
+      volumes:
+        - name: vault-token
+          emptyDir: {}
+        - name: vault-tls
+          secret:
+            secretName: qkm-vault-agent-secret
+        - name: postgres-certs
+          secret:
+            secretName: release-name-quorumkeymanager-postgres-certs
+---
+# Source: quorumkeymanager/templates/migrate-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-quorumkeymanager-migrate-20240515100703
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+spec:
+  ttlSecondsAfterFinished: 120
+  backoffLimit: 6
+  template:
+    metadata:
+      name: migrate-20240515100703
+      labels:
+        helm.sh/chart: quorumkeymanager-1.1.9
+        app.kubernetes.io/name: quorumkeymanager
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "v21.12.4"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      securityContext:
+        fsGroup: 1001
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: existing-secret
+      initContainers:
+        - name: init-chmod-data
+          image: docker.io/bitnami/bitnami-shell:10-debian-10-r185
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          command:
+            - /bin/sh
+            - -cx
+            - |
+              cp /postgres/certs/tmp.key /postgres/key/client.key
+              chown -R 1001:1001 /postgres/key/
+              chmod 600 /postgres/key/client.key
+              ls -l /postgres/key/client.key
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: postgres-certs
+              mountPath: /postgres/certs
+            - name: postgres-key
+              mountPath: /postgres/key
+      containers:
+        - name: release-name-quorumkeymanager-initdb
+          image: "docker.io/consensys/quorum-key-manager:v21.12.1"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          imagePullPolicy: IfNotPresent
+          command:
+            - /main
+          args:
+            - migrate
+            - up
+          envFrom:
+            - configMapRef:
+                name: release-name-quorumkeymanager-hook-envmap
+          volumeMounts:
+            - name: postgres-certs
+              mountPath: /postgres/certs
+              readOnly: true
+            - name: postgres-key
+              mountPath: /postgres/key
+      volumes:
+        - name: postgres-certs
+          secret:
+            secretName: release-name-quorumkeymanager-migration-certs
+            items:
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: tmp.key
+              - key: ca.crt
+                path: ca.crt
+        - name: postgres-key
+          emptyDir: {}
+---
+# Source: quorumkeymanager/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-quorumkeymanager-test-connection"
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-quorumkeymanager:8080']
+  restartPolicy: Never
+---
+# Source: quorumkeymanager/templates/sync-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-quorumkeymanager-sync-job
+  labels:
+    helm.sh/chart: quorumkeymanager-1.1.9
+    app.kubernetes.io/name: quorumkeymanager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v21.12.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      name: sync
+      labels:
+        helm.sh/chart: quorumkeymanager-1.1.9
+        app.kubernetes.io/name: quorumkeymanager
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "v21.12.4"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: existing-secret
+      containers:
+        - name: release-name-quorumkeymanager-sync
+          image: "docker.io/consensys/quorum-key-manager:v21.12.1"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /main
+          args:
+            - sync
+          env:
+            - name: SYNC_STORE_NAME
+              value:

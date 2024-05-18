@@ -1,0 +1,610 @@
+---
+# Source: provider/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-provider
+  namespace: default
+  labels:
+    helm.sh/chart: provider-11.0.1
+    app.kubernetes.io/name: provider
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.1"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: provider/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-provider-keys
+  namespace: default
+type: "Opaque"
+data:
+  key.txt: 
+  key-pass.txt:
+---
+# Source: provider/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-provider-scripts
+  namespace: default
+data:
+  init.sh: |
+    #!/bin/bash
+    # Filename: init.sh
+    
+    if [[ $AKASH_DEBUG == "true" ]]; then sleep 5000; fi
+    
+    set -x
+    
+    ##
+    # Import key
+    ##
+    cat "$AKASH_BOOT_KEYS/key-pass.txt" | { cat ; echo ; } | provider-services --home="$AKASH_HOME" keys import --keyring-backend="$AKASH_KEYRING_BACKEND"  "$AKASH_FROM" "$AKASH_BOOT_KEYS/key.txt"
+    
+    ##
+    # Wait for RPC
+    ##
+    /scripts/wait_for_rpc.sh
+    
+    ##
+    # Create/Update Provider
+    ##
+    /scripts/create_provider.sh
+    
+    ##
+    # Create/Update Provider certs
+    ##
+    /scripts/refresh_provider_cert.sh
+    
+  wait_for_rpc.sh: |
+    #!/bin/bash
+    # Filename: wait_for_rpc.sh
+    
+    set -x
+    
+    ##
+    # Check the Akash Node is working
+    ##
+    apt update && apt -yqq install curl jq bc netcat ca-certificates
+    
+    # fail fast should there be a problem installing curl, jq, nc packages
+    type curl || exit 1
+    type jq || exit 1
+    type nc || exit 1
+    
+    solo_ip=$(echo $AKASH_NODE | cut -d":" -f2 | cut -d"/" -f3)
+    port=$(echo $AKASH_NODE | cut -d":" -f3 | cut -d"/" -f1)
+    if [[ $AKASH_NODE != "http://akash-node-1:26657" ]]; then
+      nc -z -v -w5 $solo_ip $port
+    fi
+    until [[ $(curl -s $AKASH_NODE/status | jq -r .result.sync_info.catching_up) == "false" ]]; do sleep 15; echo "Akash node not ready. Retrying";  done
+    
+    # Check Akash RPC node isn't running behind too much and abort if it does.
+    DATE_AKASH=$(curl -s $AKASH_NODE/status | jq -r '.result.sync_info.latest_block_time')
+    TS_AKASH=$(date +%s --date "$DATE_AKASH")
+    TS=$(date +%s)
+    DIFF=$(echo "$TS - $TS_AKASH" | bc)
+    if [[ "$DIFF" -gt 30 ]]; then
+      echo "Akash RPC $AKASH_NODE is running $DIFF seconds behind."
+      echo "ACTION: Make sure your system time in synchronized and/or check your Akash RPC node."
+      exit 1
+    elif [[ "$DIFF" -lt -30 ]]; then
+      echo "Akash RPC $AKASH_NODE is running $DIFF seconds ahead."
+      echo "ACTION: Make sure your system time in synchronized and/or check your Akash RPC node."
+      exit 1
+    else
+      echo "Last block Akash RPC $AKASH_NODE seen was $DIFF seconds ago => OK"
+    fi
+    
+  create_provider.sh: |
+    #!/bin/bash
+    # Filename: create_provider.sh
+    
+    set -x
+    
+    ##
+    # Create Provider
+    ##
+    
+    cat <<EOT > provider.yaml
+    host: https://provider.:8443
+    attributes:
+    info:
+      email: 
+      website: 
+    owner: 
+    EOT
+    
+    # Figure the provider address in case the user passes `--from=<key_name>` instead of `--from=<akash1...>` address.
+    PROVIDER_ADDRESS="$(provider-services keys show $AKASH_FROM -a)"
+    if [[ -z "$PROVIDER_ADDRESS" ]]; then
+      echo "PROVIDER_ADDRESS variable is empty. Something went wrong"
+      exit 1
+    fi
+    
+    provider-services query provider get $PROVIDER_ADDRESS -o json
+    if [[ $? -ne 0 ]]; then
+      echo "Could not find provider: $PROVIDER_ADDRES on the blockchain when querying Akash RPC node: $AKASH_NODE"
+      echo "Attempting to create a new provider ..."
+      provider-services tx provider create provider.yaml
+    fi
+    
+    ##
+    # Update Provider
+    ##
+    
+    echo "Checking whether provider.yaml needs to be updated on the chain ..."
+    diff --color -Nur <(cat provider.yaml | awk '/attributes:/{print;flag=1;next}/^  - key:/{if(flag)sub("  ","");print;next}flag&&/^    /{sub("    ","  ");print;next}{flag=0;print}' | sort) <(provider-services query provider get $PROVIDER_ADDRESS -o text | sed -e 's/"//g' -e 's/host_uri:/host:/g' | sort)
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo "Updating provider info in the blockchain in 10 seconds ..."
+      sleep 10s
+      provider-services tx provider update provider.yaml
+    fi
+    
+  refresh_provider_cert.sh: |
+    #!/bin/bash
+    # Filename: refresh_provider_cert.sh
+    
+    set -x
+    
+    # Figure the provider address in case the user passes `--from=<key_name>` instead of `--from=<akash1...>` address.
+    PROVIDER_ADDRESS="$(provider-services keys show $AKASH_FROM -a)"
+    if [[ -z "$PROVIDER_ADDRESS" ]]; then
+      echo "PROVIDER_ADDRESS variable is empty. Something went wrong"
+      exit 1
+    fi
+    
+    CERT_SYMLINK="${AKASH_HOME}/${PROVIDER_ADDRESS}.pem"
+    CERT_REAL_PATH="/config/provider.pem"
+    rm -vf "$CERT_SYMLINK"
+    # provider cert is coming from the configmap
+    ln -sv "$CERT_REAL_PATH" "$CERT_SYMLINK"
+    # 0 = yes; otherwise do not (re-)generate new provider certificate, unless
+    GEN_NEW_CERT=1
+    
+    # Check whether the certificate is present and valid on the blockchain
+    if [[ -f "${CERT_REAL_PATH}" ]]; then
+      LOCAL_CERT_SN="$(cat "${CERT_REAL_PATH}" | openssl x509 -serial -noout | cut -d'=' -f2)"
+      LOCAL_CERT_SN_DECIMAL=$(echo "obase=10; ibase=16; $LOCAL_CERT_SN" | bc)
+      REMOTE_CERT_STATUS="$(AKASH_OUTPUT=json provider-services query cert list --owner $PROVIDER_ADDRESS --state valid --serial $LOCAL_CERT_SN_DECIMAL --reverse | jq -r '.certificates[0].certificate.state')"
+      echo "Provider certificate serial number: ${LOCAL_CERT_SN:-unknown}, status on chain: ${REMOTE_CERT_STATUS:-unknown}"
+    else
+      echo "${CERT_REAL_PATH} file is missing."
+      GEN_NEW_CERT=0
+    fi
+    
+    if [[ -z "$LOCAL_CERT_SN" ]]; then
+      echo "LOCAL_CERT_SN variable is empty. Most likely ${CERT_REAL_PATH} file is empty or malformed."
+      GEN_NEW_CERT=0
+    fi
+    
+    if [[ "valid" != "$REMOTE_CERT_STATUS" ]]; then
+      echo "No valid certificate found for provider: $PROVIDER_ADDRESS"
+      GEN_NEW_CERT=0
+    
+      echo "It might as well be that the current certificate was expired/revoked, thus, it should be safe to delete it locally"
+    fi
+    
+    # generate a new cert if the current one expires sooner than 7 days
+    AKASH_OUTPUT=json provider-services query cert list --owner $PROVIDER_ADDRESS --state valid --reverse | jq -r '.certificates[0].certificate.cert' | openssl base64 -A -d | openssl x509 -checkend 604800 -noout 2>/dev/null 1>&2
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo "Certificate expires in less than 7 days, so going to generate a new one."
+      GEN_NEW_CERT=0
+    fi
+    
+    # check if current local cert has expired
+    # TODO: should probably add a healthCheck which would keep doing this every 5 minutes to bounce the pod if cert got expired
+    openssl x509 -checkend 604800 -noout -in "${CERT_REAL_PATH}" 2>/dev/null 1>&2
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo "Certificate expires in less than 7 days, so going to generate a new one."
+      GEN_NEW_CERT=0
+    fi
+    
+    if [[ "$GEN_NEW_CERT" -eq "0" ]]; then
+      echo "Removing the old certificate before generating a new one"
+      # It's also a good idea to delete it as otherwise, we'd have to add `--overwrite` to `provider-services tx cert generate server` command later.
+      rm -vf "${CERT_REAL_PATH}"
+    
+      echo "Generating new provider certificate"
+      provider-services tx cert generate server provider.
+    
+      echo "Publishing new provider certificate"
+      provider-services tx cert publish server
+    fi
+    
+  run.sh: |
+    #!/bin/bash
+    
+    # Install apps required by the bid price script
+    apt -qq update && DEBIAN_FRONTEND=noninteractive apt -qq -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" --no-install-recommends install curl jq bc mawk ca-certificates
+    
+    # fail fast should there be a problem installing curl / jq packages
+    type curl || exit 1
+    type jq || exit 1
+    type awk || exit 1
+    type bc || exit 1
+    
+    ##
+    # Wait for RPC
+    ##
+    /scripts/wait_for_rpc.sh
+    
+    ##
+    # Create/Update Provider certs
+    ##
+    /scripts/refresh_provider_cert.sh
+    
+    # Start provider-services and monitor its output
+    exec provider-services run | while read line; do
+        echo "$line"
+        if [[ "$line" == *"account sequence mismatch"* ]]; then
+            echo "Pattern 'account sequence mismatch' found. Restarting provider-services..."
+            exit 2
+        fi
+    done
+    
+  liveness_checks.sh: |
+    #!/bin/bash
+    
+    # Ensure the script fails if any part of a pipeline fails
+    set -o pipefail
+    
+    # Check provider certificate expiration
+    if ! openssl x509 -in /config/provider.pem -checkend 3600 -noout > /dev/null; then
+      echo "certificate will expire in 1h, restarting"
+      exit 1
+    fi
+    
+    # Provider API /status check
+    if ! timeout 30s curl -o /dev/null -fsk https://127.0.0.1:8443/status; then
+      echo "api /status check failed"
+      exit 1
+    fi
+    
+    # Provider gRPC check
+    if ! timeout 30s curl -k -v --http2-prior-knowledge https://127.0.0.1:8444 2>&1 | grep -qi 'application/grpc'; then
+      echo "gRPC check failed"
+      exit 1
+    fi
+    
+    # RPC node sync check
+    current_time=$(date -u +%s)
+    latest_block_time_str=$(curl -s $AKASH_NODE/status | jq -r '.result.sync_info.latest_block_time')
+    latest_block_time=$(date -u -d "$latest_block_time_str" +%s)
+    
+    # Allow for a 60 seconds drift
+    let "time_diff = current_time - latest_block_time"
+    if [ "$time_diff" -gt 60 ] || [ "$time_diff" -lt -60 ]; then
+      echo "RPC node sync check failed"
+      exit 1
+    fi
+    
+    echo "All checks passed"
+    exit 0
+---
+# Source: provider/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-provider-admin
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: release-name-provider
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: provider/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-provider
+  namespace: default
+  labels:
+    akash.network: "true"
+    app.kubernetes.io/name: akash
+    app.kubernetes.io/instance: inventory
+    app.kubernetes.io/component: operator
+    helm.sh/chart: provider-11.0.1
+    app.kubernetes.io/name: provider
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: api
+    protocol: TCP
+    port: 8443
+    targetPort: api
+  - name: grpc
+    protocol: TCP
+    port: 8444
+    targetPort: grpc
+  selector:
+    app: release-name-provider
+    app.kubernetes.io/name: provider
+    app.kubernetes.io/instance: release-name
+---
+# Source: provider/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-provider
+  namespace: default
+  labels:
+    app: release-name-provider
+    helm.sh/chart: provider-11.0.1
+    app.kubernetes.io/name: provider
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  #strategy:
+  #  type: OnDelete
+  serviceName: release-name-provider
+  selector:
+    matchLabels:
+      app: release-name-provider
+      app.kubernetes.io/name: provider
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/cm-scripts: dc64651659178b483103063b71a2dbfa834802ac132382eebe096ec421c171c5
+      labels:
+        app: release-name-provider
+        app.kubernetes.io/name: provider
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-provider
+      securityContext:
+        {}
+      initContainers:
+        - name: init
+          securityContext:
+            {}
+          image: "ghcr.io/akash-network/provider:0.6.1"
+          command: ["/bin/bash", "/scripts/init.sh"]
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 1024Mi
+            requests:
+              cpu: 1000m
+              memory: 512Mi
+          env:
+            - name: AKASH_DEBUG
+              value: "false"
+            - name: AP_YES
+              value: "true"
+            ##
+            # boot config
+            ##
+
+            # location of key export. must contain two files:
+            #
+            # key.txt:      exported wallet key
+            # key-pass.txt: password used to encrypt exported key
+            - name: AKASH_BOOT_KEYS
+              value: "/boot-keys"
+
+            ##
+            # cosmos-sdk client config
+            ##
+            - name: AKASH_HOME
+              value: "/root/.akash"
+            - name: AKASH_FROM
+              value: ""
+            - name: AKASH_NODE
+              value: "http://akash.c29r3.xyz:80/rpc"
+            - name: AKASH_CHAIN_ID
+              value: "akashnet-2"
+            - name: AKASH_KEYRING_BACKEND
+              value: "test"
+            - name: AKASH_BROADCAST_MODE
+              value: "block"
+            - name: AKASH_YES
+              value: "true"
+            - name: AKASH_GAS_PRICES
+              value: "0.025uakt"
+            - name: AKASH_GAS
+              value: "auto"
+            - name: AKASH_GAS_ADJUSTMENT
+              value: "1.5"
+            - name: AKASH_LOG_LEVEL
+              value: "info"
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: keys
+              mountPath: /boot-keys
+              readOnly: true
+            - name: provider-config-volume
+              mountPath: /config
+            - name: home
+              mountPath: "/root/.akash"
+      containers:
+        - name: provider
+          securityContext:
+            {}
+          image: "ghcr.io/akash-network/provider:0.6.1"
+          command: ["/bin/bash", "/scripts/run.sh"]
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 1024Mi
+            requests:
+              cpu: 1000m
+              memory: 512Mi
+          env:
+            - name: AKASH_DEBUG
+              value: "false"
+            ##
+            # boot config
+            ##
+
+            # location of key export. must contain two files:
+            #
+            # key.txt:      exported wallet key
+            # key-pass.txt: password used to encrypt exported key
+            - name: AKASH_BOOT_KEYS
+              value: "/boot-keys"
+
+            ##
+            # cosmos-sdk client config
+            ##
+
+            - name: AKASH_HOME
+              value: "/root/.akash"
+            - name: AKASH_FROM
+              value: ""
+            - name: AKASH_NODE
+              value: "http://akash.c29r3.xyz:80/rpc"
+            - name: AKASH_CHAIN_ID
+              value: "akashnet-2"
+            - name: AKASH_KEYRING_BACKEND
+              value: "test"
+            - name: AKASH_BROADCAST_MODE
+              value: "block"
+            - name: AKASH_VERSION
+              value: "0.6.1"
+            - name: AKASH_YES
+              value: "true"
+            - name: AKASH_LOG_LEVEL
+              value: "info"
+
+            ##
+            # akash-provider ip operator config
+            ##
+
+            - name: AKASH_IP_OPERATOR
+              value: "false"
+
+            ##
+            # akash-provider config
+            ##
+
+            - name: AKASH_DEPLOYMENT_INGRESS_DOMAIN
+              value: "ingress."
+            - name: DEPLOYMENT_NETWORK_POLICIES_ENABLED
+              value: "false"
+            - name: AKASH_DEPLOYMENT_INGRESS_STATIC_HOSTS
+              value: "true"
+            - name: AKASH_DEPLOYMENT_BLOCKED_HOSTNAMES
+              value: ""
+            - name: AKASH_CLUSTER_NODE_PORT_QUANTITY
+              value: "2500"
+            - name: AKASH_GAS_PRICES
+              value: "0.025uakt"
+            - name: AKASH_GAS
+              value: "auto"
+            - name: AKASH_GAS_ADJUSTMENT
+              value: "1.5"
+            # AKASH_CLUSTER_PUBLIC_HOSTNAME need to stay as this makes to
+            # 'akash provider lease-status` under the forwarded_ports (nodePorts).
+            # This is NOT used for connecting to K8s cluster itself (6443/tcp).
+            # akash-provider uses kubeconfig to connect to K8s cluster.
+            - name: AKASH_CLUSTER_PUBLIC_HOSTNAME
+              value: "provider."
+            - name: AKASH_BID_PRICE_STRATEGY
+              value: "scale"
+
+
+
+
+
+
+
+
+
+
+
+
+            - name: AKASH_BID_PRICE_CPU_SCALE
+              value: "0.004"
+            - name: AKASH_BID_PRICE_MEMORY_SCALE
+              value: "0.0016"
+            - name: AKASH_BID_PRICE_ENDPOINT_SCALE
+              value: ""
+            - name: AKASH_BID_PRICE_STORAGE_SCALE
+              value: "0.00016,beta2=0.00016"
+            - name: AKASH_BID_PRICE_IP_SCALE
+              value: "60"
+            - name: AKASH_OVERCOMMIT_PCT_CPU
+              value: "0"
+            - name: AKASH_OVERCOMMIT_PCT_MEM
+              value: "0"
+            - name: AKASH_OVERCOMMIT_PCT_STORAGE
+              value: "0"
+            - name: AKASH_CLUSTER_K8S
+              value: "true"
+            - name: KUBE_CONFIG
+              value: "/root/.akash/.kube/config"
+            - name: AKASH_DEPLOYMENT_RUNTIME_CLASS
+              value: "none"
+            - name: AKASH_WITHDRAWAL_PERIOD
+              value: "1h"
+            - name: AKASH_MINIMUM_BALANCE
+              value: "10000000"
+            - name: AKASH_BID_DEPOSIT
+              value: "500000uakt"
+
+          ports:
+            - name: api
+              containerPort: 8443
+              protocol: TCP
+            - name: grpc
+              containerPort: 8444
+              protocol: TCP
+
+          livenessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - /scripts/liveness_checks.sh
+            initialDelaySeconds: 240
+            periodSeconds: 30
+            failureThreshold: 1
+            timeoutSeconds: 30
+
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: keys
+              mountPath: /boot-keys
+              readOnly: true
+            - name: provider-config-volume
+              mountPath: /config
+            - name: home
+              mountPath: "/root/.akash"
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-provider-scripts
+            defaultMode: 0744
+        - name: keys
+          secret:
+            secretName: release-name-provider-keys
+        - name: provider-config-volume
+          hostPath:
+            path: /root/.akash/k8s-config
+            type: DirectoryOrCreate
+        - name: home
+          emptyDir: {}

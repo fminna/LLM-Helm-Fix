@@ -1,0 +1,194 @@
+---
+# Source: get-cloudflare-logs/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-get-cloudflare-logs
+  namespace: default
+  labels:
+    helm.sh/chart: get-cloudflare-logs-0.6.0
+    app.kubernetes.io/name: get-cloudflare-logs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  CF_ZONE_ID: NTFlMjQxZjA4ZTAxNGZlYjk1ZDFiMjc2MDIyOGQxMmE=
+  CF_AUTH_EMAIL: YWRtaW5AZXhhbXBsZS5jb20=
+  CF_AUTH_KEY: NTFlMjQxZjA4ZTAxNGZlYjk1ZDFiMjc2MDIyOGQxMmEyZGY1MA==
+---
+# Source: get-cloudflare-logs/templates/configmap-ilm-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-ilm-policy
+  namespace: default
+  labels:
+    helm.sh/chart: get-cloudflare-logs-0.6.0
+    app.kubernetes.io/name: get-cloudflare-logs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  ilm-policy.json: |-
+    {
+      "policy":
+      {
+        "phases": {
+          "delete": {
+            "actions": {
+              "delete": {}
+            },
+            "min_age": "7d"
+          },
+          "hot": {
+            "actions": {
+              "rollover": {
+                "max_age": "1d",
+                "max_size": "60gb"
+              }
+            },
+            "min_age": "0ms"
+          },
+          "warm": {
+            "actions": {
+              "forcemerge": {
+                "max_num_segments": 1
+              }
+            },
+            "min_age": "0ms"
+          }
+        }
+      }
+    }
+---
+# Source: get-cloudflare-logs/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-get-cloudflare-logs
+  namespace: default
+  labels:
+    helm.sh/chart: get-cloudflare-logs-0.6.0
+    app.kubernetes.io/name: get-cloudflare-logs
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: get-cloudflare-logs
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/ilm-policy: 12e4c6eafefb16747058ada3d243bc55cfb4bfef4663ff3fd101b072b3b9480e
+      labels:
+        app.kubernetes.io/name: get-cloudflare-logs
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 15
+      serviceAccountName: default
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: get-cloudflare-logs
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+          image: "docker.io/anapsix/get-cloudflare-logs:0.6.0"
+          imagePullPolicy: Always
+          # command: ['bash', '-c', 'echo "running as $(whoami)"; ls -la /opt/extra-config; echo -n "\"${ES_ILM_POLICY_FILE}\" READ CHECK: "; [[ ! -r "${ES_ILM_POLICY_FILE}" ]] && echo "FAIL" || echo "OK"; sleep 3600']
+          env:
+            - name: CF_ZONE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-get-cloudflare-logs
+                  key: CF_ZONE_ID
+            - name: CF_AUTH_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-get-cloudflare-logs
+                  key: CF_AUTH_EMAIL
+            - name: CF_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-get-cloudflare-logs
+                  key: CF_AUTH_KEY
+            - name: SAMPLE_RATE
+              value: "0.01"
+            - name: ES_HOST
+              value: "http://elasticsearch:9200"
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-get-cloudflare-logs
+                  key: ES_USERNAME
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-get-cloudflare-logs
+                  key: ES_PASSWORD
+            - name: ES_INDEX
+              value: "cloudflare-access"
+            - name: ES_TEMPLATE_ENABLED
+              value: "true"
+            - name: ES_TEMPLATE_INDEX_SHARDS
+              value: "5"
+            - name: ES_TEMPLATE_INDEX_REPLICAS
+              value: "0"
+            - name: ES_TEMPLATE_INDEX_REFRESH
+              value: "10s"
+            - name: ES_PIPELINE_ENABLED
+              value: "true"
+            - name: ES_PIPELINE_DEFAULT_ENABLED
+              value: "true"
+            - name: ES_ILM_ENABLED
+              value: "true"
+            - name: ES_ILM_DEFAULT_POLICY_ENABLED
+              value: "false"
+            - name: ES_ILM_POLICY_FILE
+              value: "/opt/extra-config/ilm-policy.json"
+          volumeMounts:
+            - name: ilm-policy
+              mountPath: /opt/extra-config/ilm-policy.json
+              subPath: ilm-policy.json
+              readOnly: true
+          livenessProbe:
+            exec:
+              command:
+              - pgrep
+              - filebeat
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+              - pgrep
+              - filebeat
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            {}
+      volumes:
+        - name: ilm-policy
+          configMap:
+            name: release-name-ilm-policy
+---
+# Source: get-cloudflare-logs/templates/namespace.yaml
+## apiVersion: v1
+# kind: Namespace
+# metadata:
+#   name: default
+#   labels:
+#     name: default
+#     helm.sh/chart: get-cloudflare-logs
+#     app.kubernetes.io/version: 0.6.0
+#     app.kubernetes.io/managed-by: Helm
+#

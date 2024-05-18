@@ -1,0 +1,142 @@
+---
+# Source: vault-helm-chart/templates/vault-config-map.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config-map
+  namespace: notes-project
+data:
+  VAULT_ADDR: http://vault-service:80
+  VAULT_DEV_ROOT_TOKEN_ID: my-root-token
+  extraconfig-from-values.hcl: |
+    storage "file" {
+      path = "./mnt/vault/data"
+    }
+
+
+    disable_mlock = true
+
+    listener "tcp" {
+      address = "0.0.0.0:8200"
+      tls_disable = true
+    }
+
+    ui = true
+---
+# Source: vault-helm-chart/templates/vault-persistent-volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: vault-persistent-volume
+  namespace: notes-project
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/vault
+  storageClassName: standard
+---
+# Source: vault-helm-chart/templates/vault-persistent-volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-persistent-volume-claim
+  namespace: notes-project
+spec:
+  volumeName: vault-persistent-volume
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: vault-helm-chart/templates/vault-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-service
+  namespace: notes-project
+  labels:
+    app: vault-service
+spec:
+  selector:
+    app: vault-deployment
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 8200
+      protocol: TCP
+      name: vault-service-port
+      nodePort: 31364
+---
+# Source: vault-helm-chart/templates/vault-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-deployment
+  namespace: notes-project
+  labels:
+    app: vault-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-deployment
+  template:
+    metadata:
+      labels:
+        app: vault-deployment
+    spec:
+      containers:
+        - name: vault-deployment
+          image: vault:1.13.3
+          args: ["vault", "server", "-config=vault/config/extraconfig-from-values.hcl"]
+          ports:
+            - containerPort: 8200
+          lifecycle:
+            postStart:
+              exec:
+                command: ["chmod", "777", "/mnt"]
+          envFrom:
+            - configMapRef:
+                name: vault-config-map
+          volumeMounts:
+            - name: data
+              mountPath: /mnt
+            - name: config
+              mountPath: /vault/config/extraconfig-from-values.hcl
+              subPath: extraconfig-from-values.hcl
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vault-persistent-volume-claim
+        - name: config
+          configMap:
+            name: vault-config-map
+            items:
+              - key: extraconfig-from-values.hcl
+                path: extraconfig-from-values.hcl
+---
+# Source: vault-helm-chart/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-vault-helm-chart-test-connection"
+  labels:
+    helm.sh/chart: vault-helm-chart-0.1.0
+    app.kubernetes.io/name: vault-helm-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-vault-helm-chart:80']
+  restartPolicy: Never

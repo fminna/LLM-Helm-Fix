@@ -1,0 +1,312 @@
+---
+# Source: security-sample-chart/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-security-sample-chart
+  labels:
+    helm.sh/chart: security-sample-chart-0.2.1
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: security-sample-chart/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.10.6
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  postgresql-password: "ZGVtbw=="
+---
+# Source: security-sample-chart/templates/database-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-security-sample-chart-database
+  labels:
+    helm.sh/chart: security-sample-chart-0.2.1
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgresql-db: "ZGVtb2Ri"
+  postgresql-user: "ZGVtbw=="
+  postgresql-password: "ZGVtbw=="
+---
+# Source: security-sample-chart/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app: postgresql
+    chart: postgresql-8.10.6
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+---
+# Source: security-sample-chart/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.10.6
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app: postgresql
+    release: "release-name"
+    role: master
+---
+# Source: security-sample-chart/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-security-sample-chart
+  labels:
+    helm.sh/chart: security-sample-chart-0.2.1
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+---
+# Source: security-sample-chart/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-security-sample-chart
+  labels:
+    helm.sh/chart: security-sample-chart-0.2.1
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: security-sample-chart
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        rollme: "MuxoEXQBPM"
+        app.kubernetes.io/name: security-sample-chart
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-security-sample-chart
+      securityContext:
+        {}
+      initContainers:
+        - name: wait-for-pg
+          image: "alpine:3.12"
+          imagePullPolicy: IfNotPresent
+          command:
+          - 'sh'
+          - '-c'
+          - >
+            echo "Waiting for Postgres to come up...";
+            until nc -z -w 2 release-name-postgresql 5432 && echo database ok; do
+              sleep 2;
+            done;
+            sleep 10;
+      containers:
+        - name: security-sample-chart
+          securityContext:
+            {}
+          image: "rimusz/security-sample-app:0.2.0"
+          imagePullPolicy: Always
+          env:
+          - name: DATABASE_USER
+            valueFrom:
+              secretKeyRef:
+                name: release-name-security-sample-chart-database
+                key: postgresql-user
+          - name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-security-sample-chart-database
+                key: postgresql-password
+          - name: DATABASE_NAME
+            valueFrom:
+              secretKeyRef:
+                name: release-name-security-sample-chart-database
+                key: postgresql-db
+          - name: DATABASE_HOST
+            value: release-name-postgresql
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            {}
+---
+# Source: security-sample-chart/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app: postgresql
+    chart: postgresql-8.10.6
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: postgresql
+      release: "release-name"
+      role: master
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app: postgresql
+        chart: postgresql-8.10.6
+        release: "release-name"
+        heritage: "Helm"
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:9.6.18-debian-10-r7
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "demo"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "demodb"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "demo" -d "demodb" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "demo" -d "demodb" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: security-sample-chart/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-security-sample-chart-test-connection"
+  labels:
+    helm.sh/chart: security-sample-chart-0.2.1
+    app.kubernetes.io/name: security-sample-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-security-sample-chart:80']
+  restartPolicy: Never

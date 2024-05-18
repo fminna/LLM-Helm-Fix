@@ -1,0 +1,302 @@
+---
+# Source: connectors/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-connectors
+  labels:
+    app.kubernetes.io/component: connectors
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: connectors
+    helm.sh/chart: connectors-0.1.11
+spec:
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+    - name: rest-api
+      port: 8083
+      targetPort: 8083
+      protocol: TCP
+    - name: prometheus
+      port: 9404
+      targetPort: 9404
+      protocol: TCP
+  selector:
+      app.kubernetes.io/component: connectors
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: connectors
+  sessionAffinity: None
+  type: ClusterIP
+---
+# Source: connectors/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-connectors
+  labels:
+    app.kubernetes.io/component: connectors
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: connectors
+    helm.sh/chart: connectors-0.1.11
+spec:
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels: 
+      app.kubernetes.io/component: connectors
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: connectors
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: connectors
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: connectors
+    spec:
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              namespaces:
+                - "default"
+              labelSelector:
+                matchLabels: 
+                  app.kubernetes.io/component: connectors
+                  app.kubernetes.io/instance: release-name
+                  app.kubernetes.io/name: connectors
+      serviceAccountName: default
+      containers:
+        - name: connectors-cluster
+          image: docker.redpanda.com/redpandadata/connectors:v1.0.6
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            - name: CONNECT_CONFIGURATION
+              value: |
+                rest.advertised.port=8083
+                rest.port=8083
+                key.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+                value.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+                group.id=connectors-cluster
+                offset.storage.topic=_internal_connectors_offsets
+                config.storage.topic=_internal_connectors_configs
+                status.storage.topic=_internal_connectors_status
+                offset.storage.redpanda.remote.read=false
+                offset.storage.redpanda.remote.write=false
+                config.storage.redpanda.remote.read=false
+                config.storage.redpanda.remote.write=false
+                status.storage.redpanda.remote.read=false
+                status.storage.redpanda.remote.write=false
+                offset.storage.replication.factor=-1
+                config.storage.replication.factor=-1
+                status.storage.replication.factor=-1
+                producer.linger.ms=1
+                producer.batch.size=131072
+                config.providers=file,secretsManager,env
+                config.providers.file.class=org.apache.kafka.common.config.provider.FileConfigProvider
+                config.providers.env.class=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+            - name: CONNECT_ADDITIONAL_CONFIGURATION
+              value: ""
+            - name: CONNECT_BOOTSTRAP_SERVERS
+              value: ""
+            - name: CONNECT_GC_LOG_ENABLED
+              value: "false"
+            - name: CONNECT_HEAP_OPTS
+              value: -Xms256M -Xmx2G
+            - name: CONNECT_LOG_LEVEL
+              value: warn
+            - name: CONNECT_TLS_ENABLED
+              value: "false"
+          envFrom:
+          livenessProbe:
+            httpGet:
+              path: /
+              port: rest-api
+              scheme: HTTP
+            initialDelaySeconds: 10
+            failureThreshold: 3
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /connectors
+              port: rest-api
+              scheme: HTTP
+            initialDelaySeconds: 60
+            failureThreshold: 2
+            periodSeconds: 10
+            successThreshold: 3
+            timeoutSeconds: 5
+          ports:
+            - containerPort: 8083
+              name: rest-api
+              protocol: TCP
+            - containerPort: 9404
+              name: prometheus
+              protocol: TCP
+          resources:
+            requests: 
+              cpu: 1
+              memory: 2350Mi
+            limits: 
+              cpu: 1
+              memory: 2350Mi
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /tmp
+              name: rp-connect-tmp
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+        runAsUser: 101
+      topologySpreadConstraints:
+        - labelSelector:
+            matchLabels:  
+              app.kubernetes.io/component: connectors
+              app.kubernetes.io/instance: release-name
+              app.kubernetes.io/name: connectors
+          maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+      volumes:
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 5Mi
+          name: rp-connect-tmp
+---
+# Source: connectors/templates/tests/01-mm2-values.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-connectors-mm2-test-410
+  namespace: "default"
+  labels:
+    app.kubernetes.io/component: connectors
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: connectors
+    helm.sh/chart: connectors-0.1.11
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  containers:
+    - name: create-mm2
+      image: docker.redpanda.com/redpandadata/redpanda:latest
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -xe
+
+          trap connectorsState ERR
+
+          connectorsState () {
+            echo check connectors expand status
+            curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors?expand=status
+            echo check connectors expand info
+            curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors?expand=info
+            echo check connector configuration
+            curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors/$CONNECTOR_NAME
+            echo check connector topics
+            curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors/$CONNECTOR_NAME/topics
+          }
+
+          curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors
+
+          SASL_MECHANISM="PLAIN"
+
+          rpk profile create test
+          rpk profile set tls.enabled=false brokers=
+          CONNECT_TLS_ENABLED=false
+          SECURITY_PROTOCOL=PLAINTEXT
+          if [[ -n "$CONNECT_SASL_MECHANISM" && $CONNECT_TLS_ENABLED == "true" ]]; then
+            SECURITY_PROTOCOL="SASL_SSL"
+          elif [[ -n "$CONNECT_SASL_MECHANISM" ]]; then
+            SECURITY_PROTOCOL="SASL_PLAINTEXT"
+          elif [[ $CONNECT_TLS_ENABLED == "true" ]]; then
+            SECURITY_PROTOCOL="SSL"
+          fi
+
+          rpk topic list
+          rpk topic create test-topic
+          rpk topic list
+          echo "Test message!" | rpk topic produce test-topic
+
+          CONNECTOR_NAME=mm2-$RANDOM
+          cat << 'EOF' > /tmp/mm2-conf.json
+          {
+            "name": "CONNECTOR_NAME",
+            "config": {
+              "connector.class": "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+              "topics": "test-topic",
+              "replication.factor": "1",
+              "tasks.max": "1",
+              "source.cluster.bootstrap.servers": "",
+              "target.cluster.bootstrap.servers": "",
+              "target.cluster.alias": "test-only",
+              "source.cluster.alias": "source",
+              "key.converter": "org.apache.kafka.connect.converters.ByteArrayConverter",
+              "value.converter": "org.apache.kafka.connect.converters.ByteArrayConverter",
+              "source->target.enabled": "true",
+              "target->source.enabled": "false",
+              "sync.topic.configs.interval.seconds": "5",
+              "sync.topics.configs.enabled": "true",
+              "source.cluster.ssl.truststore.type": "PEM",
+              "target.cluster.ssl.truststore.type": "PEM",
+              "source.cluster.ssl.truststore.location": "/opt/kafka/connect-certs/ca/ca.crt",
+              "target.cluster.ssl.truststore.location": "/opt/kafka/connect-certs/ca/ca.crt",
+              JAAS_CONFIG_SOURCE
+              JAAS_CONFIG_TARGET
+              "source.cluster.security.protocol": "SECURITY_PROTOCOL",
+              "target.cluster.security.protocol": "SECURITY_PROTOCOL",
+              "source.cluster.sasl.mechanism": "SASL_MECHANISM",
+              "target.cluster.sasl.mechanism": "SASL_MECHANISM",
+              "offset-syncs.topic.replication.factor": 1
+            }
+          }
+          EOF
+
+          sed -i "s/CONNECTOR_NAME/$CONNECTOR_NAME/g" /tmp/mm2-conf.json
+          sed -i "s/SASL_MECHANISM/$SASL_MECHANISM/g" /tmp/mm2-conf.json
+          sed -i "s/SECURITY_PROTOCOL/$SECURITY_PROTOCOL/g" /tmp/mm2-conf.json
+          set +x
+          sed -i "s/JAAS_CONFIG_SOURCE/$JAAS_CONFIG_SOURCE/g" /tmp/mm2-conf.json
+          sed -i "s/JAAS_CONFIG_TARGET/$JAAS_CONFIG_TARGET/g" /tmp/mm2-conf.json
+          set -x
+
+          curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  -H 'Content-Type: application/json' http://release-name-connectors:8083/connectors -d @/tmp/mm2-conf.json
+
+          # The rpk topic consume could fail for the first few times as kafka connect needs
+          # to spawn the task and copy one message from the source topic. To solve this race condition
+          # the retry should be implemented in bash for rpk topic consume or other mechanism that
+          # can confirm source connectors started its execution. As a fast fix fixed 30 second fix is added.
+          sleep 30
+
+          rpk topic consume source.test-topic -n 1 | grep "Test message!"
+
+          curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  -X DELETE http://release-name-connectors:8083/connectors/$CONNECTOR_NAME
+
+          curl  -svm3 --fail --retry "120" --retry-max-time "120" --retry-all-errors -o - -w "\nstatus=%{http_code} %{redirect_url} size=%{size_download} time=%{time_total} content-type=\"%{content_type}\"\n"  http://release-name-connectors:8083/connectors
+
+          rpk topic delete test-topic source.test-topic mm2-offset-syncs.test-only.internal
+      volumeMounts:
+        - mountPath: /tmp
+          name: rp-connect-tmp
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 5Mi
+      name: rp-connect-tmp

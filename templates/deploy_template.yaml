@@ -1,0 +1,598 @@
+---
+# Source: deploy/templates/mysql-deployment.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+---
+# Source: deploy/templates/mysql-deployment.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-initdb-config
+  namespace: mysql
+data:
+  init.sql: |
+      DROP DATABASE IF EXISTS `automl-test`;
+      CREATE DATABASE `automl-test`;
+
+      USE `automl-test`;
+
+      /**
+      数据集表:
+      id, name, description, namespace, uri, createTime, creatorId, updateTime, updateId
+       */
+      CREATE TABLE `ml_dataset`
+      (
+          `id`           bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`         text                               NOT NULL COMMENT '名称',
+          `description`  text                               NOT NULL COMMENT '描述',
+          `namespace_id` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '命名空间id',
+          `uri`          text                               NOT NULL COMMENT '存储链接',
+          `creator_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+          `create_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `updater_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+          `update_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '数据集表';
+
+      INSERT INTO `automl-test`.ml_dataset (id, name, description, namespace_id, uri, creator_id, create_time, updater_id,
+                                            update_time)
+      VALUES (1, 'testDataset', 'testDatasetDesc', 1, 'https://www.baidu.com/', 1, 1660116762740, 0, 0);
+      INSERT INTO `automl-test`.ml_dataset (id, name, description, namespace_id, uri, creator_id, create_time, updater_id,
+                                            update_time)
+      VALUES (2, 'testDataset2', 'testDataset2', 1, 'https://www.baidu.com/', 1, 1660469278060, 0, 0);
+
+      /**
+      命令空间表
+      id, name, description, owner_id, creator_id, updater_id
+       */
+      CREATE TABLE `ml_namespace`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '名称',
+          `description` text                               NOT NULL COMMENT '描述',
+          `owner_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '所有者',
+          `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+          `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+          `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '命名空间表';
+      INSERT INTO `automl-test`.ml_namespace (id, name, description, owner_id, creator_id, create_time, updater_id, update_time)
+      VALUES (1, 'testNamespace', '测试命名空间', 1, 1, 1660359415130, 0, 0);
+
+      /**
+      用户表:
+      id, name, admin, roles(json [1,2,3]), groups(json [1,2,3]), pending(没有明白..)
+      auth_state(long ms)
+      admin, role 合成一个吧
+      role 代表角色, 比如平台角色(普通用户, 超管), 数据角色(数据操作能力, 新增,删除,修改等等)
+      groups
+       */
+      CREATE TABLE `ml_user`
+      (
+          `id`   bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '用户id',
+          `name` varchar(200)                       NOT NULL DEFAULT '' COMMENT '用户名称',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '用户表';
+
+      CREATE TABLE `ml_role`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '用户id',
+          `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '角色名称',
+          `description` text                               NOT NULL COMMENT '描述',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '角色表';
+
+      CREATE TABLE `ml_group`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '分组id',
+          `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '分组名称',
+          `description` text                               NOT NULL COMMENT '描述',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '分组表';
+
+      /**
+      其实就是用户角色分组表.
+       */
+      CREATE TABLE `ml_user_role_group`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `user_id`     bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '用户id',
+          `role_id`     bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '角色id',
+          `group_id`    bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '分组id',
+          `auto_time`   bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '授权时间',
+          `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+          `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+          `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `idx_group_role_user` (`group_id`, `role_id`, `user_id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '用户角色分组表';
+
+
+      /**
+      version
+       */
+      CREATE TABLE `ml_model_version`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '版本名称',
+          `description` text                               NOT NULL COMMENT '描述信息',
+          `error_msg`   text                               NOT NULL COMMENT '异常信息',
+          `state`       int(10) unsigned                   NOT NULL COMMENT '状态 0: 未指定, 1:准备好了(可以预测), 2:训练中, 100:失败',
+          `meta_id`     bigint(20)                         NOT NULL COMMENT '模型元数据id',
+          `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+          `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+          `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`)
+      ) ENGINE InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '模型版本表';
+
+      /**
+      auth
+       */
+
+      /**
+      模型表
+       */
+      CREATE TABLE `ml_model`
+      (
+          `id`               bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`             varchar(200)                       NOT NULL DEFAULT '' COMMENT '模型名称',
+          `namespace_id`     bigint(20)                         NOT NULL DEFAULT '0' COMMENT '命名空间id',
+          `description`      text                               NOT NULL COMMENT '描述信息',
+          `version`          bigint(20)                         NOT NULL DEFAULT '0' COMMENT '默认版本',
+          `deployment_state` int(10)                            NOT NULL DEFAULT '0' COMMENT '发布版本 0: 未知, 1:已经发布, 2:未发布',
+          `creator_id`        bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+          `create_time`      bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `updater_id`        bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+          `update_time`      bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+      /**
+      模型元数据表
+
+      data 中有以下数据:
+      `disable_early_stop`     int(10)                            NOT NULL DEFAULT '0' COMMENT '禁用早期停止 0:false 1:true',
+      `optimization_objective` text                               NOT NULL DEFAULT '' COMMENT '模型优化的目标函数',
+      `pre_recall_value` varchar(200) NOT NULL DEFAULT '' COMMENT 'optimizationObjectivePrecisionValue',
+      `recall_value` varchar(200)  NOT NULL DEFAULT '' COMMENT 'optimizationObjectiveRecallValue',
+      `fraction_split` json  NOT NULL  COMMENT '分数',
+      `target_column_spec` json NOT NULL DEFAULT '' COMMENT '列的表示形式',
+       */
+      CREATE TABLE `ml_model_meta`
+      (
+          `id`         bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`       varchar(200)                       NOT NULL DEFAULT '' COMMENT '元数据名称',
+          `type`       int(10)                            NOT NULL DEFAULT '0' COMMENT '元数据类型 0: 未知 1:Tabular(表格)',
+          `dataset_id` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '数据集id',
+          `data`       json                               NOT NULL COMMENT '相关数据',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+
+      /**
+      job
+       */
+      CREATE TABLE `ml_job`
+      (
+          `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+          `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT 'job名称',
+          `type`        int(10)                            NOT NULL DEFAULT '0' COMMENT 'job类型 0:未知 1:训练 2:批量预测',
+          `state`       int(10)                            NOT NULL DEFAULT '0' COMMENT '状态 0:未指定 1:刚创建 2:正在准备 3:运行中 4:成功完成 5:失败 6:被取消 7:已经取消了 8:已经停止',
+          `error_msg`   text                               NOT NULL COMMENT '异常信息',
+          `position`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '坐标',
+          `input`       json                               NOT NULL COMMENT '输入',
+          `output`      json                               NOT NULL COMMENT '输出',
+          `start_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '开始时间',
+          `end_time`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '结束时间',
+          `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+          `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+          PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+      CREATE TABLE `automl_test`
+      ( `id` int DEFAULT NULL,
+        `name` varchar(10000) DEFAULT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT = '测试表';
+
+      DROP DATABASE IF EXISTS `automl`;
+      CREATE DATABASE `automl`;
+
+      USE `automl`;
+
+      /**
+      数据集表:
+      id, name, description, namespace, uri, createTime, creatorId, updateTime, updateId
+      */
+      CREATE TABLE `ml_dataset`
+      (
+        `id`           bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`         text                               NOT NULL COMMENT '名称',
+        `description`  text                               NOT NULL COMMENT '描述',
+        `namespace_id` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '命名空间id',
+        `uri`          text                               NOT NULL COMMENT '存储链接',
+        `creator_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+        `create_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `updater_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+        `update_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '数据集表';
+
+      INSERT INTO `automl`.ml_dataset (id, name, description, namespace_id, uri, creator_id, create_time, updater_id,
+                                          update_time)
+      VALUES (1, 'testDataset', 'testDatasetDesc', 1, 'https://www.baidu.com/', 1, 1660116762740, 0, 0);
+      INSERT INTO `automl`.ml_dataset (id, name, description, namespace_id, uri, creator_id, create_time, updater_id,
+                                          update_time)
+      VALUES (2, 'testDataset2', 'testDataset2', 1, 'https://www.baidu.com/', 1, 1660469278060, 0, 0);
+
+      /**
+      命令空间表
+      id, name, description, owner_id, creator_id, updater_id
+      */
+      CREATE TABLE `ml_namespace`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '名称',
+        `description` text                               NOT NULL COMMENT '描述',
+        `owner_id`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '所有者',
+        `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+        `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+        `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '命名空间表';
+      INSERT INTO `automl`.ml_namespace (id, name, description, owner_id, creator_id, create_time, updater_id, update_time)
+      VALUES (1, 'testNamespace', '测试命名空间', 1, 1, 1660359415130, 0, 0);
+
+      /**
+      用户表:
+      id, name, admin, roles(json [1,2,3]), groups(json [1,2,3]), pending(没有明白..)
+      auth_state(long ms)
+      admin, role 合成一个吧
+      role 代表角色, 比如平台角色(普通用户, 超管), 数据角色(数据操作能力, 新增,删除,修改等等)
+      groups
+      */
+      CREATE TABLE `ml_user`
+      (
+        `id`   bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '用户id',
+        `name` varchar(200)                       NOT NULL DEFAULT '' COMMENT '用户名称',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '用户表';
+
+      CREATE TABLE `ml_role`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '用户id',
+        `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '角色名称',
+        `description` text                               NOT NULL COMMENT '描述',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '角色表';
+
+      CREATE TABLE `ml_group`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT '分组id',
+        `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '分组名称',
+        `description` text                               NOT NULL COMMENT '描述',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '分组表';
+
+      /**
+      其实就是用户角色分组表.
+      */
+      CREATE TABLE `ml_user_role_group`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `user_id`     bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '用户id',
+        `role_id`     bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '角色id',
+        `group_id`    bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '分组id',
+        `auto_time`   bigint(20) unsigned                NOT NULL DEFAULT '0' COMMENT '授权时间',
+        `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+        `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+        `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`),
+        UNIQUE KEY `idx_group_role_user` (`group_id`, `role_id`, `user_id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '用户角色分组表';
+
+
+      /**
+      version
+      */
+      CREATE TABLE `ml_model_version`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT '版本名称',
+        `description` text                               NOT NULL COMMENT '描述信息',
+        `error_msg`   text                               NOT NULL COMMENT '异常信息',
+        `state`       int(10) unsigned                   NOT NULL COMMENT '状态 0: 未指定, 1:准备好了(可以预测), 2:训练中, 100:失败',
+        `meta_id`     bigint(20)                         NOT NULL COMMENT '模型元数据id',
+        `creator_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+        `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `updater_id`   bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+        `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`)
+      ) ENGINE InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '模型版本表';
+
+      /**
+      auth
+      */
+
+      /**
+      模型表
+      */
+      CREATE TABLE `ml_model`
+      (
+        `id`               bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`             varchar(200)                       NOT NULL DEFAULT '' COMMENT '模型名称',
+        `namespace_id`     bigint(20)                         NOT NULL DEFAULT '0' COMMENT '命名空间id',
+        `description`      text                               NOT NULL COMMENT '描述信息',
+        `version`          bigint(20)                         NOT NULL DEFAULT '0' COMMENT '默认版本',
+        `deployment_state` int(10)                            NOT NULL DEFAULT '0' COMMENT '发布版本 0: 未知, 1:已经发布, 2:未发布',
+        `creator_id`        bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建者',
+        `create_time`      bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `updater_id`        bigint(20)                         NOT NULL DEFAULT '0' COMMENT '修改者',
+        `update_time`      bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+      /**
+      模型元数据表
+
+      data 中有以下数据:
+      `disable_early_stop`     int(10)                            NOT NULL DEFAULT '0' COMMENT '禁用早期停止 0:false 1:true',
+      `optimization_objective` text                               NOT NULL DEFAULT '' COMMENT '模型优化的目标函数',
+      `pre_recall_value` varchar(200) NOT NULL DEFAULT '' COMMENT 'optimizationObjectivePrecisionValue',
+      `recall_value` varchar(200)  NOT NULL DEFAULT '' COMMENT 'optimizationObjectiveRecallValue',
+      `fraction_split` json  NOT NULL  COMMENT '分数',
+      `target_column_spec` json NOT NULL DEFAULT '' COMMENT '列的表示形式',
+      */
+      CREATE TABLE `ml_model_meta`
+      (
+        `id`         bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`       varchar(200)                       NOT NULL DEFAULT '' COMMENT '元数据名称',
+        `type`       int(10)                            NOT NULL DEFAULT '0' COMMENT '元数据类型 0: 未知 1:Tabular(表格)',
+        `dataset_id` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '数据集id',
+        `data`       json                               NOT NULL COMMENT '相关数据',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+
+      /**
+      job
+      */
+      CREATE TABLE `ml_job`
+      (
+        `id`          bigint(20) unsigned AUTO_INCREMENT NOT NULL COMMENT 'id',
+        `name`        varchar(200)                       NOT NULL DEFAULT '' COMMENT 'job名称',
+        `type`        int(10)                            NOT NULL DEFAULT '0' COMMENT 'job类型 0:未知 1:训练 2:批量预测',
+        `state`       int(10)                            NOT NULL DEFAULT '0' COMMENT '状态 0:未指定 1:刚创建 2:正在准备 3:运行中 4:成功完成 5:失败 6:被取消 7:已经取消了 8:已经停止',
+        `error_msg`   text                               NOT NULL COMMENT '异常信息',
+        `position`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '坐标',
+        `input`       json                               NOT NULL COMMENT '输入',
+        `output`      json                               NOT NULL COMMENT '输出',
+        `start_time`  bigint(20)                         NOT NULL DEFAULT '0' COMMENT '开始时间',
+        `end_time`    bigint(20)                         NOT NULL DEFAULT '0' COMMENT '结束时间',
+        `create_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '创建时间',
+        `update_time` bigint(20)                         NOT NULL DEFAULT '0' COMMENT '更新时间',
+        PRIMARY KEY (`id`)
+      ) ENGINE = InnoDB
+      DEFAULT CHARSET = utf8mb4 COMMENT = '模型表';
+
+      CREATE TABLE `automl_test`
+      ( `id` int DEFAULT NULL,
+        `name` varchar(10000) DEFAULT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT = '测试表';
+---
+# Source: deploy/templates/mysql-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-pv-volume
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce # 只能被一个容器访问，如果能被多个容器访问那么设置为ReadWriteMany
+  hostPath:
+    path: "/var/mysql"
+    type: DirectoryOrCreate
+---
+# Source: deploy/templates/mysql-pv.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim
+  namespace: mysql
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: deploy/templates/automl-java-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: automl-web
+  name: automl-web
+spec:
+  type: NodePort
+  ports:
+    - name: "8081"
+      port: 8081
+      targetPort: 8081
+      nodePort: 32082
+  selector:
+    io.kompose.service: automl-web
+status:
+  loadBalancer: {}
+---
+# Source: deploy/templates/mysql-deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: mysql
+spec:
+  selector:
+    app: mysql
+  type: NodePort
+  ports:
+    - port: 3306
+      protocol: TCP
+      targetPort: 3306
+      nodePort: 31234        # k8s暴露的mysql端口
+---
+# Source: deploy/templates/openapi-mock-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: openapi-mock
+  name: openapi-mock
+spec:
+  ports:
+    - name: "8080"
+      port: 8080
+      targetPort: 8080
+  selector:
+    io.kompose.service: openapi-mock
+status:
+  loadBalancer: {}
+---
+# Source: deploy/templates/automl-java-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: automl-web
+  name: automl-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: automl-web
+  strategy: { }
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: automl-web
+    spec:
+      containers:
+        - image: automl/automl:v1beta1 # change yourself image
+          name: automl-web
+          imagePullPolicy: Never # load image from local
+          ports:
+            - containerPort: 8081
+          resources: { }
+      restartPolicy: Always
+status: { }
+---
+# Source: deploy/templates/mysql-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: mysql
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - image: amd64/mysql:5.7
+          name: mysql
+          env:
+            # 在实际中使用 secret
+            - name: MYSQL_ROOT_PASSWORD
+              value: root
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mysql-initdb
+              mountPath: /docker-entrypoint-initdb.d
+            - mountPath: "/var/mysql/mysql"
+              subPath: "mysql"
+              name: mysql-data
+      volumes:
+        - name: mysql-initdb
+          configMap:
+            name: mysql-initdb-config
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pv-claim
+---
+# Source: deploy/templates/openapi-mock-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    io.kompose.service: openapi-mock
+  name: openapi-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: openapi-mock
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        io.kompose.service: openapi-mock
+    spec:
+      containers:
+        - env:
+            - name: OPENAPI_MOCK_SPECIFICATION_URL
+              value: https://raw.githubusercontent.com/ml-for-good/automl/main/docs/openapi.yaml
+            - name: OPENAPI_MOCK_PORT
+              value: "8080"
+          image: muonsoft/openapi-mock
+          name: openapi-mock
+          ports:
+            - containerPort: 8080
+          resources: {}
+      restartPolicy: Always
+status: {}

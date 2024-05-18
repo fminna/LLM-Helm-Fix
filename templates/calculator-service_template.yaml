@@ -1,0 +1,322 @@
+---
+# Source: calculator-service/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: calculator-service-release-name
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: calculator-service
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8080
+        protocol: TCP      
+      - port: 4667
+        protocol: TCP
+      - port: 9361
+        protocol: TCP
+---
+# Source: calculator-service/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: calculator-service-release-name-secret-config
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: calculator-service/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:  
+  name: calculator-service-release-name-tls-proxy-certs
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+data:
+  service.crt: |-
+    snakeoil
+  service.key: |-
+    snakeoil
+---
+# Source: calculator-service/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:  
+  name: calculator-service-release-name-envoy-config-volume
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+data:
+  envoy.yaml: |-
+    admin:
+      access_log:
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+          # Don't write this to stdout/stderr to not send all the requests for metrics from prometheus to logstash.
+          path: /var/log/envoy/admin-access.log
+      address:    
+        pipe:
+          path: /var/run/envoy/admin.sock
+      # Don't apply global connection limits to the admin listener so we can still get metrics when overloaded
+      ignore_global_conn_limit: true
+    layered_runtime:
+      layers:
+        # Limit the total number of allowed active connections per envoy instance.
+        # Envoys configuration best practice "Configuring Envoy as an edge proxy" uses 50k connections
+        # which is still essentially unlimited in our use case.
+        - name: static_layer_0
+          static_layer:
+            overload:
+              global_downstream_max_connections: 50000
+        # Include an empty admin_layer *after* the static layer, so we can
+        # continue to make changes via the admin console and they'll overwrite
+        # values from the previous layer.
+        - name: admin_layer_0
+          admin_layer: {}
+    static_resources:
+      clusters:  
+      - name: local_service
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            common_http_protocol_options:
+              idle_timeout: 4.5s
+            # This allows switching on protocol based on what protocol the downstream connection used.
+            use_downstream_protocol_config: {}
+        connect_timeout: 1.0s
+        lb_policy: round_robin
+        load_assignment:
+          cluster_name: local_service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address: {address: 127.0.0.1, port_value: 8080 }
+        type: strict_dns  
+      - name: admin_interface
+        type: static
+        connect_timeout: 1.0s
+        lb_policy: round_robin
+        load_assignment:
+          cluster_name: admin_interface
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:            
+                  pipe:
+                    path: /var/run/envoy/admin.sock
+      listeners:  
+      - address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 9361
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: admin_interface
+                  routes:
+                  - match: {prefix: /stats }
+                    route:
+                      cluster: admin_interface
+                      timeout: 5.0s
+                  - match: {prefix: /healthz}
+                    direct_response:
+                      status: 200
+                      body: {inline_string: "OK"}
+                  - match: {prefix: /}
+                    direct_response:
+                      status: 403
+                      body: {inline_string: "You can't access this url."}
+              stat_prefix: admin_interface  
+      - address:
+          socket_address: {address: 0.0.0.0, port_value: 4667 }
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              access_log:
+              - filter:
+                  status_code_filter:
+                    comparison:
+                      op: "GE"
+                      value:
+                        default_value: 500
+                        runtime_key: tls_terminator_min_log_code
+                # TODO: use a stream logger once we upgrade from 1.15
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                  path: "/dev/stdout"
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: tls_termination
+                  routes:
+                  - match: {prefix: /}
+                    route:
+                      cluster: local_service
+                      timeout: 180.0s        
+              stat_prefix: ingress_https_release-name
+              server_name: release-name-tls
+              server_header_transformation: APPEND_IF_ABSENT
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain: {filename: /etc/envoy/ssl/service.crt}
+                    private_key: {filename: /etc/envoy/ssl/service.key}
+        listener_filters:
+        - name: envoy.filters.listener.tls_inspector
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+---
+# Source: calculator-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:  
+  name: calculator-service-release-name-tls-service
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: calculator-service
+    routed_via: release-name
+  ports:
+    - name: calculator-service-release-name-https
+      protocol: TCP
+      port: 4667
+      nodePort: 4667
+---
+# Source: calculator-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calculator-service-release-name
+  labels:
+    app: calculator-service
+    chart: calculator-service-0.1.9
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: calculator-service
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: calculator-service
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/secrets: 31a5975b870f543ae8465acbea86cfab31071b0fa3ce31b41ec2abe754f734af
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "false"        
+        checksum/tls-config: 7863d73525e42f629976bb2759a5315ca313ed3349959001315a59a9d33aabfc
+        checksum/tls-certs: 42a19feb2b4c240132bebca84767d33b025ea276ddbf21ee93683e21c5dabcf7
+        envoyproxy.io/scrape: "true"
+        envoyproxy.io/port: "9361"
+    spec:
+      containers:
+        # The main application container
+        - name: calculator-service-release-name
+          image: "docker-registry.wikimedia.org/blubber-doc-example-calculator-service:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: calculator-service-release-name
+            - name: CALC_TESTMODE
+              value: "OFF"
+            - name: CALC_VERSION
+              value: "0.3"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 100m
+              memory: 200Mi        
+        - name: calculator-service-release-name-tls-proxy
+          image: docker-registry.wikimedia.org/envoy:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE_NAME
+              value: release-name
+            - name: SERVICE_ZONE
+              value: "default"
+          ports:
+            - containerPort: 4667
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9361
+          volumeMounts:
+            - name: envoy-config-volume
+              mountPath: /etc/envoy/
+              readOnly: true
+            - name: tls-certs-volume
+              mountPath: /etc/envoy/ssl
+              readOnly: true
+        
+          resources:
+            requests:
+              cpu: 200m
+              memory: 100Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi
+      volumes:        
+        - name: envoy-config-volume
+          configMap:
+            name: calculator-service-release-name-envoy-config-volume
+        - name: tls-certs-volume
+          configMap:
+            name: calculator-service-release-name-tls-proxy-certs

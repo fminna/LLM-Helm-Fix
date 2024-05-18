@@ -1,0 +1,209 @@
+---
+# Source: sophora-importer/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-sophora-importer
+  labels:
+    helm.sh/chart: sophora-importer-1.3.0
+    app.kubernetes.io/name: sophora-importer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.11.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  application.yml: |- 
+    {}
+  logback-spring.xml: |- 
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration scan="true" scanPeriod="60 seconds">
+        <jmxConfigurator/>
+    
+        <appender name="jsonConsoleAppender" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.core.filter.EvaluatorFilter">
+                <evaluator>
+                    <!-- No log messages marked as 'SPECIAL_EMAIL_NOTIFICATION' should be shown. -->
+                    <expression>marker != null &amp;&amp; marker.getName().equals("SPECIAL_EMAIL_NOTIFICATION")</expression>
+                </evaluator>
+                <OnMismatch>NEUTRAL</OnMismatch>
+                <OnMatch>DENY</OnMatch>
+            </filter>
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
+        </appender>
+    
+        <logger name="com.subshell.sophora" level="INFO"/>
+        <logger name="com.subshell.sophora.importer" level="INFO"/>
+        <logger name="org.springframework.boot" level="INFO"/>
+    
+        <root level="WARN">
+            <appender-ref ref="jsonConsoleAppender"/>
+        </root>
+    </configuration>
+---
+# Source: sophora-importer/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-sophora-importer
+  labels:
+    helm.sh/chart: sophora-importer-1.3.0
+    app.kubernetes.io/name: sophora-importer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.11.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  clusterIP: None
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8082
+      name: main
+    - protocol: TCP
+      port: 1496
+      targetPort: 1496
+      name: jolokia
+  selector:
+    app.kubernetes.io/name: sophora-importer
+    app.kubernetes.io/instance: release-name
+---
+# Source: sophora-importer/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-sophora-importer
+  labels:
+    helm.sh/chart: sophora-importer-1.3.0
+    app.kubernetes.io/name: sophora-importer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.11.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-sophora-importer
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sophora-importer
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: b84e8e5896d87bffd9b18572fdfc0e1ec44ad90b115a4d04064e12ff9bdc7134
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+        
+      labels:
+        app.kubernetes.io/name: sophora-importer
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+      - name: bucket-mount
+        image: "efrecon/s3fs:1.91"
+        env:
+          - name: AWS_S3_BUCKET
+            value: 
+          - name: AWS_S3_URL
+            value: https://storage.googleapis.com
+          - name: S3FS_DEBUG
+            value: "0"
+          - name: AWS_S3_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                key: secretAccessKey
+                name: 
+                optional: false
+          - name: AWS_S3_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                key: accessKeyId
+                name: 
+                optional: false
+          - name: S3FS_ARGS
+            value: nonempty
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          postStart:
+            exec:
+              # workaround because the importer can't create the folder by itself.
+              command:
+                - sh
+                - '-c'
+                - |
+                  echo Creating import folders for importer:
+
+                  echo ...folders created as follows:
+                  find /import
+                  find /opt/s3fs/bucket
+        resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 200m
+              memory: 256Mi
+        volumeMounts:
+          - name: shared-imports
+            mountPath: /opt/s3fs/bucket
+            mountPropagation: Bidirectional
+          - name: local-import-folders
+            mountPath: /import
+        securityContext:
+          privileged: true
+      - name: importer
+        image: "docker.subshell.com/sophora/sophora-importer:master"
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: JDK_JAVA_OPTIONS
+            value: -XX:InitialRAMPercentage=50.0 -XX:MaxRAMPercentage=80.0 -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem
+          - name: SOPHORA_CLIENT_SERVERCONNECTION_USERNAME
+            valueFrom:
+              secretKeyRef:
+                key: username
+                name: 
+          - name: SOPHORA_CLIENT_SERVERCONNECTION_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: password
+                name: 
+          - name: LOADER_PATH
+            value: /sophora/additionalLibs
+          
+        resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 200m
+              memory: 2Gi
+        ports:
+        - containerPort: 8082
+        - containerPort: 1496
+        volumeMounts:
+        - name: importer-config
+          mountPath: /sophora/application.yml
+          subPath: application.yml
+        - name: importer-config
+          mountPath: /sophora/logback-spring.xml
+          subPath: logback-spring.xml
+        - name: shared-imports
+          mountPath: /import/
+          mountPropagation: Bidirectional
+        - name: local-import-folders
+          mountPath: /import-local/
+        - name: xsl
+          mountPath: /sophora/xsl
+        - name: libs
+          mountPath: /sophora/additionalLibs
+        securityContext:
+          privileged: true
+      initContainers:
+      
+      volumes:
+      - name: importer-config
+        configMap:
+          name: release-name-sophora-importer
+      - name: shared-imports
+        emptyDir: {}
+      - name: local-import-folders
+        emptyDir: {}
+      - name: xsl
+        emptyDir: {}
+      - name: libs
+        emptyDir: {}

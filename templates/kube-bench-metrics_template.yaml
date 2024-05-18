@@ -1,0 +1,212 @@
+---
+# Source: kube-bench-metrics/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-bench-metrics
+automountServiceAccountToken: true
+---
+# Source: kube-bench-metrics/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-bench-metrics-cluster
+rules:
+- apiGroups: [""] 
+  resources: ["pods","nodes"]
+  verbs: ["get", "list"]
+---
+# Source: kube-bench-metrics/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-bench-metrics-role-binding
+subjects:
+- kind: ServiceAccount
+  name: kube-bench-metrics
+  namespace: default
+roleRef:
+  kind: ClusterRole 
+  name: kube-bench-metrics-cluster
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: kube-bench-metrics/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-bench-metrics-psp
+  namespace: default
+rules:
+- apiGroups:
+  - extensions
+  resourceNames:
+  - kube-bench-metrics
+  resources:
+  - podsecuritypolicies
+  verbs:
+  - use
+---
+# Source: kube-bench-metrics/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-bench-metrics-psp
+subjects:
+- kind: ServiceAccount
+  name: kube-bench-metrics
+  namespace: default
+roleRef:
+  kind: Role 
+  name: kube-bench-metrics-psp
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: kube-bench-metrics/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kube-bench-metrics
+  labels:
+    app.kubernetes.io/name: kube-bench-metrics
+    helm.sh/chart: kube-bench-metrics-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kube-bench-metrics
+    app.kubernetes.io/instance: release-name
+---
+# Source: kube-bench-metrics/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-kube-bench-metrics
+  labels:
+    app.kubernetes.io/name: kube-bench-metrics
+    helm.sh/chart: kube-bench-metrics-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-bench-metrics
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-bench-metrics
+        app.kubernetes.io/instance: release-name
+    spec:
+      hostPID: true
+      serviceAccountName: kube-bench-metrics
+      containers:
+        - name: kube-bench-metrics
+          image: "elastisys/kube-bench-metrics:0.1.6"
+          args:
+          - "--versionOverride"
+          - ""
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: var-lib-etcd
+              mountPath: /var/lib/etcd
+              readOnly: true
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            - name: etc-systemd
+              mountPath: /etc/systemd
+              readOnly: true
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+              # /usr/local/mount-from-host/bin is mounted to access kubectl / kubelet, for auto-detecting the Kubernetes version.
+              # You can omit this mount if you specify --version as part of the command.
+            - name: usr-bin
+              mountPath: /usr/local/mount-from-host/bin
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+          env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          resources:
+            {}
+      volumes:
+        - name: var-lib-etcd
+          hostPath:
+            path: "/var/lib/etcd"
+        - name: var-lib-kubelet
+          hostPath:
+            path: "/var/lib/kubelet"
+        - name: etc-systemd
+          hostPath:
+            path: "/etc/systemd"
+        - name: etc-kubernetes
+          hostPath:
+            path: "/etc/kubernetes"
+        - name: usr-bin
+          hostPath:
+            path: "/usr/bin"
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+---
+# Source: kube-bench-metrics/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app: kube-bench-metrics
+  name: kube-bench-metrics-monitoring
+spec:
+  endpoints:
+  - port: http
+    interval: 30s
+  namespaceSelector:
+    matchNames:
+    - default
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-bench-metrics
+---
+# Source: kube-bench-metrics/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-kube-bench-metrics-test-connection"
+  labels:
+    app.kubernetes.io/name: kube-bench-metrics
+    helm.sh/chart: kube-bench-metrics-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['release-name-kube-bench-metrics:80']
+  restartPolicy: Never

@@ -1,0 +1,121 @@
+---
+# Source: s3/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: s3
+rules:
+- apiGroups:
+    - ''
+  resources:
+    - pods
+  verbs:
+    - '*'
+- apiGroups:
+    - batch
+  resources:
+    - jobs
+  verbs:
+    - '*'
+- apiGroups:
+    - awsblueprints.io
+  resources:
+    - s3irsas
+    - delegates3irsas
+  verbs:
+    - '*'
+---
+# Source: s3/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: s3
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: s3
+---
+# Source: s3/templates/socket.yaml
+apiVersion: integration.rock8s.com/v1beta1
+kind: Socket
+metadata:
+  name: s3
+  labels:
+    app.kubernetes.io/name: s3
+    helm.sh/chart: s3-0.0.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  epoch: "1715760901"
+  interface:
+    config:
+      plug:
+        bucket: {}
+        create: {}
+        preserve: {}
+        serviceAccountName: {}
+      socket:
+        endpoint:
+          required: true
+        accessKey: {}
+        secretKey: {}
+        region: {}
+        tls: {}
+    result:
+      socket:
+        roleArn:
+          required: true
+  config:
+    tls: '1'
+    region: 'us-east-1'
+  configTemplate:
+    endpoint: '{% printf "%s.s3.%s.amazonaws.com" .plug.spec.config.bucket "us-east-1" %}'
+  resultTemplate:
+    roleArn: '{% .vars.roleArn %}'
+  resultVars:
+    - name: roleArn
+      fieldref:
+        fieldPath: status.roleArn
+      objref:
+        apiVersion: awsblueprints.io/v1alpha1
+        kind: DelegateS3IRSA
+        templateName: '{% .plug.metadata.name %}-{% .plug.metadata.namespace %}'
+        namespace: default
+  resources:
+    - when: [coupled, updated]
+      do: apply
+      stringTemplate: |
+        {%- if (eq .plugConfig.create "1") %}
+        apiVersion: awsblueprints.io/v1alpha1
+        kind: S3IRSA
+        metadata:
+          name: {% .plugConfig.bucket %}
+          namespace: default
+        spec:
+          resourceConfig:
+            name: {% .plugConfig.bucket %}
+            providerConfigName: aws-provider-config
+            region: us-east-1
+            deletionPolicy: {% (eq .plugConfig.preserve "1") | ternary "Orphan" "Delete" %}
+        {%- end %}
+    - when: [coupled, updated]
+      do: apply
+      template:
+        apiVersion: awsblueprints.io/v1alpha1
+        kind: DelegateS3IRSA
+        metadata:
+          name: '{% .plug.metadata.name %}-{% .plug.metadata.namespace %}'
+        spec:
+          serviceAccountName: '{% .plugConfig.serviceAccountName | default "default" %}'
+          delegate:
+            namespace: '{% .plug.metadata.namespace %}'
+            s3irsa:
+              name: '{% .plugConfig.bucket %}'
+          resourceConfig:
+            name: '{% .plugConfig.bucket %}'
+            providerConfigName: aws-provider-config
+            region: us-east-1

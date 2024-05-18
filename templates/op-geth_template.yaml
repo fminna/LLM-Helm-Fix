@@ -1,0 +1,407 @@
+---
+# Source: op-geth/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-op-geth
+  labels:
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: op-geth/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-op-geth
+  labels:
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  jwt.hex: ""
+---
+# Source: op-geth/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-op-geth-scripts
+  labels:
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  readiness.sh: |-
+    #!/usr/bin/env sh
+    # shellcheck disable=SC3040
+    
+    # Node is ready when the latest block is fresh enough.
+    # We are checking the timestamp of the latest block and compare it to current local time.
+    
+    set -e
+    
+    HTTP_PORT="8545"
+    AGE_THRESHOLD=$1
+    
+    if [ -z "$AGE_THRESHOLD" ]; then
+        echo "Usage: $0 <block age threshold>"; exit 1
+    fi
+    
+    # expected output format: 0x65cb8ca8
+    get_block_timestamp() {
+        wget "http://localhost:$HTTP_PORT" -qO- \
+            --header 'Content-Type: application/json' \
+            --post-data '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest", false],"id":1}' \
+        | sed -r 's/.*"timestamp":"([^"]+)".*/\1/g'
+    }
+    
+    # using $(()) converts hex string to number
+    block_timestamp=$(($(get_block_timestamp)))
+    current_timestamp=$(date +%s)
+    
+    if ! echo "$block_timestamp" | grep -qE '^[0-9]+$'; then
+        echo "Error reading block timestamp"; exit 1
+    fi
+    
+    age=$((current_timestamp - block_timestamp))
+    
+    if [ $age -le $AGE_THRESHOLD ]; then
+        exit 0
+    else
+        echo "Latest block is $age seconds old. Threshold is $AGE_THRESHOLD seconds" && exit 1
+    fi
+  liveness.sh: |-
+    #!/usr/bin/env sh
+    # shellcheck disable=SC3040
+    
+    # Node is alive when new blocks are being imported.
+    # We are checking the age when last block import event occured.
+    
+    set -e
+    
+    AGE_THRESHOLD=$1
+    STATE_FILE=${2:-"/data/saved_block_number.txt"}
+    HTTP_PORT="8545"
+    
+    if [ -z "${AGE_THRESHOLD}" ] || [ -z "${STATE_FILE}" ]; then
+        echo "Usage: $0 <last block import age threshold> [state file]" 1>&2; exit 1
+    fi
+    
+    
+    # expected output format: 0x50938d
+    get_block_number() {
+        wget "http://localhost:$HTTP_PORT" -qO- \
+            --header 'Content-Type: application/json' \
+            --post-data '{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}' \
+        | sed -r 's/.*"result":"([^"]+)".*/\1/g'
+    }
+    
+    # using $(()) converts hex string to number
+    block_number=$(($(get_block_number)))
+    saved_block_number=""
+    
+    if ! echo "$block_number" | grep -qE '^[0-9]+$'; then
+        echo "Error reading block number"; exit 1
+    fi
+    
+    if [ -f "${STATE_FILE}" ]; then
+        saved_block_number=$(cat "${STATE_FILE}")
+    fi
+    
+    if [ "${block_number}" != "${saved_block_number}" ]; then
+      mkdir -p "$(dirname "${STATE_FILE}")"
+      echo "${block_number}" > "${STATE_FILE}"
+    fi
+    
+    current_timestamp=$(date +%s)
+    last_import_timestamp=$(date -r "${STATE_FILE}" +%s)
+    
+    age=$((current_timestamp - last_import_timestamp))
+    
+    if [ $age -lt $AGE_THRESHOLD ]; then
+        exit 0
+    else
+        echo "Last block import event was $age seconds ago. Threshold is $AGE_THRESHOLD seconds"; exit 1
+    fi
+  wait-for-sync.sh: |-
+    #!/usr/bin/env sh
+    # shellcheck disable=SC3040
+    
+    # We assume that node is syncing from initial snapshot when:
+    # (get_block_number == 0x0) OR (is_syncing == true)
+    
+    set -e
+    
+    HTTP_PORT="8545"
+    
+    # expected output format: 0x50938d
+    get_block_number() {
+        wget "http://localhost:$HTTP_PORT" -qO- \
+            --header 'Content-Type: application/json' \
+            --post-data '{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}' \
+        | sed -r 's/.*"result":"([^"]+)".*/\1/g'
+    }
+    
+    # exit codes: 1 = sync completed, 0 = sync in progress
+    is_syncing() {
+        wget "http://localhost:$HTTP_PORT" -qO- \
+            --header 'Content-Type: application/json' \
+            --post-data '{"jsonrpc":"2.0","method":"eth_syncing","id":1}' \
+        | grep -qv "false"
+    }
+    
+    if ! get_block_number | grep -qE '^0x[a-z0-9]+'; then
+        echo "Error reading block number"; exit 1
+    fi
+    
+    if is_syncing || [ "$(get_block_number)" = "0x0" ]; then
+        echo "Initial sync is in progress"
+        exit 1
+    else
+        exit 0
+    fi
+  init-genesis.sh: |-
+    #!/usr/bin/env sh
+    set -e
+    
+    if [ ! -f /root/.ethereum/.initialized ]; then
+        wget -qO /tmp/genesis.json ""
+        geth init /tmp/genesis.json
+        touch /root/.ethereum/.initialized
+        echo "Successfully initialized from genesis file"
+    else
+        echo "Already initialized, skipping."
+    fi
+---
+# Source: op-geth/templates/service-authrpc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-op-geth-authrpc
+  labels:
+    service-type: authrpc
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: authrpc
+      port: 8551
+      targetPort: authrpc
+  selector:
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+---
+# Source: op-geth/templates/service-metrics.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-op-geth-metrics
+  labels:
+    service-type: metrics
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: metrics
+      port: 6060
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+---
+# Source: op-geth/templates/service-p2p-disc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-op-geth-p2p-discovery
+  labels:
+    service-type: p2p-discovery
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  ports:
+    - name: p2p-udp
+      port: 30301
+      targetPort: p2p-udp
+      protocol: UDP
+  selector:
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+---
+# Source: op-geth/templates/service-p2p.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-op-geth-p2p
+  labels:
+    service-type: p2p
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  ports:
+    - name: p2p-tcp
+      port: 30303
+      targetPort: p2p-tcp
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+---
+# Source: op-geth/templates/service-rpc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-op-geth-rpc
+  labels:
+    service-type: rpc
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8545
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+---
+# Source: op-geth/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-op-geth
+  labels:
+    helm.sh/chart: op-geth-0.2.0
+    app.kubernetes.io/name: op-geth
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.101308.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: op-geth
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: op-geth
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/configmap-scripts: 123c962f9b96936db99cca95a02a91e848f000f342b413fe06700e4c4fdebd19
+      labels:
+        app.kubernetes.io/name: op-geth
+        app.kubernetes.io/instance: release-name
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 300
+      serviceAccountName: release-name-op-geth
+      securityContext:
+        fsGroup: 10001
+      initContainers:
+      containers:
+      - name: op-geth
+        image: "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-geth:v1.101308.2"
+        imagePullPolicy: "Always"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          runAsGroup: 10001
+          runAsNonRoot: true
+          runAsUser: 10001
+        args:
+        - --datadir=/data
+        - --op-network=op-mainnet
+        - --syncmode=snap
+        - --maxpeers=50
+        - --authrpc.addr=0.0.0.0
+        - --authrpc.jwtsecret=/secrets/jwt.hex
+        - --authrpc.vhosts=*
+        - --authrpc.port=8551
+        - --http
+        - --http.addr=0.0.0.0
+        - --http.port=8545
+        - --http.api=eth,net,web3
+        - --http.vhosts=*
+        - --http.corsdomain=*
+        - --gcmode=full
+        - --snapshot=true
+        - --rollup.sequencerhttp=https://mainnet-sequencer.optimism.io/
+        - --rollup.disabletxpoolgossip=true
+        - --rollup.halt=major
+        - --verbosity=3
+        - --port=30303
+        - --discovery.port=30301
+        - --nat=any
+        - --state.scheme=path
+        ports:
+        - name: http
+          containerPort: 8545
+        - name: authrpc
+          containerPort: 8551
+        - name: p2p-tcp
+          containerPort: 30303
+          protocol: TCP
+        - name: p2p-udp
+          containerPort: 30301
+          protocol: UDP
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: secrets
+          mountPath: /secrets
+        - name: scripts
+          mountPath: /scripts
+        resources:
+          {}
+      volumes:
+      - name: secrets
+        secret:
+          secretName: release-name-op-geth
+      - name: scripts
+        configMap:
+          name: release-name-op-geth-scripts
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app.kubernetes.io/name: op-geth
+        app.kubernetes.io/instance: release-name
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: "2Ti"

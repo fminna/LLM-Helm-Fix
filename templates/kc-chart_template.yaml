@@ -1,0 +1,305 @@
+---
+# Source: kc-chart/templates/00-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kc-chart-secrets
+  namespace: keepcoding
+type: Opaque
+stringData:
+  DB_PASS: "654321"
+  WP_ADMIN_PASS: "keepcoding"
+  MYSQL_ROOT_PASSWORD: "kc$47625875"
+---
+# Source: kc-chart/templates/01-configmap-env.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kc-chart-configmap
+  namespace: keepcoding
+data:
+  DB_HOST: "mysql-service"
+  DB_PORT: "3306"
+  DB_NAME: "keepcoding"
+  DB_USER: "kc_user"
+  DB_PREFIX: "kc_"
+  WP_HOST: "yotkt.com"
+  WP_PATH: "/var/www/html"
+  WP_TITLE: "Keepcoding Academy"
+  WP_ADMIN_USER: "keepcoding"
+  WP_ADMIN_MAIL: "devops@keepcoding.com"
+  BUILD_ENV: "production"
+---
+# Source: kc-chart/templates/02-pvc-mysql.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kc-chart-mysql-pv-claim
+  namespace: keepcoding
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: kc-chart/templates/05-pvc-wp.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kc-chart-wordpress-pv-claim
+  namespace: keepcoding
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Source: kc-chart/templates/03-service-mysql.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  namespace: keepcoding
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+  ports:
+    - protocol: TCP
+      port: 3306
+      targetPort: 3306
+---
+# Source: kc-chart/templates/07-service-wp.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-service
+  namespace: keepcoding
+spec:
+  type: ClusterIP
+  selector:
+    app: wordpress
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+# Source: kc-chart/templates/06-deploy-wp.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kc-chart-wordpress-deployment
+  namespace: keepcoding
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: wordpress
+  template:
+    metadata:
+      labels:
+        app: wordpress
+    spec:
+      affinity:
+        # NO PUEDEN ESTAR EN EL MISMO NODO PODS DE WORDPRESS
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - wordpress
+            topologyKey: "kubernetes.io/hostname"
+        # podAffinity:
+        #   TIENE QUE EXISTIR EN EL MISMO NODO POR LO MENOS UN POD DE MYSQL
+        #   requiredDuringSchedulingIgnoredDuringExecution:
+        #   - labelSelector:
+        #       matchExpressions:
+        #       - key: app
+        #         operator: In
+        #         values:
+        #         - mysql
+        #     topologyKey: "kubernetes.io/hostname"
+      initContainers:
+        - name: init-mysql
+          image: busybox
+          command: ['sh', '-c', 'until nc -z mysql-service 3306; do echo "Waiting for MySQL"; sleep 1; done;']
+      containers:
+      - name: wordpress-container
+        image: jhoncytech/bookworm-apache-wordpress:latest
+        ports:
+        - containerPort: 80
+          name: wordpress
+        envFrom:
+        - configMapRef:
+            name: kc-chart-configmap
+        - secretRef:
+            name: kc-chart-secrets
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "450Mi"
+          requests:
+            cpu: "50m"
+            memory: "256Mi"
+      volumes:
+      - name: kc-chart-wordpress-persistent-storage
+        persistentVolumeClaim:
+          claimName: kc-chart-wordpress-pv-claim
+---
+# Source: kc-chart/templates/08-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kc-chart-kc-hpa
+  namespace: keepcoding
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kc-chart-wordpress-deployment
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu #memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+# Source: kc-chart/templates/04-stateful-mysql.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kc-chart-mysql-statefulset
+  namespace: keepcoding
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      affinity:
+        # NO PUEDEN ESTAR EN EL MISMO NODO PODS DE MYSQL
+        # podAntiAffinity:
+        #   requiredDuringSchedulingIgnoredDuringExecution:
+        #   - labelSelector:
+        #       matchExpressions:
+        #       - key: app
+        #         operator: In
+        #         values:
+        #         - mysql
+        #     topologyKey: "kubernetes.io/hostname"
+        # TIENE QUE EXISTIR EN EL MISMO NODO POR LO MENOS UN POD DE WORDPRESS
+        # podAffinity:
+        #   requiredDuringSchedulingIgnoredDuringExecution:
+        #   - labelSelector:
+        #       matchExpressions:
+        #       - key: app
+        #         operator: In
+        #         values:
+        #         - wordpress
+        #     topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: mysql-container
+        image: mysql:latest
+        env:
+          - name: MYSQL_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: kc-chart-secrets
+                key: MYSQL_ROOT_PASSWORD
+          - name: MYSQL_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: kc-chart-configmap
+                key: DB_NAME
+          - name: MYSQL_USER
+            valueFrom:
+              configMapKeyRef:
+                name: kc-chart-configmap
+                key: DB_USER
+          - name: MYSQL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: kc-chart-secrets
+                key: DB_PASS
+        ports:
+        - containerPort: 3306
+          name: mysql
+        volumeMounts:
+        - name: kc-chart-mysql-persistent-storage
+          mountPath: /var/lib/mysql
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "450Mi"
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+  volumeClaimTemplates:
+  - metadata:
+      name: kc-chart-mysql-persistent-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ] #[ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+# Source: kc-chart/templates/09-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kc-chart-kc-ingress
+  namespace: keepcoding
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  defaultBackend:
+    service:
+      name: wordpress-service
+      port:
+        number: 80
+  rules:
+  - host: yotkt.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: wordpress-service
+            port:
+              number: 80
+      # - path: /apple
+      #   pathType: Prefix
+      #   backend:
+      #     service:
+      #       name: apple-service
+      #       port:
+      #         number: 5678
+      # - path: /banana
+      #   pathType: Prefix
+      #   backend:
+      #     service:
+      #       name: banana-service
+      #       port:
+      #         number: 5678
+      # - path: /pepe
+      #   pathType: Prefix
+      #   backend:
+      #     service:
+      #       name: wordpress-service
+      #       port:
+      #         number: 80

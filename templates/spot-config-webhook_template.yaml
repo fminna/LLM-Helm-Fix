@@ -1,0 +1,260 @@
+---
+# Source: spot-config-webhook/templates/webhook-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: default
+  name: release-name-spot-config-webhook
+---
+# Source: spot-config-webhook/templates/webhook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: auth-delegator-release-name-spot-config-webhook-default
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  namespace: default
+  name: release-name-spot-config-webhook
+---
+# Source: spot-config-webhook/templates/webhook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-spot-config-webhook-unauth-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:discovery
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:unauthenticated
+---
+# Source: spot-config-webhook/templates/webhook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations:
+  name: release-name-spot-config-webhook-apiext
+  namespace: kube-system
+rules:
+- apiGroups:
+  - admission.banzaicloud.com
+  resources:
+  - release-name-spot-config-webhook
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - namespaces
+  - secrets
+  - configmaps
+  - serviceaccounts
+  verbs:
+  - get
+---
+# Source: spot-config-webhook/templates/webhook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: kube-system
+  name: extension-release-name-spot-config-webhook-authentication-reader-default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: release-name-spot-config-webhook-apiext
+subjects:
+- kind: ServiceAccount
+  name: release-name-spot-config-webhook
+  namespace: default
+---
+# Source: spot-config-webhook/templates/webhook-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-spot-config-webhook
+  labels:
+    app: release-name-spot-config-webhook
+    chart: spot-config-webhook-0.1.6
+    release: release-name
+    heritage: Helm
+    component: mutating-webhook
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 8443
+      protocol: TCP
+      name: spotwebhook
+  selector:
+    app: spot-config-webhook
+    release: release-name
+---
+# Source: spot-config-webhook/templates/webhook-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-spot-config-webhook
+  labels:
+    app: spot-config-webhook
+    chart: spot-config-webhook-0.1.6
+    release: release-name
+    heritage: Helm
+    component: mutating-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spot-config-webhook
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: spot-config-webhook
+        release: release-name
+    spec:
+      serviceAccountName: release-name-spot-config-webhook
+      volumes:
+      - name: serving-cert
+        secret:
+          defaultMode: 420
+          secretName: release-name-spot-config-webhook
+      - name: tmp
+        emptyDir: {}
+      containers:
+        - name: spot-config-webhook
+          image: "banzaicloud/spot-config-webhook:0.1.3"
+          command:
+          - "/usr/local/bin/spot-config-webhook"
+          - "--tls-cert-file=/var/serving-cert/servingCert"
+          - "--tls-private-key-file=/var/serving-cert/servingKey"
+          - "--v=8"
+          - "--secure-port=8443"
+          env:
+          - name: SPOT_ANNOTATION_KEY
+            value: app.banzaicloud.io/odPercentage
+          - name: SPOT_API_RESOURCE_GROUP
+            value: admission.banzaicloud.com
+          - name: SPOT_API_RESOURCE_VERSION
+            value: v1beta1
+          - name: SPOT_API_RESOURCE_NAME
+            value: spotscheduling
+          - name: SPOT_CONFIGMAP_NAMESPACE
+            value: pipeline-system
+          - name: SPOT_CONFIGMAP_NAME
+            value: spot-deploy-config
+          - name: SPOT_SCHEDULER_NAME
+            value: spot-scheduler
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8443
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+          volumeMounts:
+          - mountPath: /var/serving-cert
+            name: serving-cert
+          - mountPath: /tmp
+            name: tmp
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            {}
+---
+# Source: spot-config-webhook/templates/apiservice-webhook.yaml
+apiVersion: v1
+kind: List
+metadata:
+items:
+
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: release-name-spot-config-webhook
+  data:
+    servingCert: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUROakNDQWg2Z0F3SUJBZ0lRSFBYV2xuWlN1Q3M0TDRTTnJCZnVYekFOQmdrcWhraUc5dzBCQVFzRkFEQVYKTVJNd0VRWURWUVFERXdwemRtTXRZMkYwTFdOaE1CNFhEVEkwTURVeE5UQTRNemd3TjFvWERUSTFNRFV4TlRBNApNemd3TjFvd056RTFNRE1HQTFVRUF4TXNjbVZzWldGelpTMXVZVzFsTFhOd2IzUXRZMjl1Wm1sbkxYZGxZbWh2CmIyc3VaR1ZtWVhWc2RDNXpkbU13Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRQysKNWdjR2dzbVE5TlZiMTM0ckZGYTd1cDFuMHM5WHVEMDRnL0FJZXA4S2FyWHRKQjR2OVh3bTVMa3dSU1JIbldqdgpRaHlCZE1USWJhcVVEUFhHbzMvUnRYVVFFd2JUb0g5T3dZZHdqUXd6OUtlSVEyMHQyUWlReHJZajZlWGF2TU9GCklEK2YrQ2VJNDRSN1FiOVhldE9EKzBIanlvMlBCcC9EbDk1anpJWUZjYnNyZW43RHV3dE5HekovOUkzYUNjQTIKZFMyRzNHL0Q0YThGMWF4TW1EdHp5akdubHk5WWlibkhmM0kyT0lDR1o5YlduR1VBcEZCSVpkSndRV0hVVzAyNgpweXhGemQ5dFd2WnYrZ1FxSTd5Mng3MXUvL1B2Y285TGJPNmE3QmVSMzJPRmh6NkVKTG5zOGdLREtwdi9oSEtFCkxxR3d5N214YldudXZLUVVLSURIQWdNQkFBR2pZREJlTUE0R0ExVWREd0VCL3dRRUF3SUZvREFkQmdOVkhTVUUKRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEQVlEVlIwVEFRSC9CQUl3QURBZkJnTlZIU01FR0RBVwpnQlNEbEdtQ2xqT3U2OXdFMDVuVnRBL3RMeVZ1WnpBTkJna3Foa2lHOXcwQkFRc0ZBQU9DQVFFQUp5Rm11SDZnCmtFb045UTF0Ui8ydWVST1BmMVdYbFdsWGl5emJXRVVYSlYzTGNsZTRualRJeklldWdyZ1lIT3Q0NzlwZ2VSdDEKK1lGZTRMZzZlY05BZXVEMnVTRlZxanFQejFZS0JScW5OYU5HaW9sRHI3OXhtbjFwOVloM0ZuMXFTaGU1bnpxcAp1b3p0QndwZjNHWEtLT2tvYVMzMWJTYVZmb0ttSVVrV2lZb2I0TzlaOFZaSFRLT2hiaE9rWUhRRkJyWWRJc0dWCjB0MFlNNC9VOUdxaldiYkVNRldHcWozVmdrM2MvQVNtWFdZUTlkSi9BWXNGblFIby9NRDVmTlQ5YlQ0cjRaYWwKTDlkRFJyUGRrNlNNVGJFNlNUUmE0UUg2MVc4Q0UxTGVjcG9YQWZSU2ZBR3o1ZXM2UCtCWGhIWWl1dDArQXhUcQpXK1ZjeG5xbjlrN3lLQT09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    servingKey: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdnVZSEJvTEprUFRWVzlkK0t4Uld1N3FkWjlMUFY3ZzlPSVB3Q0hxZkNtcTE3U1FlCkwvVjhKdVM1TUVVa1I1MW83MEljZ1hURXlHMnFsQXoxeHFOLzBiVjFFQk1HMDZCL1RzR0hjSTBNTS9TbmlFTnQKTGRrSWtNYTJJK25sMnJ6RGhTQS9uL2duaU9PRWUwRy9WM3JUZy90QjQ4cU5qd2FmdzVmZVk4eUdCWEc3SzNwKwp3N3NMVFJzeWYvU04yZ25BTm5VdGh0eHZ3K0d2QmRXc1RKZzdjOG94cDVjdldJbTV4Mzl5TmppQWhtZlcxcHhsCkFLUlFTR1hTY0VGaDFGdE51cWNzUmMzZmJWcjJiL29FS2lPOHRzZTlidi96NzNLUFMyenVtdXdYa2Q5amhZYysKaENTNTdQSUNneXFiLzRSeWhDNmhzTXU1c1cxcDdyeWtGQ2lBeHdJREFRQUJBb0lCQUFzRUwwZWE2SkxxN2gwYwp0SFU3K1QxZ0taRkNReURteXZHbCs0WWh2V2ZXZktVd3ZtVTZIMjRIS1FDMkhML2RQNTcvQzdJVTBQNVlCYzRCCmFYV0xIZWMyTjRrejcrTHFraTR6VU9PWDRDcG5aZnVoR0gzYTFubTBYZko0bndFZWY1SUJLR3JNNFVzdkJnZ3UKNVNIaFBxK1JJbDVJNUI1cTNYRm1KRGxTSmpIT0lxZEhNQW5XVkVDZXhPSWl2UWxCVkNMTkJjNStLL3M2TFRPQwpSU2UveUozMDQ4MVdpdE02ZHhCSC8zNXVLeEVHS0I1Rld0a2NFN3ljenB4SXRFN2IwdnJvWHA3U1Y3WEpnSUZKCjBkcDlMRXgvdEJ2T25iV0FFdWVOUSs4OGs2SUhNL3dPVGlEVG9YZXU0SURPSlhXamFObWdWOVZKM1ZQVGJUeVYKRnIxNmdyRUNnWUVBL0lpUmwyMTZTb3Y0Y01TNDNVVytsQVFLbWJWNDU0MEZYRmdOU0FDMmx5R0tOUWtqR09hQwpwbWlKVXk0S2c2ZWlzTC9YQW0vMXNVcWxobms1V0o1WnNGUlJoaDBTTS9aVXJSd3ZaN2JRSEFtTHRBWEEzYit5ClA0VkYzWXcyRXdzNE94dlRaVlJqcTdqenVOS2Z4dXRDNzVkZnVkSWJGRHBReTk1WG4rSElDaXNDZ1lFQXdZVGQKMlZMWDl0ZG5iVlJmRkZwMlprUHY0andSZGZxYlQvNFpDRHp0SDgyL2g0QmdUN25UZWhLSlN0Mk84OXJDNThrOApLOWRKYjdLVVdmaHVlaVZZaWRzVEV6RjNySW9INUNWNFcvMVh4V0xwYWoxVnVrSEZiYmZLZ0xYZVRTN2ZFWExqCmZUQXRNK0o0N1lURmJ1SWJiK2JuL0w0NFFPWjZGMzloOHRSNW9kVUNnWUVBdG9Ed1R6S1VkYm1RYzljSUR3bnYKZ0VNbmNneC9jMEFzUnA5d0FjQmFOUUROUkNUMVUzS0xxejNUT09VR1BqMXhTekZwYnQ2QS9uOEcveGN1eFllegpJOGJjSUFOMGUwOGp4UE9nb3VDd3FBS1NEeWsxU0V6WXdpVkw1NkFFR0dFOFl5TnA5RW8zdWd2eFAzb2dkSDdqCm9nbVE2ZGNaTU5Zd1BCWFUxN3d4ZUg4Q2dZQmNCWTVwRlZmVTdVRWxZQVdHYkMzNUd6MHEyMTJDT0pVNlNKNG0KcUxJcGVYRW1RZ21LWDljTUtWeFgyVnRzNGcza29uQ1dlRjFYWEJmbllKZElSaElBRzhqS1M2K1l3RnBZUnVrZwo5U3VUbFNGaGY2RVFYTTVCQ2pDbFc5WkY1WS8xZ0NobEUwK3JhSG9RbUI0NlNCSzc5NVZCUGtNSnVZODlOVG1pCmV4OExzUUtCZ1FDVDhkR0VIWlljUVZ0M3Q5amdDTGFFTDh2eHRJblFVM2dVZnF0b3BwbVEyRmZEUG8xZjIzZGoKbFp6L213WTlEcVN6QWFNM2xmdDNGTklNak90cDhPVzBuSXB5K0trTW83TU1tb21sMlFGVGdNN1UxUDl5RFQ1Ygp4TzlDMC90M2FLM0huTXdIQmYxaEtMOVRtMzVCSTRUNlJLeVBRUzZSOVhiSDJkTmw5b1MxeXc9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=
+    caCert: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURGakNDQWY2Z0F3SUJBZ0lSQVAwT2xLK1dNNytLejFySHZsYXAwZzB3RFFZSktvWklodmNOQVFFTEJRQXcKRlRFVE1CRUdBMVVFQXhNS2MzWmpMV05oZEMxallUQWVGdzB5TkRBMU1UVXdPRE00TURkYUZ3MHpOREExTVRNdwpPRE00TURkYU1CVXhFekFSQmdOVkJBTVRDbk4yWXkxallYUXRZMkV3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBCkE0SUJEd0F3Z2dFS0FvSUJBUUNaNTgyYUdRblJVRXdmdlRnVUltS0J3L1RCTjRBMUJCUGR1eUdGRGJhQ2FHdHYKNDJzWG5VRFdlVGRsMEhCMEtBL050KzRuZVNPR090NTFXbTJtTEhaY3d5aDY4cHlBYTh3aXZyd20rcU5QY2xiQwpZTUFCUTUwTXZYd0g3VlpKUzlHNXl5eHNQbFlKd1Q4MUlGWnRQQUNZU0pBNldrbnQ2WjEyc3k5TDFySUYyVngyCitUYTEwazZkT2lXU29tR1N0SzMxTk50aklSQlRUYXhZVTZJQk45ZlBGUFE0UndhVjkxbXlMZ1J1WWZkMHp3Z0kKekJRMVg2a0l4NEhRSURkVGdCeWhIN3VteDB3MzFFVU5IRi9NcWF6TG1Qb2pveS9md0tQNjdkbElZd2ozNXE4Uwo5ZzJ3Tk5TQTQzUFhoQ1ozaUV5WTFBVlNsc3JqWGZabXBsa3dodzNKQWdNQkFBR2pZVEJmTUE0R0ExVWREd0VCCi93UUVBd0lDcERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEd1lEVlIwVEFRSC8KQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVZzVScGdwWXpydXZjQk5PWjFiUVA3UzhsYm1jd0RRWUpLb1pJaHZjTgpBUUVMQlFBRGdnRUJBRk5NTEVyNzNyZEVWc3JlUVF0ZXhadE9zRU5jT2xjUmRuWlRsZnZXZHp6UzJQYmk3TDkvCkdORUNiSndmai9ZS1NoTTRoL2M5Vlh0OVFrR05LbzBlWlBQSnlmZ0d3cDNrNWNsVlpSbjRyTmc3d0Y0U25XYUQKcVdDczFBK1RuMEpwZzhoWFB2MjllMmY4QjNscitEU0N1eTJxRHdtM3oxUFZHSHB2QWtUM09PcGNvekc5b1B0bQpDeUNJWXN4SkU4ZldjQnFWOEFNTkxsQVVva2QrRGh0VmsvNWVFVU9zenNDYVVKRXdoay8rTlVMM2NzWG5jZzVRCmFoUDhaQkFac0U4S2taTzZYS3BkRU8wZEt5ZFJQQ3kxbGVvNGhRNkN3OU15U21ONk9pSnBSVnVaU2MxNDB2cm4KVnJ0TG1Mb1ZFOFRnbTZIVDRBNS9DVFEvTFFXeWg3VW5GOTQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+
+- apiVersion: apiregistration.k8s.io/v1beta1
+  kind: APIService
+  metadata:
+    name: v1beta1.admission.banzaicloud.com
+  spec:
+    caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURGakNDQWY2Z0F3SUJBZ0lSQVAwT2xLK1dNNytLejFySHZsYXAwZzB3RFFZSktvWklodmNOQVFFTEJRQXcKRlRFVE1CRUdBMVVFQXhNS2MzWmpMV05oZEMxallUQWVGdzB5TkRBMU1UVXdPRE00TURkYUZ3MHpOREExTVRNdwpPRE00TURkYU1CVXhFekFSQmdOVkJBTVRDbk4yWXkxallYUXRZMkV3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBCkE0SUJEd0F3Z2dFS0FvSUJBUUNaNTgyYUdRblJVRXdmdlRnVUltS0J3L1RCTjRBMUJCUGR1eUdGRGJhQ2FHdHYKNDJzWG5VRFdlVGRsMEhCMEtBL050KzRuZVNPR090NTFXbTJtTEhaY3d5aDY4cHlBYTh3aXZyd20rcU5QY2xiQwpZTUFCUTUwTXZYd0g3VlpKUzlHNXl5eHNQbFlKd1Q4MUlGWnRQQUNZU0pBNldrbnQ2WjEyc3k5TDFySUYyVngyCitUYTEwazZkT2lXU29tR1N0SzMxTk50aklSQlRUYXhZVTZJQk45ZlBGUFE0UndhVjkxbXlMZ1J1WWZkMHp3Z0kKekJRMVg2a0l4NEhRSURkVGdCeWhIN3VteDB3MzFFVU5IRi9NcWF6TG1Qb2pveS9md0tQNjdkbElZd2ozNXE4Uwo5ZzJ3Tk5TQTQzUFhoQ1ozaUV5WTFBVlNsc3JqWGZabXBsa3dodzNKQWdNQkFBR2pZVEJmTUE0R0ExVWREd0VCCi93UUVBd0lDcERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEd1lEVlIwVEFRSC8KQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVZzVScGdwWXpydXZjQk5PWjFiUVA3UzhsYm1jd0RRWUpLb1pJaHZjTgpBUUVMQlFBRGdnRUJBRk5NTEVyNzNyZEVWc3JlUVF0ZXhadE9zRU5jT2xjUmRuWlRsZnZXZHp6UzJQYmk3TDkvCkdORUNiSndmai9ZS1NoTTRoL2M5Vlh0OVFrR05LbzBlWlBQSnlmZ0d3cDNrNWNsVlpSbjRyTmc3d0Y0U25XYUQKcVdDczFBK1RuMEpwZzhoWFB2MjllMmY4QjNscitEU0N1eTJxRHdtM3oxUFZHSHB2QWtUM09PcGNvekc5b1B0bQpDeUNJWXN4SkU4ZldjQnFWOEFNTkxsQVVva2QrRGh0VmsvNWVFVU9zenNDYVVKRXdoay8rTlVMM2NzWG5jZzVRCmFoUDhaQkFac0U4S2taTzZYS3BkRU8wZEt5ZFJQQ3kxbGVvNGhRNkN3OU15U21ONk9pSnBSVnVaU2MxNDB2cm4KVnJ0TG1Mb1ZFOFRnbTZIVDRBNS9DVFEvTFFXeWg3VW5GOTQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    group: admission.banzaicloud.com
+    groupPriorityMinimum: 1000
+    versionPriority: 15
+    service:
+      name: release-name-spot-config-webhook
+      namespace: default
+    version: v1beta1
+
+- apiVersion: admissionregistration.k8s.io/v1beta1
+  kind: MutatingWebhookConfiguration
+  metadata:
+    name: release-name-spot-config-webhook
+  webhooks:
+  - name: deployments.spot-config-webhook.admission.banzaicloud.com
+    clientConfig:
+      service:
+        namespace: default
+        name: kubernetes
+        path: /apis/admission.banzaicloud.com/v1beta1/spotschedulings
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURGakNDQWY2Z0F3SUJBZ0lSQVAwT2xLK1dNNytLejFySHZsYXAwZzB3RFFZSktvWklodmNOQVFFTEJRQXcKRlRFVE1CRUdBMVVFQXhNS2MzWmpMV05oZEMxallUQWVGdzB5TkRBMU1UVXdPRE00TURkYUZ3MHpOREExTVRNdwpPRE00TURkYU1CVXhFekFSQmdOVkJBTVRDbk4yWXkxallYUXRZMkV3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBCkE0SUJEd0F3Z2dFS0FvSUJBUUNaNTgyYUdRblJVRXdmdlRnVUltS0J3L1RCTjRBMUJCUGR1eUdGRGJhQ2FHdHYKNDJzWG5VRFdlVGRsMEhCMEtBL050KzRuZVNPR090NTFXbTJtTEhaY3d5aDY4cHlBYTh3aXZyd20rcU5QY2xiQwpZTUFCUTUwTXZYd0g3VlpKUzlHNXl5eHNQbFlKd1Q4MUlGWnRQQUNZU0pBNldrbnQ2WjEyc3k5TDFySUYyVngyCitUYTEwazZkT2lXU29tR1N0SzMxTk50aklSQlRUYXhZVTZJQk45ZlBGUFE0UndhVjkxbXlMZ1J1WWZkMHp3Z0kKekJRMVg2a0l4NEhRSURkVGdCeWhIN3VteDB3MzFFVU5IRi9NcWF6TG1Qb2pveS9md0tQNjdkbElZd2ozNXE4Uwo5ZzJ3Tk5TQTQzUFhoQ1ozaUV5WTFBVlNsc3JqWGZabXBsa3dodzNKQWdNQkFBR2pZVEJmTUE0R0ExVWREd0VCCi93UUVBd0lDcERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEd1lEVlIwVEFRSC8KQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVZzVScGdwWXpydXZjQk5PWjFiUVA3UzhsYm1jd0RRWUpLb1pJaHZjTgpBUUVMQlFBRGdnRUJBRk5NTEVyNzNyZEVWc3JlUVF0ZXhadE9zRU5jT2xjUmRuWlRsZnZXZHp6UzJQYmk3TDkvCkdORUNiSndmai9ZS1NoTTRoL2M5Vlh0OVFrR05LbzBlWlBQSnlmZ0d3cDNrNWNsVlpSbjRyTmc3d0Y0U25XYUQKcVdDczFBK1RuMEpwZzhoWFB2MjllMmY4QjNscitEU0N1eTJxRHdtM3oxUFZHSHB2QWtUM09PcGNvekc5b1B0bQpDeUNJWXN4SkU4ZldjQnFWOEFNTkxsQVVva2QrRGh0VmsvNWVFVU9zenNDYVVKRXdoay8rTlVMM2NzWG5jZzVRCmFoUDhaQkFac0U4S2taTzZYS3BkRU8wZEt5ZFJQQ3kxbGVvNGhRNkN3OU15U21ONk9pSnBSVnVaU2MxNDB2cm4KVnJ0TG1Mb1ZFOFRnbTZIVDRBNS9DVFEvTFFXeWg3VW5GOTQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    rules:
+    - operations:
+      - CREATE
+      apiGroups:
+      - "*"
+      apiVersions:
+      - "*"
+      resources:
+      - deployments
+    failurePolicy: Fail
+  - name: replicasets.spot-config-webhook.admission.banzaicloud.com
+    clientConfig:
+      service:
+        namespace: default
+        name: kubernetes
+        path: /apis/admission.banzaicloud.com/v1beta1/spotschedulings
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURGakNDQWY2Z0F3SUJBZ0lSQVAwT2xLK1dNNytLejFySHZsYXAwZzB3RFFZSktvWklodmNOQVFFTEJRQXcKRlRFVE1CRUdBMVVFQXhNS2MzWmpMV05oZEMxallUQWVGdzB5TkRBMU1UVXdPRE00TURkYUZ3MHpOREExTVRNdwpPRE00TURkYU1CVXhFekFSQmdOVkJBTVRDbk4yWXkxallYUXRZMkV3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBCkE0SUJEd0F3Z2dFS0FvSUJBUUNaNTgyYUdRblJVRXdmdlRnVUltS0J3L1RCTjRBMUJCUGR1eUdGRGJhQ2FHdHYKNDJzWG5VRFdlVGRsMEhCMEtBL050KzRuZVNPR090NTFXbTJtTEhaY3d5aDY4cHlBYTh3aXZyd20rcU5QY2xiQwpZTUFCUTUwTXZYd0g3VlpKUzlHNXl5eHNQbFlKd1Q4MUlGWnRQQUNZU0pBNldrbnQ2WjEyc3k5TDFySUYyVngyCitUYTEwazZkT2lXU29tR1N0SzMxTk50aklSQlRUYXhZVTZJQk45ZlBGUFE0UndhVjkxbXlMZ1J1WWZkMHp3Z0kKekJRMVg2a0l4NEhRSURkVGdCeWhIN3VteDB3MzFFVU5IRi9NcWF6TG1Qb2pveS9md0tQNjdkbElZd2ozNXE4Uwo5ZzJ3Tk5TQTQzUFhoQ1ozaUV5WTFBVlNsc3JqWGZabXBsa3dodzNKQWdNQkFBR2pZVEJmTUE0R0ExVWREd0VCCi93UUVBd0lDcERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEd1lEVlIwVEFRSC8KQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVZzVScGdwWXpydXZjQk5PWjFiUVA3UzhsYm1jd0RRWUpLb1pJaHZjTgpBUUVMQlFBRGdnRUJBRk5NTEVyNzNyZEVWc3JlUVF0ZXhadE9zRU5jT2xjUmRuWlRsZnZXZHp6UzJQYmk3TDkvCkdORUNiSndmai9ZS1NoTTRoL2M5Vlh0OVFrR05LbzBlWlBQSnlmZ0d3cDNrNWNsVlpSbjRyTmc3d0Y0U25XYUQKcVdDczFBK1RuMEpwZzhoWFB2MjllMmY4QjNscitEU0N1eTJxRHdtM3oxUFZHSHB2QWtUM09PcGNvekc5b1B0bQpDeUNJWXN4SkU4ZldjQnFWOEFNTkxsQVVva2QrRGh0VmsvNWVFVU9zenNDYVVKRXdoay8rTlVMM2NzWG5jZzVRCmFoUDhaQkFac0U4S2taTzZYS3BkRU8wZEt5ZFJQQ3kxbGVvNGhRNkN3OU15U21ONk9pSnBSVnVaU2MxNDB2cm4KVnJ0TG1Mb1ZFOFRnbTZIVDRBNS9DVFEvTFFXeWg3VW5GOTQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    rules:
+    - operations:
+      - CREATE
+      apiGroups:
+      - "*"
+      apiVersions:
+      - "*"
+      resources:
+      - replicasets
+    failurePolicy: Fail
+  - name: statefulsets.spot-config-webhook.admission.banzaicloud.com
+    clientConfig:
+      service:
+        namespace: default
+        name: kubernetes
+        path: /apis/admission.banzaicloud.com/v1beta1/spotschedulings
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURGakNDQWY2Z0F3SUJBZ0lSQVAwT2xLK1dNNytLejFySHZsYXAwZzB3RFFZSktvWklodmNOQVFFTEJRQXcKRlRFVE1CRUdBMVVFQXhNS2MzWmpMV05oZEMxallUQWVGdzB5TkRBMU1UVXdPRE00TURkYUZ3MHpOREExTVRNdwpPRE00TURkYU1CVXhFekFSQmdOVkJBTVRDbk4yWXkxallYUXRZMkV3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBCkE0SUJEd0F3Z2dFS0FvSUJBUUNaNTgyYUdRblJVRXdmdlRnVUltS0J3L1RCTjRBMUJCUGR1eUdGRGJhQ2FHdHYKNDJzWG5VRFdlVGRsMEhCMEtBL050KzRuZVNPR090NTFXbTJtTEhaY3d5aDY4cHlBYTh3aXZyd20rcU5QY2xiQwpZTUFCUTUwTXZYd0g3VlpKUzlHNXl5eHNQbFlKd1Q4MUlGWnRQQUNZU0pBNldrbnQ2WjEyc3k5TDFySUYyVngyCitUYTEwazZkT2lXU29tR1N0SzMxTk50aklSQlRUYXhZVTZJQk45ZlBGUFE0UndhVjkxbXlMZ1J1WWZkMHp3Z0kKekJRMVg2a0l4NEhRSURkVGdCeWhIN3VteDB3MzFFVU5IRi9NcWF6TG1Qb2pveS9md0tQNjdkbElZd2ozNXE4Uwo5ZzJ3Tk5TQTQzUFhoQ1ozaUV5WTFBVlNsc3JqWGZabXBsa3dodzNKQWdNQkFBR2pZVEJmTUE0R0ExVWREd0VCCi93UUVBd0lDcERBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUlLd1lCQlFVSEF3SXdEd1lEVlIwVEFRSC8KQkFVd0F3RUIvekFkQmdOVkhRNEVGZ1FVZzVScGdwWXpydXZjQk5PWjFiUVA3UzhsYm1jd0RRWUpLb1pJaHZjTgpBUUVMQlFBRGdnRUJBRk5NTEVyNzNyZEVWc3JlUVF0ZXhadE9zRU5jT2xjUmRuWlRsZnZXZHp6UzJQYmk3TDkvCkdORUNiSndmai9ZS1NoTTRoL2M5Vlh0OVFrR05LbzBlWlBQSnlmZ0d3cDNrNWNsVlpSbjRyTmc3d0Y0U25XYUQKcVdDczFBK1RuMEpwZzhoWFB2MjllMmY4QjNscitEU0N1eTJxRHdtM3oxUFZHSHB2QWtUM09PcGNvekc5b1B0bQpDeUNJWXN4SkU4ZldjQnFWOEFNTkxsQVVva2QrRGh0VmsvNWVFVU9zenNDYVVKRXdoay8rTlVMM2NzWG5jZzVRCmFoUDhaQkFac0U4S2taTzZYS3BkRU8wZEt5ZFJQQ3kxbGVvNGhRNkN3OU15U21ONk9pSnBSVnVaU2MxNDB2cm4KVnJ0TG1Mb1ZFOFRnbTZIVDRBNS9DVFEvTFFXeWg3VW5GOTQ9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    rules:
+    - operations:
+      - CREATE
+      apiGroups:
+      - "*"
+      apiVersions:
+      - "*"
+      resources:
+      - statefulsets
+    failurePolicy: Fail

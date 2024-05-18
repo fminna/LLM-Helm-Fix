@@ -1,0 +1,270 @@
+---
+# Source: cluster-gateway-manager/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-gateway-manager
+  namespace: default
+---
+# Source: cluster-gateway-manager/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-cluster-management:cluster-gateway:addon-manager
+rules:
+  - apiGroups:
+      - cluster.open-cluster-management.io
+    resources:
+      - managedclusters
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - authentication.open-cluster-management.io
+    resources:
+      - managedserviceaccounts
+    verbs:
+      - "*"
+  - apiGroups:
+      - config.gateway.open-cluster-management.io
+    resources:
+      - clustergatewayconfigurations
+    verbs:
+      - "*"
+  - apiGroups:
+      - gateway.open-cluster-management.io
+    resources:
+      - clustergateways/health
+      - clustergateways/proxy
+    verbs:
+      - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - secrets
+      - configmaps
+      - events
+      - serviceaccounts
+      - services
+    verbs:
+      - "*"
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - "*"
+  - apiGroups:
+      - work.open-cluster-management.io
+    resources:
+      - manifestworks
+    verbs:
+      - "*"
+  - apiGroups:
+      - addon.open-cluster-management.io
+    resources:
+      - clustermanagementaddons
+      - managedclusteraddons
+      - clustermanagementaddons/status
+      - managedclusteraddons/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+  - apiGroups:
+      - certificates.k8s.io
+    resources:
+      - certificatesigningrequests
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - admissionregistration.k8s.io
+    resources:
+      - mutatingwebhookconfigurations
+      - validatingwebhookconfigurations
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - flowcontrol.apiserver.k8s.io
+    resources:
+      - prioritylevelconfigurations
+      - flowschemas
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterroles
+      - clusterrolebindings
+    verbs:
+      - create
+      - bind
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - create
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - "*"
+  - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - "*"
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - "*"
+---
+# Source: cluster-gateway-manager/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-cluster-management:cluster-gateway:addon-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-cluster-management:cluster-gateway:addon-manager
+subjects:
+  - kind: ServiceAccount
+    name: cluster-gateway-manager
+    namespace: default
+---
+# Source: cluster-gateway-manager/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-gateway-manager
+  namespace: default
+  labels:
+    helm.sh/chart: cluster-gateway-manager-v2024.2.25
+    app.kubernetes.io/name: cluster-gateway-manager
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cluster-gateway-manager
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: cluster-gateway-manager-v2024.2.25
+        app.kubernetes.io/name: cluster-gateway-manager
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccount: cluster-gateway-manager
+      automountServiceAccountToken: true
+      containers:
+        - name: manager
+          image: ghcr.io/kluster-manager/cluster-gateway-manager:latest
+          imagePullPolicy: Always
+          args:
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NAMESPACE
+              value: default
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+          volumeMounts:
+      volumes:
+---
+# Source: cluster-gateway-manager/templates/k8s/addon.yaml
+apiVersion: config.gateway.open-cluster-management.io/v1alpha1
+kind: ClusterGatewayConfiguration
+metadata:
+  name: cluster-gateway
+spec:
+  image: ghcr.io/kluster-manager/cluster-gateway:latest
+  secretManagement:
+  
+    type: ManagedServiceAccount
+    managedServiceAccount:
+      name: cluster-gateway
+  
+  egress:
+    clusterProxy:
+      credentials:
+        namespace: open-cluster-management-addon
+        proxyClientCASecretName: proxy-server-ca
+        proxyClientSecretName: proxy-client
+      proxyServerHost: proxy-entrypoint.open-cluster-management-addon.svc
+      proxyServerPort: 8090
+---
+# Source: cluster-gateway-manager/templates/k8s/addon.yaml
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: ClusterManagementAddOn
+metadata:
+  name: cluster-gateway
+  annotations:
+    addon.open-cluster-management.io/lifecycle: "addon-manager"
+spec:
+  addOnMeta:
+    displayName: cluster-gateway-manager
+    description: A Helm chart for Cluster-Gateway Addon-Manager
+  installStrategy:
+    type: Placements
+    placements:
+      - name: global
+        namespace: default
+  supportedConfigs:
+    - group: config.gateway.open-cluster-management.io
+      resource: clustergatewayconfigurations
+      defaultConfig:
+        name: cluster-gateway
+---
+# Source: cluster-gateway-manager/templates/k8s/addon.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: default
+spec:
+  clusterSet: global
+---
+# Source: cluster-gateway-manager/templates/k8s/addon.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: global
+  namespace: default
+spec:
+  clusterSets:
+    - global

@@ -1,0 +1,354 @@
+---
+# Source: hpe-flexvolume-driver/templates/hpe-doryd-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hpe-flexvolume-sa
+  namespace: default
+---
+# Source: hpe-flexvolume-driver/templates/hpe-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hpe-secret
+  namespace: default
+stringData:
+  username: admin
+  password: admin
+  backend: 192.168.1.1
+  protocol: iscsi
+---
+# Source: hpe-flexvolume-driver/templates/hpe-config.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: hpe-config
+  namespace: default
+data:
+  volume-driver.json: |-
+    {
+      "global": {},
+      "defaults": {
+          "limitIOPS": "-1",
+          "limitMBPS": "-1",
+          "perfPolicy": "DockerDefault"
+      },
+      "overrides": {}
+    }
+---
+# Source: hpe-flexvolume-driver/templates/sc.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+ name: hpe-standard
+ labels:
+   plugin: release-name
+provisioner: hpe.com/nimble
+parameters:
+  description: Volume created by HPE Volume Driver for Kubernetes FlexVolume Plugin
+---
+# Source: hpe-flexvolume-driver/templates/hpe-doryd-rbac.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: hpe-dynamic-provisioner-role
+  namespace: default
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+---
+# Source: hpe-flexvolume-driver/templates/hpe-doryd-rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: hpe-dynamic-provisioner-binding
+subjects:
+  - kind: ServiceAccount
+    name: hpe-flexvolume-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: hpe-dynamic-provisioner-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: hpe-flexvolume-driver/templates/hpe-flexvolume-plugin.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hpe-flexvolume-driver
+  namespace: default
+  labels:
+    k8s-app: hpe-flexvolume-driver
+spec:
+  selector:
+    matchLabels:
+      name: hpe-flexvolume-driver
+  template:
+    metadata:
+      labels:
+        name: hpe-flexvolume-driver
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: hpe-flexvolume-sa
+      containers:
+      - name: flexvolume
+        image: store/hpestorage/flexvolume-driver:v3.1.0
+        imagePullPolicy: "Always"
+        lifecycle:
+          preStop:
+            # create empty file to let plugin signal handler to perform cleanup of config/cert/dory files
+            exec:
+              command: [ "/bin/sh", "-c", "touch /etc/hpe-storage/remove" ]
+        env:
+        - name: LOG_LEVEL
+          value: info
+        - name: FLAVOR
+          value: k8s
+        - name: PROVIDER_IP
+          valueFrom:
+            secretKeyRef:
+              name: hpe-secret
+              key: backend
+        - name: PROVIDER_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: hpe-secret
+              key: username
+        - name: PROVIDER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hpe-secret
+              key: password
+        - name: PROTOCOL
+          valueFrom:
+            secretKeyRef:
+              name: hpe-secret
+              key: protocol
+        - name: SCOPE
+          value: global
+        - name: PLUGIN_TYPE
+          value: nimble
+        volumeMounts:
+        - name: pluginmountdir
+          mountPath: /var/lib/kubelet
+          mountPropagation: Bidirectional
+        - name: bindmountdir
+          mountPath: /var/lib/kubelet/pods
+          mountPropagation: Bidirectional
+        - name: legacymounts
+          mountPath: /opt/nimble
+          mountPropagation: Bidirectional
+        - name: dev
+          mountPath: /dev
+        - name: libmodules
+          mountPath: /lib/modules
+        - name: var-log
+          mountPath: /var/log
+        - name: var-lib-iscsi
+          mountPath: /var/lib/iscsi
+        - name: exec
+          mountPath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+        - name: runlock
+          mountPath: /run/lock
+        - name: etc-iscsi
+          mountPath: /etc/iscsi
+        - name: etc-multipath
+          mountPath: /etc/multipath
+        - name: etc-multipath-conf
+          mountPath: /etc/multipath.conf
+        - name: etc-redhat-release
+          mountPath: /etc/redhat-release
+        - name: etc-os-release
+          mountPath: /etc/os-release
+        - name: etc-hpe-storage-dir
+          mountPath: /etc/hpe-storage
+        - name: sys
+          mountPath: /sys
+        - name: iscsiadm
+          mountPath: /sbin/iscsiadm
+        - name: config-file
+          mountPath: /etc/hpe-storage/volume-driver.json
+          subPath: volume-driver.json
+        - name: runsystemd
+          mountPath: /run/systemd
+        - name: libsystemd
+          mountPath: /lib/systemd/system
+        - name: usrlocal
+          mountPath: /usr_local
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["SYS_ADMIN"]
+          allowPrivilegeEscalation: true
+      volumes:
+      - name: pluginmountdir
+        hostPath:
+          path: /var/lib/kubelet
+      - name: bindmountdir
+        hostPath:
+          path: /var/lib/kubelet/pods
+      # required to handle legacy mounts from NLT based plugin. Remove this for CoreOS
+      - name: legacymounts
+        hostPath:
+          path: /opt/nimble/
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: libmodules
+        hostPath:
+          path: /lib/modules
+      - name: var-log
+        hostPath:
+          path: /var/log
+      - name: var-lib-iscsi
+        hostPath:
+          path: /var/lib/iscsi/
+      - name: exec
+        hostPath:
+          path: /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+      - name: runlock
+        hostPath:
+          path: /run/lock
+      - name: etc-iscsi
+        hostPath:
+          path: /etc/iscsi/
+      - name: etc-multipath
+        hostPath:
+          path: /etc/multipath/
+      - name: etc-multipath-conf
+        hostPath:
+          path: /etc/multipath.conf
+          type: FileOrCreate
+      - name: etc-redhat-release
+        hostPath:
+          path: /etc/redhat-release
+          type: FileOrCreate
+      - name: etc-os-release
+        hostPath:
+          path: /etc/os-release
+          type: FileOrCreate
+      - name: etc-hpe-storage-dir
+        hostPath:
+          path: /etc/hpe-storage/
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: iscsiadm
+        hostPath:
+          path: /sbin/iscsiadm
+          type: FileOrCreate
+      - name: config-file
+        configMap:
+          name: hpe-config
+      - name: runsystemd
+        hostPath:
+          path: /run/systemd
+      - name: libsystemd
+        hostPath:
+          path: /lib/systemd/system
+      - name: usrlocal
+        hostPath:
+          path: /usr
+---
+# Source: hpe-flexvolume-driver/templates/hpe-doryd.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hpe-dynamic-provisioner
+  namespace: default
+  labels:
+    app: hpe-dynamic-provisioner
+spec:
+  selector:
+    matchLabels:
+      daemon: hpe-dynamic-provisioner-daemon
+  strategy:
+     type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        daemon: hpe-dynamic-provisioner-daemon
+      name: hpe-dynamic-provisioner
+    spec:
+      restartPolicy: Always
+      serviceAccountName: hpe-flexvolume-sa
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        -
+          image: store/hpestorage/k8s-dynamic-provisioner:v3.1.0
+          imagePullPolicy: Always
+          name: hpe-dynamic-provisioner
+          env:
+          - name: LOG_LEVEL
+            value: info
+          volumeMounts:
+             - name: k8s
+               mountPath: /etc/kubernetes
+             - name: flexvolumedriver
+               mountPath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+             - name: varlog
+               mountPath: /var/log
+             - name: hpeconfig
+               mountPath: /etc/hpe-storage
+          securityContext:
+            privileged: true
+      volumes:
+        - name: k8s
+          hostPath:
+             path: /etc/kubernetes
+        - name: flexvolumedriver
+          hostPath:
+             path: /usr/libexec/kubernetes/kubelet-plugins/volume/exec
+        - name: hpeconfig
+          hostPath:
+              path: /etc/hpe-storage
+        - name: varlog
+          hostPath:
+              path: /var/log
+---
+# Source: hpe-flexvolume-driver/templates/hpe-doryd.yaml
+#### HPE Dynamic Provisioner ###
+---
+# Source: hpe-flexvolume-driver/templates/hpe-flexvolume-plugin.yaml
+#### Flexvolume Driver ###
+---
+# Source: hpe-flexvolume-driver/templates/post-install.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name"
+  labels:
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "3.1"
+    helm.sh/chart: "hpe-flexvolume-driver-3.1.0"
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: "release-name"
+      labels:
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/instance: "release-name"
+        helm.sh/chart: "hpe-flexvolume-driver-3.1.0"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: post-install-job
+        image: "alpine:3.3"
+        command: ["/bin/sleep","10"]

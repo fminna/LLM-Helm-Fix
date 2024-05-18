@@ -1,0 +1,195 @@
+---
+# Source: ibm-postgres-dev/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-ibm-postgres-dev
+  labels:
+    app: release-name-ibm-postgres-dev
+    chart: "ibm-postgres-dev-1.1.3"
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  
+  password: "M1NqZmx5SW9ISA=="
+---
+# Source: ibm-postgres-dev/templates/dataVolume.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: "release-name-ibm-postgres-dev-data-stor"
+  labels:
+    app: release-name-ibm-postgres-dev
+    chart: "ibm-postgres-dev-1.1.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  storageClassName: ""
+
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "20Gi"
+---
+# Source: ibm-postgres-dev/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-ibm-postgres-dev
+  labels:
+    app: release-name-ibm-postgres-dev
+    chart: "ibm-postgres-dev-1.1.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: NodePort
+  ports:
+   - name: postgresql
+     port: 5432
+     targetPort: postgresql
+  selector:
+    app: release-name-ibm-postgres-dev
+---
+# Source: ibm-postgres-dev/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-ibm-postgres-dev
+  labels:
+    app: release-name-ibm-postgres-dev
+    chart: "ibm-postgres-dev-1.1.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  template:
+    metadata:
+      labels:
+        app: release-name-ibm-postgres-dev
+    spec:
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      containers:
+      - name: release-name-ibm-postgres-dev
+        image: "ibmcom/postgresql:9.6.6"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        - name: POSTGRESQL_USER
+          value: "postgres"
+          # Required for pg_isready in the health probes.
+        - name: PGUSER
+          value: "postgres"
+        - name: POSTGRESQL_DATABASE
+          value: ""
+        - name: POSTGRES_INITDB_ARGS
+          value: ""
+        - name: POSTGRESQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-ibm-postgres-dev
+              key: password
+        - name: POD_IP
+          valueFrom: { fieldRef: { fieldPath: status.podIP } }
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 15
+          periodSeconds: 20 
+        ports:
+        - name: postgresql
+          containerPort: 5432
+        # set liveness probe to determine if container needs to be restarted
+        # - command, http, or tcp
+        # ref : https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/
+        resources:
+          limits:
+            cpu: 16000m
+            memory: 16Gi
+          requests:
+            cpu: 2000m
+            memory: 2Gi
+        volumeMounts:
+        - name: "release-name-ibm-postgres-dev-data-stor"
+          mountPath: /database
+      volumes:
+      - name: "release-name-ibm-postgres-dev-data-stor"
+        persistentVolumeClaim:
+          claimName: release-name-ibm-postgres-dev-data-stor
+---
+# Source: ibm-postgres-dev/templates/tests/test-database-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-credentials-test"
+  annotations:
+    "helm.sh/hook": test-success
+  labels:
+    app: release-name-ibm-postgres-dev-test
+    chart: "ibm-postgres-dev-1.1.3"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  containers:
+  - name: release-name-ibm-postgres-dev-credentials-test
+    image: "ibmcom/postgresql:9.6.6"
+    env:
+      - name: DBCMD
+        value: "psql"
+      - name: HOST
+        value: release-name-ibm-postgres-dev
+      - name: DATABASE_NAME
+        value: "postgres"
+      - name: USER
+        value: "postgres"
+      - name: PGPASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: release-name-ibm-postgres-dev
+            key: password
+    command: ["sh", "-c", "$DBCMD -U $USER -h $HOST -l"]
+  restartPolicy: Never

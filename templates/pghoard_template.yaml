@@ -1,0 +1,178 @@
+---
+# Source: pghoard/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: release-name-pghoard
+  labels:
+    app.kubernetes.io/name: pghoard
+    helm.sh/chart: pghoard-5.8.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/managed-by: Helm
+stringData:
+  pghoard.json: |-
+    {
+      "backup_location": "/var/lib/pghoard/incoming",
+      "prometheus": {},
+      "http_address": "0.0.0.0",
+      "backup_sites": {
+        "my-db": {
+          "basebackup_age_days_max": 14,
+          "basebackup_count": 20,
+          "basebackup_hour": 4,
+          "basebackup_mode": "pipe",
+          "object_storage":{
+            "storage_type": "s3",
+            "aws_access_key_id": "xxxxxxxxxxxxxxxxxxxxxx",
+            "aws_secret_access_key": "xxxxxxxxxxxxxxxxxxxxxx",
+            "region": "eu-west-1",
+            "port": 443,
+            "is_secure": "true",
+            "bucket_name": "backups"
+          },
+          "nodes": [
+            {
+              "host": "db-host",
+              "port": "5432",
+              "password": "xxxxxxxxx",
+              "user": "replicator"
+            }
+          ],
+          "prefix": "pghoard/my-db",
+          "pg_data_directory": "/home/postgres/restore"
+        }
+      }
+    }
+---
+# Source: pghoard/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-pghoard
+  labels:
+    app.kubernetes.io/name: pghoard
+    helm.sh/chart: pghoard-5.8.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 16000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: pghoard
+    app.kubernetes.io/instance: release-name
+---
+# Source: pghoard/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-pghoard
+  labels:
+    app.kubernetes.io/name: pghoard
+    helm.sh/chart: pghoard-5.8.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pghoard
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pghoard
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: pghoard
+          image: "camptocamp/pghoard:10"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 16000
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            httpGet:
+              path: /status
+              port: http
+          readinessProbe:
+            periodSeconds: 30
+            timeoutSeconds: 10
+            httpGet:
+              path: /status
+              port: http
+          resources:
+            {}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/pghoard
+            - name: pghoard
+              mountPath: /var/lib/pghoard
+      volumes:
+        - name: config-volume
+          secret:
+            secretName: release-name-pghoard
+        - name: pghoard
+          emptyDir: {}
+---
+# Source: pghoard/templates/prometheus-rule.yaml
+apiVersion: "monitoring.coreos.com/v1"
+kind: "PrometheusRule"
+metadata:
+  name: release-name-pghoard
+  labels:
+    app.kubernetes.io/name: pghoard
+    helm.sh/chart: pghoard-5.8.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  groups:
+    - name: release-name-pghoard
+      rules:
+        - alert: "LastBaseBackupAge"
+          expr: pghoard_last_upload_age{namespace="default",service="release-name-pghoard",type="basebackup"} > 86400
+        - alert: "LastXlogAge"
+          expr: pghoard_last_upload_age{namespace="default",service="release-name-pghoard",type="xlog"} > 7200
+        - alert: "ValidBasebackup"
+          expr: pghoard_valid_basebackup_count{namespace="default",service="release-name-pghoard"} < 15
+---
+# Source: pghoard/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: release-name-pghoard
+  labels:
+    app.kubernetes.io/name: pghoard
+    helm.sh/chart: pghoard-5.8.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  endpoints:
+    - port: http
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pghoard
+      helm.sh/chart: pghoard-5.8.1
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/version: "2.1.0"
+      app.kubernetes.io/managed-by: Helm

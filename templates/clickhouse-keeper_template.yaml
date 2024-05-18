@@ -1,0 +1,195 @@
+---
+# Source: clickhouse-keeper/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-clickhouse-keeper-settings
+data:
+  keeper_config.xml: |
+    
+    <clickhouse>
+        <include_from>/tmp/clickhouse-keeper/config.d/generated-keeper-settings.xml</include_from>
+        <logger>
+            <level>trace</level>
+            <console>true</console>
+        </logger>
+        <listen_host>0.0.0.0</listen_host>
+        <keeper_server incl="keeper_server">
+            <path>/var/lib/clickhouse-keeper</path>
+            <tcp_port>2181</tcp_port>
+            <four_letter_word_white_list>*</four_letter_word_white_list>
+            <coordination_settings>
+                <!-- <raft_logs_level>trace</raft_logs_level> -->
+                <raft_logs_level>information</raft_logs_level>
+            </coordination_settings>
+        </keeper_server>
+        <prometheus>
+            <endpoint>/metrics</endpoint>
+            <port>7000</port>
+            <metrics>true</metrics>
+            <events>true</events>
+            <asynchronous_metrics>true</asynchronous_metrics>
+            <!-- https://github.com/ClickHouse/ClickHouse/issues/46136 -->
+            <status_info>false</status_info>
+        </prometheus>
+    </clickhouse>
+---
+# Source: clickhouse-keeper/templates/service-keepers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-clickhouse-keepers
+  labels:
+    helm.sh/chart: clickhouse-keeper-0.1.2
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7000
+      targetPort: raft
+      protocol: TCP
+      name: raft
+  selector:
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/instance: release-name
+---
+# Source: clickhouse-keeper/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-clickhouse-keeper
+  labels:
+    helm.sh/chart: clickhouse-keeper-0.1.2
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 2181
+      name: client
+    - port: 7000
+      name: prometheus
+  selector:
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/instance: release-name
+---
+# Source: clickhouse-keeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-clickhouse-keeper
+  labels:
+    helm.sh/chart: clickhouse-keeper-0.1.2
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 3
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse-keeper
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-clickhouse-keepers
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: clickhouse-keeper-0.1.2
+        app.kubernetes.io/name: clickhouse-keeper
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "1.16.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      securityContext:
+        {}
+      containers:
+        - name: clickhouse-keeper
+          securityContext:
+            {}
+          image: "clickhouse/clickhouse-keeper:head-alpine"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: prometheus
+              containerPort: 7000
+            - name: http
+              containerPort: 9182
+          livenessProbe:
+            exec:
+              command:
+              - bash
+              - -xc
+              - date && OK=$(exec 3<>/dev/tcp/127.0.0.1/2181 ; printf "ruok" >&3 ; IFS=; tee <&3;
+                exec 3<&- ;); if [[ "$OK" == "imok" ]]; then exit 0; else exit 1; fi
+            initialDelaySeconds: 20
+            timeoutSeconds: 15
+          resources:
+            {}
+          env:
+            - name: SERVERS
+              value: "3"
+            - name: RAFT_PORT
+              value: "9444"
+          command:
+            - bash
+            - -x
+            - -c
+            -             |
+              HOST=`hostname -s` &&
+              DOMAIN=`hostname -d` &&
+              if [[ $HOST =~ (.*)-([0-9]+)$ ]]; then
+                  NAME=${BASH_REMATCH[1]}
+                  ORD=${BASH_REMATCH[2]}
+              else
+                  echo "Failed to parse name and ordinal of Pod"
+                  exit 1
+              fi &&
+              export MY_ID=$((ORD+1)) &&
+              mkdir -p /tmp/clickhouse-keeper/config.d/ &&
+              {
+                echo "<yandex><keeper_server>"
+                echo "<server_id>${MY_ID}</server_id>"
+                echo "<raft_configuration>"
+                for (( i=1; i<=$SERVERS; i++ )); do
+                    echo "<server><id>${i}</id><hostname>$NAME-$((i-1)).${DOMAIN}</hostname><port>${RAFT_PORT}</port></server>"
+                done
+                echo "</raft_configuration>"
+                echo "</keeper_server></yandex>"
+              } > /tmp/clickhouse-keeper/config.d/generated-keeper-settings.xml &&
+              cat /tmp/clickhouse-keeper/config.d/generated-keeper-settings.xml &&
+              if [[ "1" == "$MY_ID" ]]; then
+                clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml --force-recovery
+              else
+                clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml
+              fi
+          volumeMounts:
+            - name: clickhouse-keeper-settings
+              mountPath: /etc/clickhouse-keeper/
+            - name: clickhouse-keeper-data
+              mountPath: /var/lib/clickhouse-keeper
+      volumes:
+        - name: clickhouse-keeper-settings
+          configMap:
+            name: release-name-clickhouse-keeper-settings
+            items:
+              - key: keeper_config.xml
+                path: keeper_config.xml
+        - name: clickhouse-keeper-data
+          persistentVolumeClaim:
+            claimName: release-name-clickhouse-keeper-data
+  volumeClaimTemplates:
+    - metadata:
+        name: release-name-clickhouse-keeper-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi

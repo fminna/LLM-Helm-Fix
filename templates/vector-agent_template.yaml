@@ -1,0 +1,235 @@
+---
+# Source: vector-agent/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-vector-agent
+  labels:
+    helm.sh/chart: vector-agent-0.21.3
+    app.kubernetes.io/name: vector-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.19.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: vector-agent
+automountServiceAccountToken: true
+---
+# Source: vector-agent/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-vector-agent
+  labels:
+    helm.sh/chart: vector-agent-0.21.3
+    app.kubernetes.io/name: vector-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.19.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: vector-agent
+data:
+  # We leave `vector.toml` file name available to let externally managed config
+  # maps to provide it.
+  managed.toml: |
+    # Configuration for vector.
+    # Docs: https://vector.dev/docs/
+    
+    data_dir = "/vector-data-dir"
+    
+    [api]
+      enabled = false
+      address = "0.0.0.0:8686"
+      playground = true
+    
+    [log_schema]
+      host_key = "host"
+      message_key = "message"
+      source_type_key = "source_type"
+      timestamp_key = "timestamp"
+    
+    # Ingest logs from Kubernetes.
+    [sources.kubernetes_logs]
+      type = "kubernetes_logs"
+    
+    # Capture the metrics from the host.
+    [sources.host_metrics]
+      type = "host_metrics"
+      [sources.host_metrics.filesystem]
+        [sources.host_metrics.filesystem.devices]
+          excludes = ["binfmt_misc"]
+        [sources.host_metrics.filesystem.filesystems]
+          excludes = ["binfmt_misc"]
+        [sources.host_metrics.filesystem.mountpoints]
+          excludes = ["*/proc/sys/fs/binfmt_misc"]
+    
+    
+    # Emit internal Vector metrics.
+    [sources.internal_metrics]
+      type = "internal_metrics"
+    
+    # Expose metrics for scraping in the Prometheus format.
+    [sinks.prometheus_sink]
+      address = "0.0.0.0:9090"
+      inputs = ["internal_metrics", "host_metrics"]
+      type = "prometheus"
+---
+# Source: vector-agent/templates/rbac.yaml
+# Permissions to use Kubernetes API.
+# Requires that RBAC authorization is enabled.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-vector-agent
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - pods
+    verbs:
+      - watch
+---
+# Source: vector-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-vector-agent
+  labels:
+    helm.sh/chart: vector-agent-0.21.3
+    app.kubernetes.io/name: vector-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.19.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: vector-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-vector-agent
+subjects:
+  - kind: ServiceAccount
+    name: release-name-vector-agent
+    namespace: default
+---
+# Source: vector-agent/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-vector-agent
+  labels:
+    helm.sh/chart: vector-agent-0.21.3
+    app.kubernetes.io/name: vector-agent
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.19.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: vector-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector-agent
+      app.kubernetes.io/instance: release-name
+  minReadySeconds: 1
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      annotations:
+        
+        
+      labels:
+        app.kubernetes.io/name: vector-agent
+        app.kubernetes.io/instance: release-name
+        vector.dev/exclude: "true"
+    spec:      
+      serviceAccountName: release-name-vector-agent
+      securityContext:
+        {}
+      containers:
+        - name: vector
+          securityContext:
+            {}
+          image: "timberio/vector:0.19.3-debian"
+          imagePullPolicy: "IfNotPresent"
+          command:
+            []
+          args:
+            - --config-dir
+            - /etc/vector/
+          env:
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: VECTOR_SELF_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VECTOR_SELF_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PROCFS_ROOT
+              value: /host/proc
+            - name: SYSFS_ROOT
+              value: /host/sys
+            
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+            # Host log directory mount.
+            - name: var-log
+              mountPath: /var/log/
+              readOnly: true
+            # Host mount for docker and containerd log file symlinks.
+            - name: var-lib
+              mountPath: /var/lib
+              readOnly: true
+            # Vector data dir mount.
+            - name: data-dir
+              mountPath: "/vector-data-dir"
+            # Vector config dir mount.
+            - name: config-dir
+              mountPath: /etc/vector
+              readOnly: true
+            # Host procsfs mount.
+            - name: procfs
+              mountPath: /host/proc
+              readOnly: true
+            # Host sysfs mount.
+            - name: sysfs
+              mountPath: /host/sys
+              readOnly: true
+      terminationGracePeriodSeconds: 60
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+      volumes:
+        # Log directory.
+        - name: var-log
+          hostPath:
+            path: /var/log/
+        # Docker and containerd log files in Kubernetes are symlinks to this folder.
+        - name: var-lib
+          hostPath:
+            path: /var/lib/
+        # Vector will store it's data here.
+        - name: data-dir
+          hostPath:
+            path: /var/lib/vector/
+        # Vector config dir.
+        - name: config-dir
+          projected:
+            sources:
+              - configMap:
+                  name: release-name-vector-agent
+        # Host procsfs.
+        - name: procfs
+          hostPath:
+            path: /proc
+        # Host sysfs.
+        - name: sysfs
+          hostPath:
+            path: /sys

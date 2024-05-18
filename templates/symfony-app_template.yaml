@@ -1,0 +1,279 @@
+---
+# Source: symfony-app/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-symfony-app
+  labels:
+    helm.sh/chart: symfony-app-0.5.1
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.2.3"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: symfony-app/templates/environment-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-symfony-app-environment
+  labels:
+    helm.sh/chart: symfony-app-0.5.1
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.2.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  APP_ENV: prod
+  APP_DEBUG: 0
+---
+# Source: symfony-app/templates/nginx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-symfony-app-nginx-config
+data:
+  nginx.conf: |
+    log_format app 
+      escape=json '{'
+        '"time_local":"$time_local",'
+        '"remote_addr":"$remote_addr",'
+        '"remote_user":"$remote_user",'
+        '"request":"$request",'
+        '"status": "$status",'
+        '"body_bytes_sent":"$body_bytes_sent",'
+        '"request_time":"$request_time",'
+        '"http_referrer":"$http_referer",'
+        '"http_user_agent":"$http_user_agent"'
+      '}';
+    server {
+      listen 80;
+  
+      server_name release-name-symfony-app.local;
+      root /app/public/;
+
+      location / {
+        # try to serve file directly, fallback to index.php
+        try_files $uri /index.php$is_args$args;
+      }
+      
+      # optionally disable falling back to PHP script for the asset directories;
+      # nginx will return a 404 error when files are not found instead of passing the
+      # request to Symfony (improves performance but Symfony's 404 page is not displayed)
+      # location /bundles {
+      #     try_files $uri =404;
+      # }
+      
+      location ~ ^/index\.php(/|$) {
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_split_path_info ^(.+\.php)(/.*)$;
+        include fastcgi_params;
+        
+        # optionally set the value of the environment variables used in the application
+        fastcgi_param APP_ENV prod;
+        fastcgi_param APP_DEBUG 0;
+        
+        # When you are using symlinks to link the document root to the
+        # current version of your application, you should pass the real
+        # application path instead of the path to the symlink to PHP
+        # FPM.
+        # Otherwise, PHP's OPcache may not properly detect changes to
+        # your PHP files (see https://github.com/zendtech/ZendOptimizerPlus/issues/126
+        # for more information).
+        # Caveat: When PHP-FPM is hosted on a different machine from nginx
+        #         $realpath_root may not resolve as you expect! In this case try using
+        #         $document_root instead.
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT $realpath_root;
+        # Prevents URIs that include the front controller. This will 404:
+        # http://domain.tld/index.php/some-path
+        # Remove the internal directive to allow URIs like this
+        internal;
+      }
+      
+      # return 404 for all other php files not matching the front controller
+      # this prevents access to other php files you don't want to be accessible.
+      location ~ \.php$ {
+        return 404;
+      }
+      access_log /dev/stdout app;
+      
+      # Add extra server snippet through values.
+    }
+---
+# Source: symfony-app/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-symfony-app
+  labels:
+    helm.sh/chart: symfony-app-0.5.1
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+---
+# Source: symfony-app/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-symfony-app
+  labels:
+    helm.sh/chart: symfony-app-0.5.1
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.2.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: symfony-app
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/nginx: 875be64dd473f14f66c55ac06976e076e24e2026cd14ab5c117a7e58db7d4cce
+        app.kubernetes.io/version: "v2.2.3"
+      labels:
+        app.kubernetes.io/name: symfony-app
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-symfony-app
+      securityContext:
+        {}
+      containers:
+        - name: release-name-symfony-app-nginx
+          image: "nginx:1.23"
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+          volumeMounts:
+            - name: app-directory
+              mountPath: /app
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/
+              readOnly: true
+          envFrom:
+            - configMapRef:
+                name: release-name-symfony-app-environment
+        - name: release-name-symfony-app-php
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          image: "xvilo/php:8.2-composer"
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          envFrom:
+            - configMapRef:
+                name: release-name-symfony-app-environment
+          lifecycle:
+            postStart:
+              exec:
+                command: [ "/bin/sh", "-c", "cp -r /app/. /app-shared" ]
+          env:
+            - name: APP_ENV
+              value: prod
+            - name: APP_DEBUG
+              value: "0"
+            - name: GIT_SSH_COMMAND
+              value: "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -vvvvv"
+          ports:
+            - name: fpm
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: fpm
+          readinessProbe:
+            tcpSocket:
+              port: fpm
+          resources:
+            {}
+          volumeMounts:
+            - name: app-directory
+              mountPath: /app-shared
+      initContainers:
+        - name: init-fetch-code
+          image: "alpine/git:2.36.3"
+          workingDir: /app
+          env:
+          volumeMounts:
+            - name: app-directory
+              mountPath: /app
+          command: [ 'sh', '-c', "git clone --depth 1 --branch v2.2.3 https://github.com/symfony/demo.git /app" ]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          envFrom:
+            - configMapRef:
+                name: release-name-symfony-app-environment
+        - name: dependencies-composer
+          image: "xvilo/php:8.2-composer"
+          workingDir: /app
+          env:
+            - name: APP_ENV
+              value: prod
+            - name: APP_DEBUG
+              value: "0"
+            - name: GIT_SSH_COMMAND
+              value: "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -vvvvv"
+          volumeMounts:
+            - name: app-directory
+              mountPath: /app
+          command: [ 'sh', '-c', "composer install  --no-ansi --no-dev --no-interaction --no-progress --no-scripts --optimize-autoloader --optimize-autoloader" ]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          envFrom:
+            - configMapRef:
+                name: release-name-symfony-app-environment
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: release-name-symfony-app-nginx-config
+        - name: app-directory
+          emptyDir: {}
+---
+# Source: symfony-app/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-symfony-app-test-connection"
+  labels:
+    helm.sh/chart: symfony-app-0.5.1
+    app.kubernetes.io/name: symfony-app
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2.2.3"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-symfony-app:']
+  restartPolicy: Never

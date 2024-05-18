@@ -1,0 +1,181 @@
+---
+# Source: wahlrecht/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-wahlrecht
+  labels:
+    helm.sh/chart: wahlrecht-0.3.0
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+---
+# Source: wahlrecht/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-wahlrecht
+  labels:
+    helm.sh/chart: wahlrecht-0.3.0
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+data:
+  CLIENT_SECRET: 
+  MONGODB_CONNECTION_STRING:
+---
+# Source: wahlrecht/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-wahlrecht
+  labels:
+    helm.sh/chart: wahlrecht-0.3.0
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 12000
+      targetPort: http
+    - name: http-actuator
+      protocol: TCP
+      port: 12001
+      targetPort: http-actuator
+  selector:
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+---
+# Source: wahlrecht/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-wahlrecht
+  labels:
+    helm.sh/chart: wahlrecht-0.3.0
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: release-name
+    meta.helm.sh/release-namespace: default
+spec:
+  revisionHistoryLimit: 10
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wahlrecht
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "12001"
+        meta.helm.sh/release-name: release-name
+        meta.helm.sh/release-namespace: default
+      labels:
+        app.kubernetes.io/name: wahlrecht
+        app.kubernetes.io/instance: release-name
+    spec:
+      enableServiceLinks: false
+      serviceAccountName: release-name-wahlrecht
+      securityContext:
+        {}
+      containers:
+        - name: wahlrecht
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          image: "2martens/wahlrecht:latest"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: release-name-wahlrecht
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            - name: PORT
+              value: "12000"
+            - name: ACTUATOR_PORT
+              value: "12001"
+            - name: KEYCLOAK_URL
+              value: "https://id.2martens.de"
+            - name: KEYCLOAK_REALM
+              value: "2martens"
+            - name: CONFIGSERVER_SCHEME
+              value: "http"
+            - name: CONFIGSERVER_HOST
+              value: "configserver"
+            - name: CONFIGSERVER_PORT
+              value: "8888"
+            - name: CONFIGSERVER_PREFIX
+              value: "/config"
+            - name: KAFKA_HOST
+              value: "kafka"
+            - name: KAFKA_PORT
+              value: "9092"
+          ports:
+            - name: http
+              containerPort: 12000
+              protocol: TCP
+            - name: http-actuator
+              containerPort: 12001
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http-actuator
+            initialDelaySeconds: 30
+            periodSeconds: 120
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http-actuator
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 1
+          resources:
+            {}
+          
+          lifecycle:
+            preStop:
+              exec:
+                  command: [ "sh", "-c", "sleep 10" ]
+---
+# Source: wahlrecht/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-wahlrecht-test-connection"
+  labels:
+    helm.sh/chart: wahlrecht-0.3.0
+    app.kubernetes.io/name: wahlrecht
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-wahlrecht:12000']
+  restartPolicy: Never

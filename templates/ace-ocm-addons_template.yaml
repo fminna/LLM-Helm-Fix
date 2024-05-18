@@ -1,0 +1,188 @@
+---
+# Source: ace-ocm-addons/templates/k8s/addon.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: default
+spec:
+  clusterSet: global
+---
+# Source: ace-ocm-addons/templates/k8s/addon.yaml
+apiVersion: work.open-cluster-management.io/v1alpha1
+kind: ManifestWorkReplicaSet
+metadata:
+  name: ace-addons
+  namespace: default
+spec:
+  placementRefs:
+    - name: global
+  manifestWorkTemplate:
+    # deleteOption:
+    #   propagationPolicy: SelectivelyOrphan
+    #   selectivelyOrphans:
+    #     orphaningRules:
+    #       - group: ''
+    #         name: ocm-ns
+    #         namespace: ''
+    #         resource: Namespace
+    # manifestConfigs:
+    #   - feedbackRules:
+    #       - jsonPaths:
+    #           - name: lastScheduleTime
+    #             path: .status.lastScheduleTime
+    #           - name: lastSuccessfulTime
+    #             path: .status.lastSuccessfulTime
+    #         type: JSONPaths
+    #     resourceIdentifier:
+    #       group: batch
+    #       name: sync-cronjob
+    #       namespace: ocm-ns
+    #       resource: cronjobs
+    workload:
+      manifests:
+        - kind: Namespace
+          apiVersion: v1
+          metadata:
+            name: kubeops
+
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: open-cluster-management:klusterlet-work:ace
+            labels:
+              open-cluster-management.io/aggregate-to-work: "true"  # with this label, the clusterRole will be selected to aggregate
+          rules:
+            - apiGroups: ["drivers.x-helm.dev"]
+              resources: ["appreleases"]
+              verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+            - apiGroups: ["source.toolkit.fluxcd.io"]
+              resources: ["helmrepositories"]
+              verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+            - apiGroups: ["helm.toolkit.fluxcd.io"]
+              resources: ["helmreleases"]
+              verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
+        
+        - apiVersion: source.toolkit.fluxcd.io/v1beta2
+          kind: HelmRepository
+          metadata:
+            name: bootstrap
+            namespace: kubeops
+            labels:
+              kubernetes.io/metadata.name: bootstrap
+          spec:
+            url: oci://ghcr.io/appscode-charts
+            interval: 30m
+            timeout: 1m
+            type: oci
+
+        
+
+        - apiVersion: helm.toolkit.fluxcd.io/v2beta2
+          kind: HelmRelease
+          metadata:
+            name: opscenter-features
+            namespace: kubeops
+            labels:
+              app.kubernetes.io/component: opscenter-features
+          spec:
+            interval: 5m
+            timeout: 30m
+            releaseName: opscenter-features
+            targetNamespace: kubeops
+            storageNamespace: kubeops
+            install:
+              createNamespace: true
+              # crds: CreateReplace
+              remediation:
+                retries: -1
+            upgrade:
+              crds: CreateReplace
+              remediation:
+                retries: -1
+            chart:
+              spec:
+                chart: opscenter-features
+                version: "v2024.5.3"
+                sourceRef:
+                  kind: HelmRepository
+                  name: bootstrap
+                  namespace: kubeops
+            values:
+              helm:
+                createNamespace: true
+                releases:
+                  kube-ui-server:
+                    enabled: true
+                    version: v2023.12.20
+                  opscenter-features:
+                    enabled: true
+                    version: v2024.5.3
+                repositories:
+                  appscode-charts-oci:
+                    url: oci://ghcr.io/appscode-charts
+              image:
+                proxies:
+                  appscode: r.appscode.com
+                  dockerHub: ""
+                  dockerLibrary: ""
+                  ghcr: ghcr.io
+                  kubernetes: registry.k8s.io
+                  quay: quay.io
+              offlineInstaller: false
+              registry:
+                certs: {}
+                credentials: {}
+                imagePullSecrets: []
+
+        
+
+        
+        
+
+        - apiVersion: helm.toolkit.fluxcd.io/v2beta2
+          kind: HelmRelease
+          metadata:
+            name: kube-ui-server
+            namespace: kubeops
+            labels:
+              app.kubernetes.io/component: kube-ui-server
+          spec:
+            interval: 5m
+            timeout: 30m
+            releaseName: kube-ui-server
+            targetNamespace: kubeops
+            storageNamespace: kubeops
+            install:
+              createNamespace: true
+              # crds: CreateReplace
+              remediation:
+                retries: -1
+            upgrade:
+              crds: CreateReplace
+              remediation:
+                retries: -1
+            dependsOn:
+            - name: opscenter-features
+              namespace: kubeops
+            chart:
+              spec:
+                chart: kube-ui-server
+                version: "v2023.12.20"
+                interval: 60m
+                sourceRef:
+                  kind: HelmRepository
+                  name: appscode-charts-oci
+                  namespace: kubeops
+            values:
+              registryFQDN: ghcr.io
+---
+# Source: ace-ocm-addons/templates/k8s/addon.yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: global
+  namespace: default
+spec:
+  clusterSets:
+    - global

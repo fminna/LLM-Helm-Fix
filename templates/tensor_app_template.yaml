@@ -1,0 +1,189 @@
+---
+# Source: tensor_app/templates/mysql/secrets.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-pass
+type: Opaque
+data:
+  password: dGVuc29y
+---
+# Source: tensor_app/templates/nginx/configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-dn
+data: 
+  db.dns: mysql.kube.tensor.local
+---
+# Source: tensor_app/templates/mysql/sc.yml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: release-name-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+# Source: tensor_app/templates/mysql/sc.yml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-release-name-volume
+spec:
+  storageClassName: release-name-storage
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 1Gi
+  hostPath:
+    path: /var/lib/mysql-tensor
+---
+# Source: tensor_app/templates/mysql/headless.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mysql-svc
+  labels:
+    app: release-name
+spec:
+  clusterIP: None
+  selector:
+    app: release-name
+  ports:
+    - name: tcp
+      protocol: TCP
+      port: 3306
+---
+# Source: tensor_app/templates/nginx/service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-web-svc
+  labels:
+    app: tensor
+spec:
+  type: ClusterIP
+  ports:
+    - name: http1  
+      port: 80
+      protocol: TCP
+      targetPort: 80
+    - name: http2
+      port: 81 
+      protocol: TCP
+      targetPort: 81
+  selector:
+    app: tensor
+---
+# Source: tensor_app/templates/nginx/deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-deploy-web
+  labels:
+    app: tensor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tensor
+  template:
+    metadata:
+      labels:
+        app: tensor
+    spec:
+      containers:
+      - name: nginx-tensor
+        image: xeladock/mysql_dns:latest
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-pass
+              key: password
+        - name: DATABASE_DOMAIN_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: db-dn
+              key: db.dns
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        volumeMounts:
+          - name: empty-volume
+            mountPath: /usr/share/nginx/html
+      - name: nginx-tensor-2
+        image: xeladock/nginx2:latest
+        ports:
+        - containerPort: 81
+          protocol: TCP
+        volumeMounts:
+          - name: empty-volume
+            mountPath: /usr/share/nginx/html
+      volumes:
+        - name: empty-volume
+          emptyDir: {}
+---
+# Source: tensor_app/templates/mysql/statefulset.yml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-mysql
+spec:
+  selector:
+    matchLabels:
+      app: release-name
+  serviceName: "release-name"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: release-name
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: release-name
+        image: mysql:5.7
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: release-name-storage
+          mountPath: /var/lib/mysql
+        env:
+          - name: MYSQL_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: release-name-pass
+                key: password
+  volumeClaimTemplates:
+  - metadata:
+      name: release-name-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "release-name-storage"
+      resources:
+        requests:
+          storage: 1Gi
+---
+# Source: tensor_app/templates/nginx/ingress.yml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-ingress
+spec:
+  defaultBackend:
+    service:
+      name: release-name-web-svc
+      port:
+        number: 81
+  rules:
+  - host: nginx.tensor.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: release-name-web-svc
+            port:
+              number: 80

@@ -1,0 +1,122 @@
+---
+# Source: gateway/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-service
+  namespace: kafka
+data:
+  application.yaml: |-
+            security.basic.enabled: "false"
+            server.port: "8080"
+            spring:
+              cloud:
+                gateway:
+                  default-filters:
+                  - TokenRelay
+                  discovery:
+                    locator:
+                      enabled: true
+                  routes:
+                  - filters:
+                    - RewritePath=/account/(?<path>.*), /$\{path}
+                    id: account
+                    predicates:
+                    - Path=/account/**
+                    uri: lb://account
+                  - filters:
+                    - RewritePath=/order/(?<path>.*), /$\{path}
+                    id: order
+                    predicates:
+                    - Path=/order/**
+                    uri: lb://order
+              security:
+                oauth2:
+                  client:
+                    provider:
+                      my-keycloak-provider:
+                        authorization-uri: http://192.168.64.8:31760/auth/realms/My-Realm/protocol/openid-connect/auth
+                        issuer-uri: http://192.168.64.8:31760/auth/realms/My-Realm
+                        jwk-set-uri: http://192.168.64.8:31760/auth/realms/My-Realm/protocol/openid-connect/certs
+                    registration:
+                      keycloak-spring-gateway-client:
+                        authorization-grant-type: authorization_code
+                        client-id: spring-gateway-client
+                        client-secret: 3RhEF8pqKTANrQ6BhfxaYVmcjTXsDK0u
+                        provider: my-keycloak-provider
+                        redirect-uri: '{baseUrl}/login/oauth2/code/keycloak'
+                        scope: openid
+---
+# Source: gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway-service
+  namespace: kafka
+spec:
+  ports:
+  - targetPort: 8080
+    name: http
+    port: 8080
+  selector:
+    app: api-gateway-service
+  type: LoadBalancer
+  externalIPs:
+    - 192.168.64.8
+---
+# Source: gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway-service
+  namespace: kafka
+  labels:
+    app: api-gateway-service
+    env: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway-service
+
+  template:
+    metadata:
+      labels:
+        app: api-gateway-service
+        env: dev
+    spec:
+      containers:
+        - name: api-gateway-service
+          image: vitalii1992/api-gateway-service:latest
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          livenessProbe:
+            initialDelaySeconds: 10
+            httpGet:
+              port: http
+              path: /actuator/health/liveness
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          readinessProbe:
+            initialDelaySeconds: 10
+            httpGet:
+              port: http
+              path: /actuator/health/readiness
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          ports:
+          - containerPort: 8080
+            name: http
+          env:
+          - name: SPRING_PROFILES_ACTIVE
+            value: deployment
+          imagePullPolicy: Always

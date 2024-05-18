@@ -1,0 +1,385 @@
+---
+# Source: orchestrator/templates/secret.yaml
+apiVersion: v1
+data:
+  TOPOLOGY_PASSWORD: b3JjaGVzdHJhdG9y
+  TOPOLOGY_USER: b3JjaGVzdHJhdG9y
+  META_USER: b3JjaGVzdHJhdG9y
+  META_PASSWORD: b3JjaGVzdHJhdG9y
+kind: Secret
+metadata:
+  name: orchestrator-secret
+type: Opaque
+---
+# Source: orchestrator/templates/configmap-orc.yaml
+apiVersion: v1
+data:
+  orc-topology.cnf: |
+    [client]
+    user=orchestrator
+    password=${ORC_TOPOLOGY_PASSWORD}
+  orc-backend.cnf: |
+    [client]
+    user=orchestrator
+    password=orchestrator
+  orchestrator.conf.json: |-
+    {{- $meta_mysql_from_service_ref := fromJson "{}" }}
+    {{- if index $.component "serviceReferences" }}
+      {{- range $i, $e := $.component.serviceReferences }}
+        {{- if eq $i "metaMysql" }}
+          {{- $meta_mysql_from_service_ref = $e }}
+          {{- break }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    {
+      "MySQLTopologyCredentialsConfigFile": "/usr/local/share/orchestrator/templates/orc-topology.cnf",
+      "MySQLTopologySSLPrivateKeyFile": "",
+      "MySQLTopologySSLCertFile": "",
+      "MySQLTopologySSLCAFile": "",
+      "MySQLTopologySSLSkipVerify": true,
+      "MySQLTopologyUseMutualTLS": false,
+      {{- $endpoint :=  splitList ":" $meta_mysql_from_service_ref.spec.endpoint.value | first }}
+      "MySQLOrchestratorHost": {{- printf " \"%s\""   $endpoint}},
+      "MySQLOrchestratorPort": {{- printf " %s" $meta_mysql_from_service_ref.spec.port.value }},
+      "MySQLOrchestratorDatabase": "orchestrator",
+      "MySQLOrchestratorCredentialsConfigFile": "/usr/local/share/orchestrator/templates/orc-backend.cnf",
+    
+      "DetectClusterAliasQuery": "select ifnull(max(cluster_name), '') as cluster_alias from kb_orc_meta_cluster.kb_orc_meta_cluster where anchor=1",
+      "ApplyMySQLPromotionAfterMasterFailover": true,
+      "Debug": false,
+      "DetachLostReplicasAfterMasterFailover": true,
+      "FailMasterPromotionIfSQLThreadNotUpToDate": true,
+      "MySQLOrchestratorRejectReadOnly": true,
+    
+      "HostnameResolveMethod": "none",
+      "MySQLHostnameResolveMethod": "@@report_host",
+      "InstancePollSeconds": 5,
+      "ListenAddress": ":3000",
+      "MasterFailoverLostInstancesDowntimeMinutes": 10,
+    
+      "DiscoverByShowSlaveHosts": false,
+      "FailureDetectionPeriodBlockMinutes": 60,
+    
+      "ProcessesShellCommand": "sh",
+    
+      "RecoverIntermediateMasterClusterFilters": [
+        ".*"
+      ],
+      "RecoverMasterClusterFilters": [
+        ".*"
+      ],
+      "RecoveryIgnoreHostnameFilters": [],
+      "RecoveryPeriodBlockSeconds": 300,
+      "RemoveTextFromHostnameDisplay": ":3306",
+      "UnseenInstanceForgetHours": 1,
+    
+      "OnFailureDetectionProcesses": [
+        "echo 'Detected {failureType} on {failureCluster}. Affected replicas: {countReplicas}' >> /tmp/recovery.log"
+      ]
+    }
+kind: ConfigMap
+metadata:
+  name: orchestrator-config
+---
+# Source: orchestrator/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orchestrator-scripts
+  labels:
+    helm.sh/chart: orchestrator-3.2.6
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+data:
+  init-meta-database.sh: |-
+    #!/bin/sh
+    set -ex
+    # 定义 MySQL 连接参数
+    mysql_port="3306"
+    meta_mysql_user="$META_MYSQL_USER"
+    meta_mysql_password="$META_MYSQL_PASSWORD"
+    meta_mysql_host=${META_MYSQL_ENDPOINT%:*}
+    meta_mysql_port=${META_MYSQL_ENDPOINT#*:}
+    
+    meta_user="$ORC_META_USER"
+    meta_password="$ORC_META_PASSWORD"
+    meta_database="$ORC_META_DATABASE"
+    
+    # create orchestrator user in mysql
+    init_meta_databases() {
+      wait_for_connectivity $meta_mysql_host
+    
+    
+      echo "Create MySQL User and Grant Permissions..."
+      mysql -h $meta_mysql_host -P $meta_mysql_port -u $meta_mysql_user -p$meta_mysql_password << EOF
+    CREATE USER IF NOT EXISTS '$ORC_META_USER'@'%' IDENTIFIED BY '$ORC_META_PASSWORD';
+    EOF
+    
+    
+      mysql -h $meta_mysql_host -P $meta_mysql_port -u $meta_mysql_user -p$meta_mysql_password << EOF
+    CREATE DATABASE IF NOT EXISTS $meta_database;
+    GRANT ALL PRIVILEGES ON $meta_database.* TO '$ORC_META_USER'@'%';
+    EOF
+      echo "init meta databases done"
+    }
+    
+    wait_for_connectivity() {
+      local timeout=600
+      local start_time=$(date +%s)
+      local current_time
+    
+      echo "Checking mysql connectivity to $meta_mysql_host on port $meta_mysql_port ..."
+      while true; do
+        current_time=$(date +%s)
+        if [ $((current_time - start_time)) -gt $timeout ]; then
+          echo "Timeout waiting for $host to become available."
+          exit 1
+        fi
+        # Send PING and check for mysql response
+        if  mysqladmin -h $meta_mysql_host -P $meta_mysql_port -u $meta_mysql_user -p$meta_mysql_password PING | grep -q "mysqld is alive"; then
+          echo "$meta_mysql_host is reachable."
+          break
+        fi
+    
+        sleep 5
+      done
+    }
+    
+    init_meta_databases
+    echo "script completed scccessfully"
+  init-orchestrator.sh: |-
+---
+# Source: orchestrator/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: orchestrator
+  labels:
+    helm.sh/chart: orchestrator-3.2.6
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  connectionCredential:
+    username: root
+    password: "$(RANDOM_PASSWD)"
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_http)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_http)"
+  componentDefs:
+    - name: orchestrator
+      workloadType: Stateful
+      service:
+        ports:
+          - name: http
+            port: 80
+            targetPort: http
+          - name: prometheus
+            port: 9125
+            targetPort: prometheus
+          - name: raft
+            port: 10008
+            targetPort: raft
+      volumeTypes:
+        - name: data
+          type: data
+
+      podSpec:
+        volumes:
+          - name: orchestrator-config
+            configMap:
+              name: mysql-orc-config
+        containers:
+          - name: orchestrator
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - name: orchestrator-data
+                mountPath: /var/lib/orchestrator
+              - name: orchestrator-config
+                mountPath: /usr/local/share/orchestrator/templates
+            ports:
+              - containerPort: 3000
+                name: http
+              - containerPort: 10008
+                name: raft
+            env:
+              - name: ORC_TOPOLOGY_USER
+                valueFrom:
+                  secretKeyRef:
+                    key: TOPOLOGY_USER
+                    name: mysql-operator-orc
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+                    apiVersion: v1
+              - name: ORC_TOPOLOGY_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    key: TOPOLOGY_PASSWORD
+                    name: mysql-operator-orc
+            envFrom:
+              - prefix: ORC_
+                secretRef:
+                  name: orchestrator-secret
+---
+# Source: orchestrator/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: orchestrator-3.2.6
+  annotations:
+    kubeblocks.io/is-default-cluster-version: "true"
+  labels:
+    helm.sh/chart: orchestrator-3.2.6
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: orchestrator
+  componentVersions:
+  - componentDefRef: orchestrator
+    versionsContext:
+      containers:
+        - name: orchestrator
+          image: docker.io/bitpoke/mysql-operator-orchestrator:v0.6.3
+          imagePullPolicy: IfNotPresent
+---
+# Source: orchestrator/templates/componentdefinition-orc.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: orchestrator
+  labels:
+    helm.sh/chart: orchestrator-3.2.6
+    app.kubernetes.io/name: orchestrator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.2.6"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  provider: kubeblocks
+  description: mysql HA compoent definition for Kubernetes
+  serviceKind: orchestrator
+  serviceVersion: 3.2.6
+
+  serviceRefDeclarations:
+    - name: metaMysql
+      serviceRefDeclarationSpecs:
+        - serviceKind: mysql
+          serviceVersion: "^*"
+  configs:
+    - name: orchestrator-config
+      templateRef: orchestrator-config
+      namespace: default
+      volumeName: orchestrator-config
+      asEnvFrom:
+        - orchestrator
+
+  scripts:
+    - name: orc-scripts
+      templateRef: orchestrator-scripts
+      namespace: default
+      volumeName: scripts
+      defaultMode: 0555
+  vars:
+    - name: META_MYSQL_PORT
+      valueFrom:
+        serviceRefVarRef:
+          compDef: orchestrator
+          name: metaMysql
+          port: Required
+    - name: META_MYSQL_ENDPOINT
+      valueFrom:
+        serviceRefVarRef:
+          compDef: orchestrator
+          name: metaMysql
+          endpoint: Required
+    - name: META_MYSQL_USER
+      valueFrom:
+        serviceRefVarRef:
+          compDef: orchestrator
+          name: metaMysql
+          username: Required
+    - name: META_MYSQL_PASSWORD
+      valueFrom:
+        serviceRefVarRef:
+          compDef: orchestrator
+          name: metaMysql
+          password: Required
+  services:
+    - name: orchestrator
+      serviceName: orchestrator
+      spec:
+        ports:
+          - name: http
+            port: 80
+            targetPort: http
+          - name: prometheus
+            port: 9125
+            targetPort: prometheus
+    - name: orchestrator-ordinal
+      serviceName: orchestrator-ordinal
+      generatePodOrdinalService: true
+      spec:
+        type: ClusterIP
+        ports:
+          - name: raft
+            port: 10008
+            targetPort: raft
+          - name: http
+            port: 80
+            targetPort: http
+  runtime:
+    initContainers:
+      - name: init-meta-database
+        command:
+          - bash
+          - -c
+          - "/scripts/init-meta-database.sh;"
+        image: docker.io/mysql:8.0.33
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+        env:
+          - name: ORC_META_DATABASE
+            value: orchestrator
+    containers:
+      - name: orchestrator
+        image: docker.io/apecloud/orchestrator:v3.2.6
+        imagePullPolicy: IfNotPresent
+        command:
+          - bash
+          - -c
+          - |
+            /usr/local/orchestrator/orchestrator -quiet -config /usr/local/share/orchestrator/templates/orchestrator.conf.json http
+        volumeMounts:
+          - name: orchestrator-data
+            mountPath: /var/lib/orchestrator
+          - name: orchestrator-config
+            mountPath: /usr/local/share/orchestrator/templates
+          - name: scripts
+            mountPath: /scripts
+        ports:
+          - containerPort: 3000
+            name: http
+          - containerPort: 10008
+            name: raft
+        env:
+          - name: ORC_META_DATABASE
+            value: orchestrator
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+                apiVersion: v1
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name

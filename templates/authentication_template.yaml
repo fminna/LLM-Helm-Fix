@@ -1,0 +1,320 @@
+---
+# Source: authentication/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  application.yaml: |
+    grpc:
+      client:
+        md-transform:
+          address: dns:///sqream-transform:6543
+          negotiationType: PLAINTEXT
+    logging:
+      level:
+        com.sqream: INFO
+    sqream:
+      auth0:
+        api:
+          connector: DEFINED_FROM_ENV_VAR
+        domain: DEFINED_FROM_ENV_VAR
+        limits:
+          clients: 10
+        userManagement:
+          clientId: DEFINED_FROM_ENV_VAR
+          clientSecret: DEFINED_FROM_ENV_VAR
+      config:
+        jwt:
+          expirationTimeMs: 36000000
+      tenant: DEFINED_FROM_ENV_VAR
+      unauthotrized:
+        response:
+          message: '{"error":"invalid_grant","error_description":"Invalid user credentials"}'
+---
+# Source: authentication/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name:  release-name-authentication
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    - appProtocol: null
+      name: tcp-grpc
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+    
+    - name: ambassador-grpc
+      port: 80
+      targetPort: tcp-grpc
+  selector:
+    app.kubernetes.io/name: authentication
+    app: authentication
+---
+# Source: authentication/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-authentication
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: authentication
+      app: authentication
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: authentication
+        app: authentication
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-configmap
+      containers:
+        - name: authentication
+          securityContext:
+            {}
+          image: "us.gcr.io/blue-devops3-sandbox/authentication:0.0.24-84-183b96c-20-09-2023"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: tcp-grpc
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: 'release-name-secret'
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx6000m -Xms2048m"
+            - name: sqream_auth0_api_connector
+              value: "${AUTH0_AUDIENCE}"
+            - name: sqream_auth0_domain
+              value: "${AUTH0_DOMAIN}"
+            - name: sqream_auth0_userManagement_clientId
+              value: "${CLIENT_ID}"
+            - name: sqream_auth0_userManagement_clientSecret
+              value: "${CLIENT_SECRET}"
+            - name: sqream_tenant
+              value: "${SQREAM_TENANT_NAME}"
+          command:
+            - /bin/bash
+            - -c
+            - java $JAVA_TOOL_OPTIONS -jar app.jar --spring.config.additional-location=file:/app/application.yaml
+          args:
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            failureThreshold: 10
+            httpGet:
+              path: actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 1
+          lifecycle:
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app
+              readOnly: true
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: 2048Mi
+            requests:
+              cpu: "0.5"
+              memory: 512Mi
+---
+# Source: authentication/templates/secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-name-secret
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: local-secrets
+    kind: ClusterSecretStore
+  target:
+    name: release-name-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        annotations:
+          {}
+        labels:
+          helm.sh/chart: authentication-0.11.0
+          app.kubernetes.io/name: authentication
+          app: authentication
+          app.kubernetes.io/version: "1.16.0"
+          app.kubernetes.io/managed-by: Helm
+      data:
+        AUTH0_AUDIENCE: '{{ .AUTH0_AUDIENCE }}'
+        AUTH0_DOMAIN: '{{ .AUTH0_DOMAIN }}'
+        AUTH0_ORGANIZATION: '{{ .AUTH0_ORGANIZATION }}'
+        CLIENT_ID: '{{ .CLIENT_ID }}'
+        CLIENT_SECRET: '{{ .CLIENT_SECRET }}'
+        REDIS_HOST: '{{ .REDIS_IP_ADDRESS }}'
+        REDIS_PORT: '{{ .REDIS_PORT }}'
+        SQREAM_TENANT_NAME: '{{ .SQREAM_TENANT_NAME }}'
+  dataFrom:
+    - extract:
+        key: auth0-auth-client
+    - extract:
+        key: redis-managed-instance
+---
+# Source: authentication/templates/ambassador-filter.yaml
+apiVersion: getambassador.io/v2
+kind: Filter
+metadata:
+  name: jwt-filter
+spec:
+  JWT:
+    jwksURI: https://sqream-development.us.auth0.com/.well-known/jwks.json
+    validAlgorithms:
+      - "RS256"
+    audience: 
+    requireAudience: false
+    maxStale: 3600
+    requireExpiresAt: true
+    leewayForExpiresAt: "10s"
+    errorResponse:
+      headers:
+        - name: "Content-Type"
+          value: "application/json"
+        - name: "X-Correlation-ID"
+          value:  "{{ .httpRequestHeader.Get \"X-Correlation-ID\" }}" 
+      # Regarding the "altErrorMessage" below:
+      #   ValidationErrorExpired = 1<<4 = 16
+      # https://godoc.org/github.com/dgrijalva/jwt-go#StandardClaims
+      bodyTemplate: |-
+        {
+            errorMessage": {{ .message | json "    " }},
+            {{- if .error.ValidationError }}
+            "altErrorMessage": {{ if eq .error.ValidationError.Errors 16 }}"expired"{{ else }}"invalid"{{ end }},
+            "errorCode": {{ .error.ValidationError.Errors | json "    "}},
+            {{- end }}
+            "httpStatus": "{{ .status_code }}",
+            "requestId": {{ .request_id | json "    " }}
+        }
+---
+# Source: authentication/templates/ambassador-filter-policy.yaml
+apiVersion: getambassador.io/v2
+kind: FilterPolicy
+metadata:
+  name: httpbin-policy
+spec:
+  rules:
+    # Java services
+    - host: "*"
+      path: /com.sqream.cloud.generated.v1.AuthenticationService/Auth
+    - host: "*"
+      path: /com.sqream.cloud.generated.v1.AuthenticationService/*
+      filters:
+        - name: jwt-filter
+    - host: "*"
+      path: /com.sqream.cloud.generated.v1.QueryHandlerService/*
+      filters:
+        - name: jwt-filter
+    # Sqream Studio
+    - host: "*"
+      path: /api/parameters
+    - host: "*"
+      path: /api/websocket
+    - host: "*"
+      path: /api/*
+      filters:
+        - name: jwt-filter
+---
+# Source: authentication/templates/ambassador-mapping.yaml
+apiVersion: getambassador.io/v3alpha1
+kind: Mapping
+metadata:
+  name: release-name-authentication-mapping
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  host: "*"
+  grpc: true
+  prefix: "/com.sqream.cloud.generated.v1.AuthenticationService/"
+  rewrite: "/com.sqream.cloud.generated.v1.AuthenticationService/"
+  service: release-name-authentication.default
+  retry_policy:
+    num_retries: 10
+    retry_on: 5xx
+---
+# Source: authentication/templates/servicePodMonitor.yaml
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: release-name-authentication
+  labels:
+    helm.sh/chart: authentication-0.11.0
+    app.kubernetes.io/name: authentication
+    app: authentication
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: authentication
+      app: authentication
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s

@@ -1,0 +1,1190 @@
+---
+# Source: graphscope-store/charts/kafka/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-20.0.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.3.2"
+    app.kubernetes.io/component: kafka
+  annotations:
+automountServiceAccountToken: true
+---
+# Source: graphscope-store/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-graphscope-store
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+  annotations:
+automountServiceAccountToken: true
+---
+# Source: graphscope-store/charts/kafka/charts/zookeeper/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zookeeper-scripts
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-11.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.8.0"
+    app.kubernetes.io/component: zookeeper
+data:
+  init-certs.sh: |-
+    #!/bin/bash
+  setup.sh: |-
+    #!/bin/bash
+
+    # Execute entrypoint as usual after obtaining ZOO_SERVER_ID
+    # check ZOO_SERVER_ID in persistent volume via myid
+    # if not present, set based on POD hostname
+    if [[ -f "/bitnami/zookeeper/data/myid" ]]; then
+        export ZOO_SERVER_ID="$(cat /bitnami/zookeeper/data/myid)"
+    else
+        HOSTNAME="$(hostname -s)"
+        if [[ $HOSTNAME =~ (.*)-([0-9]+)$ ]]; then
+            ORD=${BASH_REMATCH[2]}
+            export ZOO_SERVER_ID="$((ORD + 1 ))"
+        else
+            echo "Failed to get index from hostname $HOST"
+            exit 1
+        fi
+    fi
+    exec /entrypoint.sh /run.sh
+---
+# Source: graphscope-store/charts/kafka/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kafka-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-20.0.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.3.2"
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    ID="${MY_POD_NAME#"release-name-kafka-"}"
+    if [[ -f "/bitnami/kafka/data/meta.properties" ]]; then
+        export KAFKA_CFG_BROKER_ID="$(grep "broker.id" "/bitnami/kafka/data/meta.properties" | awk -F '=' '{print $2}')"
+    else
+        export KAFKA_CFG_BROKER_ID="$((ID + 0))"
+    fi
+
+    # Configure zookeeper client
+
+    exec /entrypoint.sh /run.sh
+---
+# Source: graphscope-store/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-graphscope-store
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: configmap
+data:
+  groot.config: |-
+    ## Common Config
+    role.name=ROLE
+    node.idx=INDEX
+    rpc.port=55555
+    rpc.max.bytes.mb=20
+    store.node.count=1
+    frontend.node.count=1
+    coordinator.node.count=1
+    partition.count=16
+    discovery.mode=file
+
+    ## Frontend Config
+    frontend.service.port=55556
+    frontend.server.id=INDEX
+    frontend.server.num=1
+    enable.hash.generate.eid=false
+
+    ## Coordinator Config
+    snapshot.increase.interval.ms=1000
+    offsets.persist.interval.ms=3000
+    file.meta.store.path=/etc/groot/my.meta
+    log.recycle.enable=true
+
+    ## Store Config
+    store.data.path=/var/lib/graphscope-store
+    store.write.thread.count=1
+    store.queue.buffer.size=102400
+
+    ## Kafka Config
+    kafka.servers=KAFKA_SERVERS
+    kafka.topic=graphscope
+    kafka.producer.custom.configs=
+    kafka.test.cluster.enable=false
+
+    ## Frontend Config
+    gremlin.server.port=12312
+    ## disable neo4j when launching groot server by default
+    neo4j.bolt.server.disabled=true
+
+    dns.name.prefix.frontend=FRONTEND
+    dns.name.prefix.coordinator=COORDINATOR
+    dns.name.prefix.store=STORE
+
+    log4rs.config=LOG4RS_CONFIG
+
+    ## GAIA Config
+    gaia.rpc.port=60000
+    gaia.engine.port=60001
+
+    ## Auth config
+    auth.username=
+    auth.password=
+
+    # Pegasus config
+    pegasus.worker.num=1
+    pegasus.timeout=240000
+    pegasus.batch.size=1024
+    pegasus.output.capacity=16
+    pegasus.hosts=PEGASUS_HOSTS
+
+    ## Secondary config
+    secondary.instance.enabled=false
+    store.data.secondary.path=./data_secondary
+    store.gc.interval.ms=5000
+
+    ## Extra Config
+  setup.sh: |-
+    #!/bin/bash
+
+    sudo chown -R graphscope:graphscope /var/lib/graphscope-store || true
+    sudo chown -R graphscope:graphscope /etc/groot || true
+
+    [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+    ordinal=${BASH_REMATCH[1]}
+
+    pegasus_hosts=""
+    i=0
+    while [ $i -ne $STORE_COUNT ]; do
+      pod=`echo $DNS_NAME_PREFIX_STORE | sed -e "s/{}/$i/g"`
+      # 60001 is fixed gaia engine port
+      pegasus_hosts="${pegasus_hosts},${pod}:60001"
+      i=$(($i+1))
+    done
+    pegasus_hosts=${pegasus_hosts:1}
+
+    sudo sed -e "s/GRAPH_NAME/${GRAPH_NAME}/g" \
+              -e "s/ROLE/${ROLE}/g" \
+              -e "s/INDEX/${ordinal}/g" \
+              -e "s/KAFKA_SERVERS/${KAFKA_SERVERS}/g" \
+              -e "s/FRONTEND/${DNS_NAME_PREFIX_FRONTEND}/g" \
+              -e "s/COORDINATOR/${DNS_NAME_PREFIX_COORDINATOR}/g" \
+              -e "s/STORE/${DNS_NAME_PREFIX_STORE}/g" \
+              -e "s/PEGASUS_HOSTS/${pegasus_hosts}/g" \
+              -e "s@LOG4RS_CONFIG@${GRAPHSCOPE_HOME}/groot/conf/log4rs.yml@g" \
+    /etc/groot/groot.config.tpl | sudo tee -a /etc/groot/groot.config
+
+    export LOG_NAME=graphscope-store
+    export GROOT_CONF_FILE=/etc/groot/groot.config
+
+    # For core and heap profiling
+    # ulimit -c unlimited
+    # sudo mkdir -p /apsara/cloud/data/corefile/ && sudo chown -R graphscope:graphscope /apsara/cloud/data/corefile/
+    # export _RJEM_MALLOC_CONF=prof:true,lg_prof_interval:32,lg_prof_sample:19
+    # export MALLOC_CONF=prof:true,lg_prof_interval:32
+
+    export RUST_BACKTRACE=1
+    ${GRAPHSCOPE_HOME}/groot/bin/store_ctl.sh start ${ROLE}  # || sleep infinity
+---
+# Source: graphscope-store/charts/kafka/charts/zookeeper/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-11.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.8.0"
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: graphscope-store/charts/kafka/charts/zookeeper/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-11.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.8.0"
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+      nodePort: null
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: graphscope-store/charts/kafka/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-20.0.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.3.2"
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: false
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+    - name: tcp-internal
+      port: 9093
+      protocol: TCP
+      targetPort: kafka-internal
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: graphscope-store/charts/kafka/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-20.0.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.3.2"
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: graphscope-store/templates/coordinator/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graphscope-store-coordinator-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: coordinator
+  annotations:
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: port
+      port: 55555
+      targetPort: port
+  selector:
+    app.kubernetes.io/name: graphscope-store
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: coordinator
+---
+# Source: graphscope-store/templates/frontend/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graphscope-store-frontend-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: frontend
+  annotations:
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: service-port
+      port: 55556
+      targetPort: service-port
+    - name: port
+      port: 55555
+      targetPort: port
+  selector:
+    app.kubernetes.io/name: graphscope-store
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+---
+# Source: graphscope-store/templates/frontend/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graphscope-store-frontend
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: frontend
+  annotations:
+spec:
+  type: NodePort
+  externalTrafficPolicy: "Cluster"
+  ports:
+    - name: grpc
+      port: 55556
+      protocol: TCP
+      targetPort: service-port
+    - name: gremlin
+      port: 12312
+      protocol: TCP
+      targetPort: gremlin
+  selector:
+    app.kubernetes.io/name: graphscope-store
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+---
+# Source: graphscope-store/templates/store/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-graphscope-store-store-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: store
+  annotations:
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: port
+      port: 55555
+      targetPort: port
+    - name: gaia-rpc
+      port: 60000
+      targetPort: gaia-rpc
+    - name: gaia-engine
+      port: 60001
+      targetPort: gaia-engine
+  selector:
+    app.kubernetes.io/name: graphscope-store
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: store
+---
+# Source: graphscope-store/charts/kafka/charts/zookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-11.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.8.0"
+    app.kubernetes.io/component: zookeeper
+    role: zookeeper
+spec:
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zookeeper
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: zookeeper
+  serviceName: release-name-zookeeper-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: zookeeper
+        helm.sh/chart: zookeeper-11.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.8.0"
+        app.kubernetes.io/component: zookeeper
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: zookeeper
+                    app.kubernetes.io/component: zookeeper
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      containers:
+        - name: zookeeper
+          image: docker.io/bitnami/zookeeper:3.8.0-debian-11-r74
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: ZOO_DATA_LOG_DIR
+              value: ""
+            - name: ZOO_PORT_NUMBER
+              value: "2181"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+            - name: ZOO_INIT_LIMIT
+              value: "10"
+            - name: ZOO_SYNC_LIMIT
+              value: "5"
+            - name: ZOO_PRE_ALLOC_SIZE
+              value: "65536"
+            - name: ZOO_SNAPCOUNT
+              value: "100000"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr, mntr, ruok"
+            - name: ZOO_LISTEN_ALLIPS_ENABLED
+              value: "no"
+            - name: ZOO_AUTOPURGE_INTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_RETAIN_COUNT
+              value: "3"
+            - name: ZOO_MAX_SESSION_TIMEOUT
+              value: "40000"
+            - name: ZOO_SERVERS
+              value: release-name-zookeeper-0.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::1 
+            - name: ZOO_ENABLE_AUTH
+              value: "no"
+            - name: ZOO_ENABLE_QUORUM_AUTH
+              value: "no"
+            - name: ZOO_HEAP_SIZE
+              value: "1024"
+            - name: ZOO_LOG_LEVEL
+              value: "ERROR"
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          ports:
+            - name: client
+              containerPort: 2181
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+            - name: data
+              mountPath: /bitnami/zookeeper
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-zookeeper-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: graphscope-store/charts/kafka/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-20.0.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.3.2"
+    app.kubernetes.io/component: kafka
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: kafka
+  serviceName: release-name-kafka-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        helm.sh/chart: kafka-20.0.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.3.2"
+        app.kubernetes.io/component: kafka
+      annotations:
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: kafka
+                    app.kubernetes.io/component: kafka
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-kafka
+      containers:
+        - name: kafka
+          image: docker.io/bitnami/kafka:3.3.2-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECT
+              value: "release-name-zookeeper"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,CLIENT:PLAINTEXT"
+            - name: KAFKA_CFG_LISTENERS
+              value: "INTERNAL://:9093,CLIENT://:9092"
+            - name: KAFKA_CFG_ADVERTISED_LISTENERS
+              value: "INTERNAL://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9093,CLIENT://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9092"
+            - name: ALLOW_PLAINTEXT_LISTENER
+              value: "yes"
+            - name: KAFKA_ZOOKEEPER_PROTOCOL
+              value: PLAINTEXT
+            - name: KAFKA_VOLUME_DIR
+              value: "/bitnami/kafka"
+            - name: KAFKA_LOG_DIR
+              value: "/opt/bitnami/kafka/logs"
+            - name: KAFKA_CFG_DELETE_TOPIC_ENABLE
+              value: "false"
+            - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx1024m -Xms1024m"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MESSAGES
+              value: "10000"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MS
+              value: "1000"
+            - name: KAFKA_CFG_LOG_RETENTION_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_RETENTION_CHECK_INTERVAL_MS
+              value: "300000"
+            - name: KAFKA_CFG_LOG_RETENTION_HOURS
+              value: "168"
+            - name: KAFKA_CFG_MESSAGE_MAX_BYTES
+              value: "1000012"
+            - name: KAFKA_CFG_LOG_SEGMENT_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_DIRS
+              value: "/bitnami/kafka/data"
+            - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_CFG_NUM_IO_THREADS
+              value: "8"
+            - name: KAFKA_CFG_NUM_NETWORK_THREADS
+              value: "3"
+            - name: KAFKA_CFG_NUM_PARTITIONS
+              value: "1"
+            - name: KAFKA_CFG_NUM_RECOVERY_THREADS_PER_DATA_DIR
+              value: "1"
+            - name: KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES
+              value: "1048576000"
+            - name: KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECTION_TIMEOUT_MS
+              value: "6000"
+            - name: KAFKA_CFG_AUTHORIZER_CLASS_NAME
+              value: ""
+            - name: KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND
+              value: "true"
+            - name: KAFKA_CFG_SUPER_USERS
+              value: "User:admin"
+          ports:
+            - name: kafka-client
+              containerPort: 9092
+            - name: kafka-internal
+              containerPort: 9093
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/kafka
+            - name: logs
+              mountPath: /opt/bitnami/kafka/logs
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-kafka-scripts
+            defaultMode: 0755
+        - name: logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: graphscope-store/templates/coordinator/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-graphscope-store-coordinator
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: coordinator
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graphscope-store
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: coordinator
+  serviceName: release-name-graphscope-store-coordinator-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graphscope-store
+        helm.sh/chart: graphscope-store-0.27.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.4.0"
+        app.kubernetes.io/component: coordinator
+      annotations:
+        checksum/configuration: 3d7df95edd2ac47a178ff86d4d92038b04dbbb4a0256da3f5663d913492d8292
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: graphscope-store
+                    app.kubernetes.io/component: coordinator
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-graphscope-store
+      containers:
+        - name: coordinator
+          image: registry.cn-hongkong.aliyuncs.com/graphscope/graphscope-store:0.23.0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /etc/groot/setup.sh
+          env:
+            - name: GRAPH_NAME
+              value: 
+            - name: GROOT_JAVA_OPTS
+              value: ""
+            - name: ROLE
+              value: "coordinator"
+            - name: FRONTEND_COUNT
+              value: "1"
+            - name: COORDINATOR_COUNT
+              value: "1"
+            - name: STORE_COUNT
+              value: "1"
+            - name: DNS_NAME_PREFIX_FRONTEND
+              value: release-name-graphscope-store-frontend-{}.release-name-graphscope-store-frontend-headless
+            - name: DNS_NAME_PREFIX_COORDINATOR
+              value: release-name-graphscope-store-coordinator-{}.release-name-graphscope-store-coordinator-headless
+            - name: DNS_NAME_PREFIX_STORE
+              value: release-name-graphscope-store-store-{}.release-name-graphscope-store-store-headless
+            - name: DNS_NAME_SERVICE_KAFKA
+              value: release-name-kafka-headless.default
+            - name: KAFKA_SERVERS
+              value: release-name-kafka-0.release-name-kafka-headless.default.svc.cluster.local:9092
+          ports:
+            - name: port
+              containerPort: 55555
+          volumeMounts:
+            - name: meta
+              mountPath: /etc/groot/my.meta
+            - name: config
+              mountPath: /etc/groot/groot.config.tpl
+              subPath: groot.config
+            - name: config
+              mountPath: /etc/groot/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-graphscope-store
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "100Mi"
+---
+# Source: graphscope-store/templates/frontend/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-graphscope-store-frontend
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: frontend
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graphscope-store
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: frontend
+  serviceName: release-name-graphscope-store-frontend-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graphscope-store
+        helm.sh/chart: graphscope-store-0.27.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.4.0"
+        app.kubernetes.io/component: frontend
+      annotations:
+        checksum/configuration: 3d7df95edd2ac47a178ff86d4d92038b04dbbb4a0256da3f5663d913492d8292
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: graphscope-store
+                    app.kubernetes.io/component: frontend
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-graphscope-store
+      containers:
+        - name: frontend
+          image: registry.cn-hongkong.aliyuncs.com/graphscope/graphscope-store:0.23.0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /etc/groot/setup.sh
+          env:
+            - name: GRAPH_NAME
+              value: 
+            - name: GROOT_JAVA_OPTS
+              value: ""
+            - name: ROLE
+              value: "frontend"
+            - name: FRONTEND_COUNT
+              value: "1"
+            - name: COORDINATOR_COUNT
+              value: "1"
+            - name: STORE_COUNT
+              value: "1"
+            - name: DNS_NAME_PREFIX_FRONTEND
+              value: release-name-graphscope-store-frontend-{}.release-name-graphscope-store-frontend-headless
+            - name: DNS_NAME_PREFIX_COORDINATOR
+              value: release-name-graphscope-store-coordinator-{}.release-name-graphscope-store-coordinator-headless
+            - name: DNS_NAME_PREFIX_STORE
+              value: release-name-graphscope-store-store-{}.release-name-graphscope-store-store-headless
+            - name: DNS_NAME_SERVICE_KAFKA
+              value: release-name-kafka-headless.default
+            - name: KAFKA_SERVERS
+              value: release-name-kafka-0.release-name-kafka-headless.default.svc.cluster.local:9092
+          ports:
+            - name: service-port
+              containerPort: 55556
+            - name: gremlin
+              containerPort: 12312
+            - name: port
+              containerPort: 55555
+          volumeMounts:
+            - name: config
+              mountPath: /etc/groot/groot.config.tpl
+              subPath: groot.config
+            - name: config
+              mountPath: /etc/groot/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-graphscope-store
+            defaultMode: 0755
+---
+# Source: graphscope-store/templates/store/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-graphscope-store-store
+  namespace: default
+  labels:
+    app.kubernetes.io/name: graphscope-store
+    helm.sh/chart: graphscope-store-0.27.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.4.0"
+    app.kubernetes.io/component: store
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graphscope-store
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: store
+  serviceName: release-name-graphscope-store-store-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graphscope-store
+        helm.sh/chart: graphscope-store-0.27.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.4.0"
+        app.kubernetes.io/component: store
+      annotations:
+        checksum/configuration: 3d7df95edd2ac47a178ff86d4d92038b04dbbb4a0256da3f5663d913492d8292
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: graphscope-store
+                    app.kubernetes.io/component: store
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-graphscope-store
+      containers:
+        - name: store
+          image: registry.cn-hongkong.aliyuncs.com/graphscope/graphscope-store:0.23.0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /etc/groot/setup.sh
+          env:
+            - name: GRAPH_NAME
+              value: 
+            - name: GROOT_JAVA_OPTS
+              value: ""
+            - name: ROLE
+              value: "store"
+            - name: FRONTEND_COUNT
+              value: "1"
+            - name: COORDINATOR_COUNT
+              value: "1"
+            - name: STORE_COUNT
+              value: "1"
+            - name: DNS_NAME_PREFIX_FRONTEND
+              value: release-name-graphscope-store-frontend-{}.release-name-graphscope-store-frontend-headless
+            - name: DNS_NAME_PREFIX_COORDINATOR
+              value: release-name-graphscope-store-coordinator-{}.release-name-graphscope-store-coordinator-headless
+            - name: DNS_NAME_PREFIX_STORE
+              value: release-name-graphscope-store-store-{}.release-name-graphscope-store-store-headless
+            - name: DNS_NAME_SERVICE_KAFKA
+              value: release-name-kafka-headless.default
+            - name: KAFKA_SERVERS
+              value: release-name-kafka-0.release-name-kafka-headless.default.svc.cluster.local:9092
+          ports:
+            - name: port
+              containerPort: 55555
+            - name: gaia-rpc
+              containerPort: 60000
+            - name: gaia-engine
+              containerPort: 60001
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/graphscope-store
+            - name: config
+              mountPath: /etc/groot/groot.config.tpl
+              subPath: groot.config
+            - name: config
+              mountPath: /etc/groot/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-graphscope-store
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "1Gi"
+---
+# Source: graphscope-store/templates/test/test-rpc.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-graphscope-store-frontend-test-gremlin-service
+  labels:
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: python
+      image: registry.cn-hongkong.aliyuncs.com/graphscope/graphscope-store:python-3.9.9-alpine3.14-gremlin
+      env:
+        - name: frontend
+          value: release-name-graphscope-store-frontend
+      command:
+        - /bin/sh
+        - -c
+        - while sleep 3 && ! python3 -c 'import os;from gremlin_python.driver.client import Client;ip=os.getenv("frontend");graph_url = f"ws://{ip}:12312/gremlin"; username, password = "", ""; client = Client(graph_url, "g", username=username, password=password); ret = client.submit("g.V().limit(1)").all().result(); client.close();';
+            do echo -n .;
+          done
+  restartPolicy: Never

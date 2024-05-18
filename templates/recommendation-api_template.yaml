@@ -1,0 +1,224 @@
+---
+# Source: recommendation-api/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recommendation-api-release-name
+  labels:
+    app: recommendation-api
+    chart: recommendation-api-0.1.13
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: recommendation-api
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 9632
+        protocol: TCP
+---
+# Source: recommendation-api/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: recommendation-api-release-name-secret-config
+  labels:
+    app: recommendation-api
+    chart: recommendation-api-0.1.13
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: recommendation-api/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-release-name
+data:
+  config.yaml: |-     # Number of worker processes to spawn.
+    # Set to 0 to run everything in a single process without clustering.
+    # Use 'ncpu' to run as many workers as there are CPU units
+    num_workers: 2
+    
+    # Log error messages and gracefully restart a worker if v8 reports that it
+    # uses more heap (note: not RSS) than this many mb.
+    worker_heap_limit_mb: 300
+    
+    # The maximum interval in ms that can pass between two beat messages
+    # sent by each worker to the master before it is killed
+    worker_heartbeat_timeout: 7500
+    
+    # Logger info
+    logging:
+      name: recommendation-api
+      streams:
+        - type: stdout
+          named_levels: true
+    
+    services:
+      - name: recommendation-api
+        module: ./app.js
+        conf:
+          cors: "*"
+          port: 9632
+          mwapi_req:
+            method: post
+            uri: http://localhost/w/api.php
+            headers:
+              host: '{{ request.params.domain }}'
+              user-agent: '{{ user-agent }}'
+            body: '{{ default(request.query, {}) }}'
+          restbase_req:
+            method: '{{request.method}}'
+            query: '{{ default(request.query, {}) }}'
+            headers: '{{ request.headers }}'
+            body: '{{ request.body }}'
+            uri: http://localhost/api/rest_v1/{+path}
+          wdqsapi_req:
+            method: 'post'
+            uri: 'https://query.wikidata.org/sparql'
+            headers:
+              user-agent: '{{ user-agent }}'
+            body:
+              format: json
+              query: '{{ request.query }}'
+          mysql_conn:
+            limit: 2
+            host: localhost:3306
+            name: recommendationapi
+            user: root
+            pass: 
+            retry: 2
+            retry_delay: 1000
+          mysql_tables:
+            language: language
+            normalized_rank: normalized_rank
+          wikidata_domain: 'www.wikidata.org'
+          article:
+            # key is the target language, values are source languages
+            translation_models:
+              en:
+                - de
+              es:
+                - en
+              fa:
+                - en
+              uz:
+                - en
+                - ru
+          description_allowed_domains:
+            - www.wikidata.org
+            - test.wikidata.org
+            - wikidata.beta.wmflabs.org
+          caption_allowed_domains:
+            - commons.wikimedia.org
+            - test-commons.wikimedia.org
+            - commons.wikimedia.beta.wmflabs.org
+---
+# Source: recommendation-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-api-release-name
+  labels:
+    app: recommendation-api
+    chart: recommendation-api-0.1.13
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: recommendation-api
+    release: release-name
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 9632
+      port: 9632
+---
+# Source: recommendation-api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-api-release-name
+  labels:
+    app: recommendation-api
+    chart: recommendation-api-0.1.13
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: recommendation-api
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: recommendation-api
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: ad60c89f97f30d6fb4da274cf81edbca1b42cb83cd87bd3a7b5b62059d809ef8
+        checksum/secrets: 55c67cefca5ba3a75d2957aac6be0a26dbb2178725eef68440ea9d3f333a34b7
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      containers:
+        # The main application container
+        - name: recommendation-api-release-name
+          image: "docker-registry.wikimedia.org/wikimedia/mediawiki-services-recommendation-api:latest"
+          imagePullPolicy: IfNotPresent
+          command:
+            - nodejs
+          args:
+            - server.js
+            - -c
+            - /etc/recommendation-api/config.yaml
+          ports:
+            - containerPort: 9632
+          livenessProbe:
+            tcpSocket:
+              port: 9632
+          readinessProbe:
+            httpGet:
+              path: /robots.txt
+              port: 9632
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: recommendation-api-release-name
+          resources:
+            requests:
+              cpu: 100m
+              memory: 100Mi
+            limits:
+              cpu: 1
+              memory: 300Mi
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/recommendation-api        
+      volumes:
+        - name: config-volume
+          configMap:
+            name: config-release-name
+---
+# Source: recommendation-api/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'recommendation-api-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'recommendation-api-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(RECOMMENDATION_API_RELEASE_NAME_SERVICE_HOST)', 'http://recommendation-api-release-name:9632']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

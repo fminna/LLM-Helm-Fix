@@ -1,0 +1,193 @@
+---
+# Source: compss-matmul/templates/master-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: master-results-pv
+spec:
+  capacity:
+    storage: 50Mi
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: local-storage
+  local:
+    path: /tmp/compss-matmul-results   # mount path in the node 
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - agx12
+---
+# Source: compss-matmul/templates/master-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: master-results-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Mi
+  storageClassName: local-storage
+---
+# Source: compss-matmul/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-compss-matmul
+  labels:
+    helm.sh/chart: compss-matmul-0.1.0
+    app.kubernetes.io/name: compss-matmul
+    app.kubernetes.io/version: "3.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+  - name: ssh
+    protocol: TCP
+    port: 22
+    targetPort: ssh
+  selector:
+    app.kubernetes.io/name: compss-matmul
+---
+# Source: compss-matmul/templates/master-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-master
+  labels:
+    helm.sh/chart: compss-matmul-0.1.0
+    app.kubernetes.io/name: compss-matmul
+    app.kubernetes.io/version: "3.3"
+    app.kubernetes.io/managed-by: Helm
+    node: master
+spec:
+  hostname: master
+  subdomain: release-name
+  restartPolicy: Never
+  dnsConfig:
+    searches:
+    - release-name.default.svc.cluster.local
+  volumes:
+    - name: master-results
+      persistentVolumeClaim:
+        claimName: master-results-pvc
+  containers:
+  - name: master
+    image: "albabsc/compss-matmul:3.3-verge"
+    imagePullPolicy: Always
+    command:
+      - "/bin/bash"
+      - "-c"
+      - |
+        /opt/COMPSs/Runtime/scripts/system/kubernetes/generate_k8s_resources.sh /root/matmul/resources.xml 2 4 4 albabsc/compss-matmul:3.3-verge False 60 ;
+        /opt/COMPSs/Runtime/scripts/system/kubernetes/generate_k8s_project.sh /root/matmul/project.xml 2 albabsc/compss-matmul:3.3-verge 0 0 ;
+        cd /root/matmul ;
+        /opt/COMPSs/Runtime/scripts/user/runcompss --master_name=master --project=/root/matmul/project.xml --resources=/root/matmul/resources.xml -d -t -g matmul.py -b 4 -e 256 2>&1;
+        ssh -o StrictHostKeyChecking=no worker1 "pkill sshd" ;
+        ssh -o StrictHostKeyChecking=no worker2 "pkill sshd" ;
+        sleep 5 ;
+        exit 0
+    ports:
+      - name: ssh
+        containerPort: 22
+        protocol: TCP
+    volumeMounts:
+      - name: master-results
+        mountPath: /root/.COMPSs/ # mount path within the container
+---
+# Source: compss-matmul/templates/worker-pods.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-worker1
+  labels:
+    helm.sh/chart: compss-matmul-0.1.0
+    app.kubernetes.io/name: compss-matmul
+    app.kubernetes.io/version: "3.3"
+    app.kubernetes.io/managed-by: Helm
+    node: worker
+spec:
+  hostname: worker1
+  subdomain:  release-name
+  restartPolicy: Never
+  dnsConfig:
+    searches:
+    -  release-name.default.svc.cluster.local
+  # Make worker nodes run in different nodes
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: node
+            operator: In
+            values:
+            - worker
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: worker1
+    image: "albabsc/compss-matmul:3.3-verge"
+    imagePullPolicy: Always
+    command:
+      - "/bin/bash"
+      - "-c"
+      - "/usr/sbin/sshd -D"
+    resources:
+      limits: 
+        cpu: 4
+        memory: 4G
+    ports:
+    - containerPort: 22
+      name: ssh
+---
+# Source: compss-matmul/templates/worker-pods.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-worker2
+  labels:
+    helm.sh/chart: compss-matmul-0.1.0
+    app.kubernetes.io/name: compss-matmul
+    app.kubernetes.io/version: "3.3"
+    app.kubernetes.io/managed-by: Helm
+    node: worker
+spec:
+  hostname: worker2
+  subdomain:  release-name
+  restartPolicy: Never
+  dnsConfig:
+    searches:
+    -  release-name.default.svc.cluster.local
+  # Make worker nodes run in different nodes
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: node
+            operator: In
+            values:
+            - worker
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: worker2
+    image: "albabsc/compss-matmul:3.3-verge"
+    imagePullPolicy: Always
+    command:
+      - "/bin/bash"
+      - "-c"
+      - "/usr/sbin/sshd -D"
+    resources:
+      limits: 
+        cpu: 4
+        memory: 4G
+    ports:
+    - containerPort: 22
+      name: ssh

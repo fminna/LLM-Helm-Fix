@@ -1,0 +1,213 @@
+---
+# Source: git-configmap-sync/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-git-configmap-sync
+  labels:
+    helm.sh/chart: git-configmap-sync-1.0.1
+    app.kubernetes.io/name: git-configmap-sync
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: git-configmap-sync/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-git-configmap-sync
+  labels:
+    helm.sh/chart: git-configmap-sync-1.0.1
+    app.kubernetes.io/name: git-configmap-sync
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  git-username: ""
+  git-password: ""
+  git-private-ssh-key: ""
+---
+# Source: git-configmap-sync/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-git-configmap-sync
+  labels:
+    helm.sh/chart: git-configmap-sync-1.0.1
+    app.kubernetes.io/name: git-configmap-sync
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    LOCAL_SSH_DIR=/tmp/git-ssh-config
+    LOCAL_SSH_KNOWN_HOSTS=$LOCAL_SSH_DIR/known_hosts
+    LOCAL_GIT_CLONE_DIR=/tmp/git-clone-dir
+
+    echo "START - Cloning repository $GIT_URL @ $GIT_BRANCH"
+    
+    if [ "$GIT_URL" = "${GIT_URL#git}" ]; then
+      echo "> Cloning through HTTPS. Prepare authentication."
+      if [ "$GIT_USERNAME" != "" ]; then
+        if [ "$GIT_PASSWORD" != "" ]; then
+          GIT_CREDENTIALS="$GIT_USERNAME:$GIT_PASSWORD"
+        else
+          GIT_CREDENTIALS="$GIT_USERNAME"
+        fi
+
+        GIT_PROTOCOL=$(echo $GIT_URL | sed -E 's/^(http|https)(:\/\/)(.+)$/\1/')
+        GIT_REPO_URL=$(echo $GIT_URL | sed -E 's/^(http|https)(:\/\/)(.+)$/\3/')
+
+        GIT_URL="$GIT_PROTOCOL://$GIT_CREDENTIALS@$GIT_REPO_URL"
+      fi
+    else
+      echo "> Cloning through SSH. Prepare sshd config file"
+      mkdir -p $LOCAL_SSH_DIR
+      echo "UserKnownHostsFile $LOCAL_SSH_KNOWN_HOSTS" >> $LOCAL_SSH_DIR/config
+      echo "IdentityFile $GIT_SSH_KEY" >> $LOCAL_SSH_DIR/config
+
+      # Indicate to git to point to that file.
+      export GIT_SSH_COMMAND="ssh -F $LOCAL_SSH_DIR/config"
+      
+      echo "> Adding SSH host to known_hosts"
+      echo $GIT_URL | sed -E 's/^(http|https|git)(:\/\/|@)([^\/:]+)[\/:]([^\/:]+)\/(.+)$/\3/' | xargs ssh-keyscan > $LOCAL_SSH_KNOWN_HOSTS
+    fi
+
+    echo "> Git clone"
+    git -c http.sslVerify=false clone $GIT_URL -b $GIT_BRANCH $LOCAL_GIT_CLONE_DIR
+
+    echo "> Move folder content to shared volume"
+    cp -R $LOCAL_GIT_CLONE_DIR/$GIT_SUB_DIRECTORY/* $CONFIGMAP_DIR
+
+    echo "END - Task completed."
+---
+# Source: git-configmap-sync/templates/clusterrole.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-git-configmap-sync
+  labels:
+    helm.sh/chart: git-configmap-sync-1.0.1
+    app.kubernetes.io/name: git-configmap-sync
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+# Source: git-configmap-sync/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-git-configmap-sync
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-git-configmap-sync
+subjects:
+- kind: ServiceAccount
+  name: release-name-git-configmap-sync
+  namespace: default
+---
+# Source: git-configmap-sync/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-git-configmap-sync
+  labels:
+    helm.sh/chart: git-configmap-sync-1.0.1
+    app.kubernetes.io/name: git-configmap-sync
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: git-configmap-sync
+            app.kubernetes.io/instance: release-name
+        spec:
+          restartPolicy: Never
+          serviceAccountName: release-name-git-configmap-sync
+          securityContext:
+            fsGroup: 65534
+          
+          initContainers:
+            - name: git-clone
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsGroup: 65534
+                runAsUser: 65534
+              image: "alpine/git:latest"
+              imagePullPolicy: IfNotPresent
+              env:
+              - name: GIT_URL
+                value: https://github.com/julb/kubernetes-configmap-sync.git
+              - name: GIT_BRANCH
+                value: main
+              - name: GIT_SUB_DIRECTORY
+                value: examples
+              - name: GIT_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-git-configmap-sync
+                    key: git-username
+              - name: GIT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-git-configmap-sync
+                    key: git-password
+              - name: GIT_SSH_KEY
+                value: /opt/.ssh/id_rsa
+              - name: CONFIGMAP_DIR
+                value: /opt/configmap-dir
+              volumeMounts:
+                - name: configmap-entrypoint
+                  mountPath: /opt/entrypoint
+                - name: configmap-private-ssh-key
+                  readOnly: true
+                  mountPath: /opt/.ssh
+                - name: configmap-dir
+                  mountPath: /opt/configmap-dir
+              resources:
+                {}
+              command: ["/bin/sh", "/opt/entrypoint/entrypoint.sh"]
+          containers:
+            - name: git-configmap-sync
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsGroup: 65534
+                runAsUser: 65534
+              image: "julb/kubernetes-configmap-sync:1.1.0"
+              imagePullPolicy: IfNotPresent
+              env:
+              - name: CONFIGMAP_DIR
+                value: /opt/configmap-dir
+              volumeMounts:
+                - name: configmap-dir
+                  mountPath: /opt/configmap-dir
+              resources:
+                {}
+          volumes:
+            - name: configmap-dir
+              emptyDir: {}
+            - name: configmap-entrypoint
+              configMap:
+                name: release-name-git-configmap-sync
+            - name: configmap-private-ssh-key
+              secret:
+                secretName: release-name-git-configmap-sync
+                defaultMode: 0400
+                items:
+                - key: git-private-ssh-key
+                  path: id_rsa

@@ -1,0 +1,126 @@
+---
+# Source: satisfy/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-satisfy
+  labels:
+    app.kubernetes.io/name: satisfy
+    helm.sh/chart: satisfy-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+---
+# Source: satisfy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-satisfy
+  labels:
+    app.kubernetes.io/name: satisfy
+    helm.sh/chart: satisfy-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: satisfy
+    app.kubernetes.io/instance: release-name
+---
+# Source: satisfy/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name-satisfy
+  labels:
+    app.kubernetes.io/name: satisfy
+    helm.sh/chart: satisfy-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: satisfy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: satisfy
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 15
+      initContainers:
+        - name: init
+          image: "docker.io/anapsix/satisfy@sha256:fae78e3809e9d08990c7d7d6699a734f7e584c28ce49381a1a699e1694481ab8"
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -x
+              set -e
+              if [[ -e /app_persist/satis.json ]]; then
+                echo >&2 "Existing installation found, moving on.."
+                exit 0
+              else
+                echo >&2 "Seeding new instance.."
+                cp -r /app/* /app_persist/
+                for ref in $(find /app_persist -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+                  chown -R satisfy:satisfy $ref
+                done
+              fi
+              echo >&2 "Init completed.."
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: app-persist
+              mountPath: /app_persist
+      containers:
+        - name: satisfy
+          image: "docker.io/anapsix/satisfy@sha256:fae78e3809e9d08990c7d7d6699a734f7e584c28ce49381a1a699e1694481ab8"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: REPO_NAME
+              value: "myrepo"
+            - name: HOMEPAGE
+              value: "http://composer.local"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          volumeMounts:
+            - name: app-persist
+              mountPath: /app
+      volumes:
+        - name: app-persist
+          persistentVolumeClaim:
+            claimName: release-name-satisfy

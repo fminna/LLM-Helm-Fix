@@ -1,0 +1,267 @@
+---
+# Source: locate/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: release-name
+  namespace: default
+---
+# Source: locate/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: juno-secret
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  token: JSFzKDxuaWw+KQ==
+---
+# Source: locate/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: release-name
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["juno-secret"]
+  verbs: ["get", "patch"]
+---
+# Source: locate/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: release-name
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name
+subjects:
+- kind: ServiceAccount
+  name: release-name
+  namespace: default
+---
+# Source: locate/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+  - name: http
+    port: 5000
+  selector:
+    app.kubernetes.io/name: locate
+    app.kubernetes.io/instance: release-name
+---
+# Source: locate/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: locate
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: locate
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name
+      automountServiceAccountToken: true
+      containers:
+      - image: "docker.io/cleardata/locate@sha256:a26437075b112f95a69ba2f0ae7cc311bbffac25a7a0f72e959bacd866608b43"
+        imagePullPolicy: IfNotPresent
+        name: locate
+        volumeMounts:
+            - name: secret-volume
+              mountPath: /etc/secret-volume
+        ports:
+        - containerPort: 5000
+        env:
+        - name: JAEGER_AGENT_HOST
+          value: "jaeger-agent.istio-system"
+        - name: JAEGER_AGENT_PORT
+          value: "6831"
+        - name: JAEGER_REPORTER_LOG_SPANS
+          value: "true"
+        - name: JUNO_API_BASE_URL
+          value: "locate.app.cleardata.com/v1"
+        - name: CUSTOMER_ID
+          value: ""
+        - name: JUNO_AUTH_TOKEN_HEADER
+          value: "authorizationToken"
+      volumes:
+        - name: secret-volume
+          secret:
+            secretName: juno-secret
+---
+# Source: locate/templates/cron.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-token
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 * * * *"
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          name: release-name-token
+          namespace: default
+          labels:
+            app.kubernetes.io/name: locate
+            helm.sh/chart: locate-2.0.0
+            app.kubernetes.io/instance: release-name
+            app.kubernetes.io/managed-by: Helm
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: release-name
+          automountServiceAccountToken: true
+          containers:
+          - name: release-name-token
+            image: "docker.io/cleardata/locate@sha256:a26437075b112f95a69ba2f0ae7cc311bbffac25a7a0f72e959bacd866608b43"
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - python /app/rotate_token.py
+            env:
+              - name: JUNO_AUTH_TOKEN_HEADER
+                value: "authorizationToken"
+              - name: JUNO_AUTH_HOST
+                value: "5umqfsarhb.execute-api.us-east-1.amazonaws.com"
+              - name: JUNO_AUTH_STAGE
+                value: "prod"
+            volumeMounts:
+                - name: secret-volume
+                  mountPath: /etc/secret-volume
+          volumes:
+          - name: secret-volume
+            secret:
+              secretName: juno-secret
+          restartPolicy: Never
+---
+# Source: locate/templates/api-access.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: release-name-access
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  hosts:
+  - locate.app.cleardata.com
+  - 5umqfsarhb.execute-api.us-east-1.amazonaws.com
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: DNS
+  location: MESH_EXTERNAL
+---
+# Source: locate/templates/api-access.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: release-name-access
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  hosts:
+  - locate.app.cleardata.com
+  - 5umqfsarhb.execute-api.us-east-1.amazonaws.com
+  tls:
+  - match:
+    - port: 443
+      sni_hosts:
+      - locate.app.cleardata.com
+    route:
+    - destination:
+        host: locate.app.cleardata.com
+  - match:
+    - port: 443
+      sni_hosts:
+      - 5umqfsarhb.execute-api.us-east-1.amazonaws.com
+    route:
+    - destination:
+        host: 5umqfsarhb.execute-api.us-east-1.amazonaws.com
+---
+# Source: locate/templates/tests/test-api.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-api-test
+  namespace: default
+  labels:
+    app.kubernetes.io/name: locate
+    helm.sh/chart: locate-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+    sidecar.istio.io/inject: "false"
+spec:
+  containers:
+  - image: curlimages/curl:7.67.0
+    imagePullPolicy: IfNotPresent
+    name: release-name-api-test
+    command: ["sh", "-c",
+     "curl -i -v -k -H 'Content-Type: application/json' \
+     -d '{\"data\": {\"text\": \"My test phone number is 512-867-5309\"}}' \
+     http://release-name-locate:5000/phi | grep locate_id"]
+  restartPolicy: Never

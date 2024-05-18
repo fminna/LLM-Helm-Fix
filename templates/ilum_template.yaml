@@ -1,0 +1,1574 @@
+---
+# Source: ilum/charts/ilum-core/templates/core-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-ilum-core-spark
+---
+# Source: ilum/charts/minio/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ilum-minio
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/version: 2023.12.23
+    helm.sh/chart: minio-12.13.2
+automountServiceAccountToken: true
+secrets:
+  - name: ilum-minio
+---
+# Source: ilum/charts/mongodb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ilum-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+secrets:
+  - name: ilum-mongodb
+automountServiceAccountToken: true
+---
+# Source: ilum/charts/minio/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ilum-minio
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/version: 2023.12.23
+    helm.sh/chart: minio-12.13.2
+type: Opaque
+data:
+  root-user: "bWluaW9hZG1pbg=="
+  root-password: "bWluaW9hZG1pbg=="
+---
+# Source: ilum/charts/ilum-core/templates/core-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum
+data:
+  application.yml: |
+    spring:
+      main:
+        banner-mode: off
+      servlet:
+        multipart:
+          enabled: true
+          max-file-size: 500MB
+          max-request-size: 500MB
+          file-size-threshold: 50MB
+      data:
+        mongodb:
+          uri: mongodb://ilum-mongodb-0.ilum-mongodb-headless:27017,ilum-mongodb-1.ilum-mongodb-headless:27017/ilum-default?replicaSet=rs0
+      kafka:
+        admin:
+          fail-fast: true
+      codec:
+        max-in-memory-size: 20MB
+      task:
+        scheduling:
+          pool:
+            size: 2
+
+    communication:
+      mode: grpc
+    job:
+      kafka:
+        server: ilum-kafka-controller-0.ilum-kafka-controller-headless:9092
+        topicPrefix: ilum-default
+        requestSize: 20000000
+        maxPollRecords: 500
+        maxPollInterval: 60000
+      grpc:
+        server: ilum-grpc
+        port: 9999
+      retain:
+        hours: 168
+      openLineage:
+        enabled: false
+        transport:
+          type: http
+          serverUrl: http://ilum-marquez:9555/api/v1/namespaces/ilum
+      prometheus:
+        enabled: true
+      healthcheck:
+        enabled: true
+        interval: 300
+        tolerance: 120
+
+    ilum:
+      namespace: default
+      release: release-name
+      externalSubmit: false
+      historyServer:
+        enabled: true
+        url: http://ilum-history-server:9666
+      storageType: s3
+      s3a:
+        endpoint: ilum-minio:9000
+        sparkBucket: ilum-files
+        dataBucket: ilum-tables
+        accessKey: minioadmin
+        secretKey: minioadmin
+
+    license:
+      account: ilum-cloud
+      validation:
+        baseUrl: https://api.keygen.sh
+      key:
+        public: b72137e87c3fc1c6bf8ae0b758264fe4ea8110ce04253f9cba9240efd1710996
+        private: ""
+
+    security:
+      internal:
+        enabled: true
+        users:
+          - password: admin
+            roles:
+            - ADMIN
+            username: admin
+      ldap:
+        enabled: false
+        base: ""
+        username: ""
+        password: ""
+        passwordEncoder: ""
+        userSearch:
+          base: ""
+          filter: "uid={0}"
+          passwordAttr: "userPassword"
+        groupSearch:
+          base: ""
+          filter: "(member={0})"
+          roleAttr: "cn"
+      oauth2:
+        enabled: false
+        clientId: ""
+        clientSecret: ""
+        issuerUri: ""
+      jwt:
+        issuerUri: "https://ilum.cloud"
+        timeToLive: "8h"
+        publicKey: ""
+        privateKey: ""
+      authorities:
+        roles:
+          prefix: "ROLE_"
+          claimName: "groups"
+        scopes:
+          prefix: "SCOPE_"
+          claimName: "scp"
+
+    springdoc:
+      swagger-ui:
+        tags-sorter: alpha
+        operations-sorter: alpha
+      paths-to-match: /api/v1/**
+
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: "info,configprops,env,metrics,mappings,beans,prometheus"
+
+    logging:
+      level:
+        # ilum
+        cloud.ilum: info
+        # kafka
+        org.apache.kafka: warn
+        org.springframework.kafka: warn
+        # mongo
+        org.mongodb.driver: warn
+        # yarn client
+        org.apache.hadoop.yarn.client: error
+        # transactions
+        # org.springframework.transaction: info
+        # web
+        # org.springframework.web: debug
+
+    mongock:
+      migration-scan-package:
+        - cloud.ilum.service.migrations
+
+    cors:
+      enabled: true
+---
+# Source: ilum/charts/ilum-core/templates/hs-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-defaults
+data:
+  spark-defaults.conf: |
+    # Spark history server custom properties:
+      
+    # Spark hadoop properties:
+    spark.hadoop.fs.s3a.bucket.ilum-files.endpoint                ilum-minio:9000
+    spark.hadoop.fs.s3a.bucket.ilum-files.access.key              minioadmin
+    spark.hadoop.fs.s3a.bucket.ilum-files.secret.key              minioadmin
+    spark.hadoop.fs.s3a.bucket.ilum-files.connection.ssl.enabled  false
+    spark.hadoop.fs.s3a.bucket.ilum-files.path.style.access       true
+    spark.hadoop.fs.s3a.bucket.ilum-files.impl                    org.apache.hadoop.fs.s3a.S3AFileSystem
+    spark.hadoop.fs.s3a.bucket.ilum-files.fast.upload             true
+    spark.hadoop.fs.s3a.aws.credentials.provider                                               org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+    spark.history.fs.logDirectory                                                              s3a://ilum-files/ilum/logs
+---
+# Source: ilum/charts/ilum-core/templates/spark-submit-pt.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-spark-submit-pt
+data:
+  spark-submit-pt.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: spark-submit
+      namespace: default
+    spec:
+      serviceAccountName: release-name-ilum-core-spark
+      restartPolicy: Never
+      containers:
+        - name: spark-submit
+          image: ilum/spark-launcher:spark-3.4.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 500Mi
+            requests:
+              memory: 300Mi
+---
+# Source: ilum/charts/ilum-livy-proxy/templates/livy-proxy-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-livy-proxy
+data:
+  ilumCoreUri: "http://ilum-core:9888/api/v1"
+  ilumUIPublicUri: "http://localhost:9777"
+---
+# Source: ilum/charts/ilum-ui/templates/ui-cm-nginx.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-nginx
+data:
+  nginx.conf: |-
+    worker_processes  auto;
+    
+    error_log  /var/log/nginx/error.log warn;
+    pid        /tmp/nginx.pid;
+    
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+    
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+    
+        access_log  /var/log/nginx/access.log  main;
+    
+        sendfile        on;
+        server_tokens   off;
+    
+        keepalive_time 6h;
+        keepalive_timeout  6h;
+        client_max_body_size 2G;
+    
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_buffers 16 8k;
+        gzip_http_version 1.1;
+        gzip_types
+            text/css
+            text/javascript
+            text/xml
+            text/plain
+            text/event-stream
+            application/javascript
+            application/json
+            image/svg+xml;
+    
+      include conf.d/server.conf;
+    
+    }
+---
+# Source: ilum/charts/mongodb/templates/common-scripts-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-mongodb-common-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+data:
+  startup-probe.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval 'db.hello().isWritablePrimary || db.hello().secondary' | grep 'true'
+  readiness-probe.sh: |
+    #!/bin/bash
+    # Run the proper check depending on the version
+    [[ $(mongod -version | grep "db version") =~ ([0-9]+\.[0-9]+\.[0-9]+) ]] && VERSION=${BASH_REMATCH[1]}
+    . /opt/bitnami/scripts/libversion.sh
+    VERSION_MAJOR="$(get_sematic_version "$VERSION" 1)"
+    VERSION_MINOR="$(get_sematic_version "$VERSION" 2)"
+    VERSION_PATCH="$(get_sematic_version "$VERSION" 3)"
+    readiness_test='db.isMaster().ismaster || db.isMaster().secondary'
+    if [[ ( "$VERSION_MAJOR" -ge 5 ) || ( "$VERSION_MAJOR" -ge 4 && "$VERSION_MINOR" -ge 4 && "$VERSION_PATCH" -ge 2 ) ]]; then
+        readiness_test='db.hello().isWritablePrimary || db.hello().secondary'
+    fi
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "${readiness_test}" | grep 'true'
+  ping-mongodb.sh: |
+    #!/bin/bash
+    mongosh  $TLS_OPTIONS --port $MONGODB_PORT_NUMBER --eval "db.adminCommand('ping')"
+---
+# Source: ilum/charts/mongodb/templates/replicaset/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-mongodb-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    . /opt/bitnami/scripts/mongodb-env.sh
+    . /opt/bitnami/scripts/libfs.sh
+    . /opt/bitnami/scripts/liblog.sh
+    . /opt/bitnami/scripts/libvalidations.sh
+
+    if is_empty_value "$MONGODB_ADVERTISED_PORT_NUMBER"; then
+      export MONGODB_ADVERTISED_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    fi
+
+    info "Advertised Hostname: $MONGODB_ADVERTISED_HOSTNAME"
+    info "Advertised Port: $MONGODB_ADVERTISED_PORT_NUMBER"
+
+    # Check for existing replica set in case there is no data in the PVC
+    # This is for cases where the PVC is lost or for MongoDB caches without
+    # persistence
+    current_primary=""
+    if is_dir_empty "${MONGODB_DATA_DIR}/db"; then
+      info "Data dir empty, checking if the replica set already exists"
+        current_primary=$(mongosh admin --host "ilum-mongodb-0.ilum-mongodb-headless.default.svc.cluster.local:27017,ilum-mongodb-1.ilum-mongodb-headless.default.svc.cluster.local:27017" --eval 'db.runCommand("ismaster")' | awk -F\' '/primary/ {print $2}')
+      if ! is_empty_value "$current_primary"; then
+        info "Detected existing primary: ${current_primary}"
+      fi
+    fi
+
+    if ! is_empty_value "$current_primary" && [[ "$MONGODB_ADVERTISED_HOSTNAME:$MONGODB_ADVERTISED_PORT_NUMBER" == "$current_primary" ]]; then
+        info "Advertised name matches current primary, configuring node as a primary"
+        export MONGODB_REPLICA_SET_MODE="primary"
+    elif ! is_empty_value "$current_primary" && [[ "$MONGODB_ADVERTISED_HOSTNAME:$MONGODB_ADVERTISED_PORT_NUMBER" != "$current_primary" ]]; then
+        info "Current primary is different from this node. Configuring the node as replica of ${current_primary}"
+        export MONGODB_REPLICA_SET_MODE="secondary"
+        export MONGODB_INITIAL_PRIMARY_HOST="${current_primary%:*}"
+        export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="${current_primary#*:}"
+        export MONGODB_SET_SECONDARY_OK="yes"
+    elif [[ "$MY_POD_NAME" = "ilum-mongodb-0" ]]; then
+        info "Pod name matches initial primary pod name, configuring node as a primary"
+        export MONGODB_REPLICA_SET_MODE="primary"
+    else
+        info "Pod name doesn't match initial primary pod name, configuring node as a secondary"
+        export MONGODB_REPLICA_SET_MODE="secondary"
+        export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    fi
+
+    if [[ "$MONGODB_REPLICA_SET_MODE" == "secondary" ]]; then
+        export MONGODB_INITIAL_PRIMARY_ROOT_USER="$MONGODB_ROOT_USER"
+        export MONGODB_INITIAL_PRIMARY_ROOT_PASSWORD="$MONGODB_ROOT_PASSWORD"
+        export MONGODB_ROOT_PASSWORD=""
+        export MONGODB_EXTRA_USERNAMES=""
+        export MONGODB_EXTRA_DATABASES=""
+        export MONGODB_EXTRA_PASSWORDS=""
+        export MONGODB_ROOT_PASSWORD_FILE=""
+        export MONGODB_EXTRA_USERNAMES_FILE=""
+        export MONGODB_EXTRA_DATABASES_FILE=""
+        export MONGODB_EXTRA_PASSWORDS_FILE=""
+    fi
+
+    exec /opt/bitnami/scripts/mongodb/entrypoint.sh /opt/bitnami/scripts/mongodb/run.sh
+  setup-hidden.sh: |-
+    #!/bin/bash
+
+    . /opt/bitnami/scripts/mongodb-env.sh
+
+    echo "Advertised Hostname: $MONGODB_ADVERTISED_HOSTNAME"
+    echo "Advertised Port: $MONGODB_ADVERTISED_PORT_NUMBER"
+    echo "Configuring node as a hidden node"
+    export MONGODB_REPLICA_SET_MODE="hidden"
+    export MONGODB_INITIAL_PRIMARY_ROOT_USER="$MONGODB_ROOT_USER"
+    export MONGODB_INITIAL_PRIMARY_ROOT_PASSWORD="$MONGODB_ROOT_PASSWORD"
+    export MONGODB_INITIAL_PRIMARY_PORT_NUMBER="$MONGODB_PORT_NUMBER"
+    export MONGODB_ROOT_PASSWORD=""
+    export MONGODB_EXTRA_USERNAMES=""
+    export MONGODB_EXTRA_DATABASES=""
+    export MONGODB_EXTRA_PASSWORDS=""
+    export MONGODB_ROOT_PASSWORD_FILE=""
+    export MONGODB_EXTRA_USERNAMES_FILE=""
+    export MONGODB_EXTRA_DATABASES_FILE=""
+    export MONGODB_EXTRA_PASSWORDS_FILE=""
+    exec /opt/bitnami/scripts/mongodb/entrypoint.sh /opt/bitnami/scripts/mongodb/run.sh
+---
+# Source: ilum/templates/ui-cm-nginx-server.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-nginx-server
+data:
+  server.conf.template: |-
+    server {
+        listen 8080;
+        server_name ilum-frontend;
+        ignore_invalid_headers off;
+
+        location / {
+            root /usr/share/nginx/html;
+            try_files $uri $uri/ /index.html;
+        }
+
+        # This path will be forward to http://ilum-core-service/
+        location /core/ {
+            proxy_pass ${ILUM_BACKEND_URL}/;
+            proxy_set_header Connection '';
+            proxy_http_version 1.1;
+            chunked_transfer_encoding off;
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 6h;
+        }
+
+        # This path will be forward to http://ilum-jupyter/
+        location /external/jupyter/ {
+            proxy_pass ${ILUM_JUPYTER_URL};
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header Host $http_host;
+            proxy_http_version 1.1;
+            proxy_redirect off;
+            proxy_buffering off;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+
+        
+
+        #This path will be forward to http://ilum-history-server/
+        location /external/history-server/ {
+            proxy_set_header Accept-Encoding "";
+            proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 6h;
+            absolute_redirect off;
+
+            sub_filter_types *;
+            sub_filter 'href="/' 'href="/external/history-server/';
+            sub_filter 'src="/' 'src="/external/history-server/';
+            sub_filter 'action="/' 'action="/external/history-server/';
+            sub_filter 'setUIRoot(\'\')' 'setUIRoot(\'/external/history-server/\')';
+            sub_filter_once off;
+
+            proxy_pass ${ILUM_HISTORY_SERVER_URL}/;
+        }
+    
+        location /external/minio/ {
+            rewrite ^/external/minio/(.*) /$1 break;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-NginX-Proxy true;
+            
+            # This is necessary to pass the correct IP to be hashed
+            real_ip_header X-Real-IP;
+            proxy_connect_timeout 300;
+            # To support websockets in MinIO versions released after January 2023
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            # Some environments may encounter CORS errors (Kubernetes + Nginx Ingress)
+            # Uncomment the following line to set the Origin request to an empty string
+            proxy_set_header Origin '';
+            proxy_hide_header X-Frame-Options;
+            chunked_transfer_encoding off;
+            proxy_pass ${ILUM_DATA_URL}; # This uses the upstream directive definition to load balance
+        }
+    
+        
+    
+                    
+
+        # This path will be forward to spark web ui of job with given appid
+        location ~ ^/sparkui/(?<jobid>.+)/(?<random>.+)/(?<port>[0-9]+)/(?<namespace>.+)/proxy/(?<appid>[^/]+)(?<local_path>.*) {
+             resolver kube-dns.kube-system.svc.cluster.local valid=10s;
+
+             proxy_set_header Accept-Encoding "";
+             proxy_http_version 1.1;
+             proxy_buffering off;
+             proxy_cache off;
+             proxy_read_timeout 6h;
+
+             sub_filter_types *;
+             sub_filter 'href="/' 'href="/sparkui/$jobid/$random/$port/$namespace/proxy/$appid/';
+             sub_filter 'src="/' 'src="/sparkui/$jobid/$random/$port/$namespace/proxy/$appid/';
+             sub_filter 'action="/' 'action="/sparkui/$jobid/$random/$port/$namespace/proxy/$appid/';
+             sub_filter 'setUIRoot(\'\')' 'setUIRoot(\'/sparkui/$jobid/$random/$port/$namespace/proxy/$appid/\')';
+             sub_filter_once off;
+
+             if ($local_path = "") {
+                rewrite ^ /jobs/ break;
+             }
+             if ($local_path = "/") {
+                rewrite ^ /jobs/ break;
+             }
+             rewrite ^ $local_path break;
+
+             proxy_pass http://job-$jobid-$random-driver-svc.$namespace.svc.cluster.local:$port;
+        }
+
+        location /core/api/v1/ {
+            deny all;
+        }
+    }
+---
+# Source: ilum/templates/ui-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ilum-ui
+data:
+  ILUM_DEBUG: "false"
+  ILUM_BACKEND_URL: "http://ilum-core:9888"
+  ILUM_AIRFLOW_URL: "http://ilum-webserver:8080"
+  ILUM_HISTORY_SERVER_URL: "http://ilum-history-server:9666"
+  ILUM_JUPYTER_URL: "http://ilum-jupyter:8888"
+  ILUM_DATA_URL: "http://ilum-minio:9001"
+  ILUM_MLFLOW_URL: "http://mlflow:5000"
+  ILUM_LINEAGE_URL: "http://ilum-marquez-web:9444"
+  ILUM_HISTORY_SERVER_ENABLED: "true"
+  ILUM_JUPYTER_ENABLED: "true"
+  ILUM_AIRFLOW_ENABLED: "false"
+  ILUM_DATA_ENABLED: "true"
+  ILUM_MLFLOW_ENABLED: "false"
+  ILUM_LINEAGE_ENABLED: "false"
+  ILUM_DOC_ENABLED: "true"
+  ILUM_SQL_ENABLED: "false"
+  ILUM_JUPYTER_PATH: "/external/jupyter/lab/tree/work/IlumIntro.ipynb"
+  ILUM_AIRFLOW_PATH: "/external/airflow/"
+  ILUM_DATA_PATH: "/external/minio/"
+  ILUM_MLFLOW_PATH: "/external/mlflow/"
+  ILUM_HISTORY_SERVER_PATH: "/external/history-server/"
+  ILUM_LINEAGE_PATH: "/external/lineage/"
+  ILUM_OAUTH2_CLIENT_ID: "undefined"
+  ILUM_OAUTH2_CLIENT_SECRET: "undefined"
+  ILUM_OAUTH2_ISSUER_URI: "undefined"
+---
+# Source: ilum/charts/minio/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ilum-minio
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/version: 2023.12.23
+    helm.sh/chart: minio-12.13.2
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "16Gi"
+---
+# Source: ilum/charts/ilum-core/templates/spark-cr.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: spark-submit-cluster-role-default
+rules:
+  - apiGroups: [ "metrics.k8s.io" ]
+    resources: [ "nodes" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "nodes" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "pods/exec" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "pods/log" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "services" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "persistentvolumeclaims" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "endpoints" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+  - apiGroups: [ "monitoring.coreos.com" ]
+    resources: [ "servicemonitors" ]
+    verbs: [ "create","delete","deletecollection","get","list","patch","update","watch" ]
+---
+# Source: ilum/charts/ilum-core/templates/spark-crb.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-submit-cluster-role-binding-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-submit-cluster-role-default
+subjects:
+- kind: ServiceAccount
+  name: release-name-ilum-core-spark
+  namespace: default
+---
+# Source: ilum/charts/ilum-core/templates/core-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-core
+  labels:
+    app: ilum-core
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9888
+      targetPort: 8080
+  selector:
+    app: ilum-core
+---
+# Source: ilum/charts/ilum-core/templates/grpc-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-grpc
+  labels:
+    app: ilum-grpc
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 9999
+      targetPort: 9999
+  selector:
+    app: ilum-core
+---
+# Source: ilum/charts/ilum-core/templates/hs-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-history-server
+  labels:
+    app: ilum-history-server
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9666
+      targetPort: 18080
+  selector:
+    app: ilum-history-server
+---
+# Source: ilum/charts/ilum-jupyter/templates/jupyter-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-jupyter
+  labels:
+    app: ilum-jupyter
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8888
+      targetPort: 8888
+  selector:
+    app: ilum-jupyter
+---
+# Source: ilum/charts/ilum-livy-proxy/templates/livy-proxy-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-livy-proxy
+  labels:
+    app: ilum-livy-proxy
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8998
+      targetPort: 8998
+  selector:
+    app: ilum-livy-proxy
+---
+# Source: ilum/charts/ilum-ui/templates/ui-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-ui
+  labels:
+    app: ilum-ui
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9777
+      targetPort: 8080
+  selector:
+    app: ilum-ui
+---
+# Source: ilum/charts/minio/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-minio
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/version: 2023.12.23
+    helm.sh/chart: minio-12.13.2
+spec:
+  type: ClusterIP
+  ports:
+    - name: minio-api
+      port: 9000
+      targetPort: minio-api
+      nodePort: null
+    - name: minio-console
+      port: 9001
+      targetPort: minio-console
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: minio
+---
+# Source: ilum/charts/mongodb/templates/arbiter/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-mongodb-arbiter-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: arbiter
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-mongodb
+      port: 27017
+      targetPort: mongodb
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/component: arbiter
+---
+# Source: ilum/charts/mongodb/templates/replicaset/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-mongodb-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: "mongodb"
+      port: 27017
+      targetPort: mongodb
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/component: mongodb
+---
+# Source: ilum/charts/ilum-core/templates/core-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ilum-core
+  template:
+    metadata:
+      annotations:
+        rollme: "jNsSL"
+      labels:
+        app: ilum-core
+        ilum.prometheus: "true"
+    spec:
+      serviceAccountName: release-name-ilum-core-spark
+      volumes:
+        - name: application-config
+          configMap:
+            name: ilum
+        - name: spark-submit-pod-template
+          configMap:
+            name: ilum-spark-submit-pt
+      initContainers:
+        - name: wait-for-mongo
+          image: mongo:7.0.5-jammy
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', "until mongosh --host ilum-mongodb-0.ilum-mongodb-headless:27017,ilum-mongodb-1.ilum-mongodb-headless:27017 --eval 'db.runCommand({ping:1})' ; do echo waiting for mongo; sleep 2; done"]
+      containers:
+        - name: ilum-core
+          image: ilum/core:6.1.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              memory: 1Gi
+          volumeMounts:
+            - name: application-config
+              mountPath: /config
+            - name: spark-submit-pod-template
+              mountPath: /tmp/pod-template
+          env:
+            - name: ILUM_KUBERNETES_INITCLUSTERONSTARTUP
+              value: "true"
+            - name: ILUM_KUBERNETES_UPGRADECLUSTERONSTARTUP
+              value: "false"
+            - name: ILUM_SPARKNAMESPACE
+              value: "default"
+            - name: ILUM_KUBERNETES_API_URL
+              value: "https://kubernetes.default.svc"
+            - name: ILUM_KUBERNETES_CONTAINER_IMAGE
+              value: "ilum/spark:3.4.1"
+            - name: ILUM_SERVICE_ACCOUNT_NAME
+              value: release-name-ilum-core-spark
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/dev/reactive/health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/dev/reactive/health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+---
+# Source: ilum/charts/ilum-core/templates/hs-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-history-server
+spec:
+  selector:
+    matchLabels:
+      app: ilum-history-server
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ilum-history-server
+      annotations:
+        checksum/config: 6bb6969297abc5823ee6b8083c016a80341607eef0fa6b95aa5c0f1d3a0295a3
+    spec:
+      restartPolicy: Always
+      initContainers:
+        - name: wait-for-ilum-core
+          image: curlimages/curl:8.5.0
+          imagePullPolicy: IfNotPresent
+          command: [ 'sh', '-c', 'until curl -sf http://ilum-core:9888/api/dev/reactive/health ; do echo waiting for ilum-core; sleep 2; done' ]
+      containers:
+        - name: ilum-history-server
+          image: ilum/spark-launcher:spark-3.4.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 500Mi
+            requests:
+              memory: 300Mi
+          command:
+            - ./bin/spark-class
+            - org.apache.spark.deploy.history.HistoryServer
+          ports:
+            - containerPort: 18080
+              name: history-server
+              protocol: TCP
+          volumeMounts:
+            - name: spark-config
+              mountPath: /usr/local/spark/conf
+          
+      volumes:
+        - name: spark-config
+          configMap:
+            name: spark-defaults
+        
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+---
+# Source: ilum/charts/ilum-jupyter/templates/jupyter-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-jupyter
+spec:
+  selector:
+    matchLabels:
+      app: ilum-jupyter
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ilum-jupyter
+    spec:
+      containers:
+        - name: ilum-jupyter
+          image: ilum/sparkmagic:0.21.0
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+          command: [ "/bin/sh", "-c" ]
+          args:
+            -   >
+                set -ex;
+                sed -i "s|http://spark:8998|http://ilum-livy-proxy:8998|g" \
+                  /home/$NB_USER/.sparkmagic/config.json;
+                exec start-notebook.sh --NotebookApp.base_url='/external/jupyter/' --NotebookApp.token='' "$@";
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+---
+# Source: ilum/charts/ilum-livy-proxy/templates/livy-proxy-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-livy-proxy
+spec:
+  selector:
+    matchLabels:
+      app: ilum-livy-proxy
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ilum-livy-proxy
+    spec:
+      initContainers:
+        - name: wait-for-ilum-core
+          image: curlimages/curl:8.5.0
+          imagePullPolicy: IfNotPresent
+          command: [ 'sh', '-c', 'until curl -sf http://ilum-core:9888/api/dev/reactive/health ; do echo waiting for ilum-core; sleep 2; done']
+      containers:
+        - name: ilum-livy-proxy
+          image: ilum/livy-proxy:6.1.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+          env:
+            - name: ILUM_CORE_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: ilum-livy-proxy
+                  key: ilumCoreUri
+            - name: ILUM_UI_PUBLIC_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: ilum-livy-proxy
+                  key: ilumUIPublicUri
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+---
+# Source: ilum/charts/ilum-ui/templates/ui-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ilum-ui
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        rollme: "W7sAh"
+      labels:
+        app: ilum-ui
+    spec:
+      initContainers:
+        - name: wait-for-ilum-core
+          image: curlimages/curl:8.5.0
+          imagePullPolicy: IfNotPresent
+          command: [ 'sh', '-c', "until curl -sf http://ilum-core:9888/api/dev/reactive/health ; do echo waiting for ilum-core; sleep 2; done" ]
+      containers:
+        - name: ilum-ui
+          image: ilum/ui:6.1.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+          envFrom:
+            - configMapRef:
+                name: ilum-ui
+          volumeMounts:
+            - name: ilum-nginx
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: ilum-nginx-server
+              mountPath: /etc/nginx/templates/server.conf.template
+              subPath: server.conf.template
+      securityContext:
+        fsGroup: 101 # nginx
+      volumes:
+        - name: ilum-nginx
+          configMap:
+            name: ilum-nginx
+        - name: ilum-nginx-server
+          configMap:
+            name: ilum-nginx-server
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+---
+# Source: ilum/charts/minio/templates/standalone/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-minio
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/version: 2023.12.23
+    helm.sh/chart: minio-12.13.2
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/version: 2023.12.23
+        helm.sh/chart: minio-12.13.2
+      annotations:
+        checksum/credentials-secret: 6f4f66bf2e4306d082c701896eb915b54319af486a146006bf2c4e3097bd6ac4
+    spec:
+      
+      serviceAccountName: ilum-minio
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: minio
+          image: docker.io/bitnami/minio:2023.12.23-debian-11-r3
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MINIO_SCHEME
+              value: "http"
+            - name: MINIO_FORCE_NEW_KEYS
+              value: "no"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ilum-minio
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ilum-minio
+                  key: root-password
+            - name: MINIO_DEFAULT_BUCKETS
+              value: ilum-files
+            - name: MINIO_BROWSER
+              value: "on"
+            - name: MINIO_PROMETHEUS_AUTH_TYPE
+              value: "public"
+            - name: MINIO_CONSOLE_PORT_NUMBER
+              value: "9001"
+            - name: MINIO_BROWSER_REDIRECT_URL
+              value: "http://ilum-minio:9001/external/minio/"
+            
+          envFrom:
+          ports:
+            - name: minio-api
+              containerPort: 9000
+              protocol: TCP
+            - name: minio-console
+              containerPort: 9001
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: minio-api
+              scheme: "HTTP"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: minio-api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/minio/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ilum-minio
+---
+# Source: ilum/charts/mongodb/templates/arbiter/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ilum-mongodb-arbiter
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: arbiter
+spec:
+  serviceName: ilum-mongodb-arbiter-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/component: arbiter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/version: 6.0.10
+        helm.sh/chart: mongodb-13.18.5
+        app.kubernetes.io/component: arbiter
+    spec:
+      
+      serviceAccountName: ilum-mongodb
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: mongodb
+                    app.kubernetes.io/component: arbiter
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      initContainers:
+      containers:
+        - name: mongodb-arbiter
+          image: docker.io/bitnami/mongodb:6.0.10-debian-11-r8
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_SERVICE_NAME
+              value: "ilum-mongodb-arbiter-headless"
+            - name: MONGODB_REPLICA_SET_MODE
+              value: "arbiter"
+            - name: MONGODB_INITIAL_PRIMARY_HOST
+              value: ilum-mongodb-0.ilum-mongodb-headless.$(MY_POD_NAMESPACE).svc.cluster.local
+            - name: MONGODB_REPLICA_SET_NAME
+              value: "rs0"
+            - name: MONGODB_ADVERTISED_HOSTNAME
+              value: "$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+          ports:
+            - containerPort: 27017
+              name: mongodb
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            tcpSocket:
+              port: mongodb
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            tcpSocket:
+              port: mongodb
+          resources:
+            limits: {}
+            requests: {}
+---
+# Source: ilum/charts/mongodb/templates/replicaset/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ilum-mongodb
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/version: 6.0.10
+    helm.sh/chart: mongodb-13.18.5
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: ilum-mongodb-headless
+  podManagementPolicy: OrderedReady
+  replicas: 2
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: mongodb
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/version: 6.0.10
+        helm.sh/chart: mongodb-13.18.5
+        app.kubernetes.io/component: mongodb
+    spec:
+      
+      serviceAccountName: ilum-mongodb
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+      securityContext:
+        fsGroup: 1001
+        sysctls: []
+      
+      initContainers:
+        - name: volume-permissions
+          image: docker.io/bitnami/os-shell:11-debian-11-r72
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - |
+              mkdir -p /bitnami/mongodb/
+              chown 1001:1001 /bitnami/mongodb/
+              find  /bitnami/mongodb/ -mindepth 1 -maxdepth 1 -not -name ".snapshot" -not -name "lost+found" | xargs -r chown -R 1001:1001
+          securityContext:
+            runAsUser: 0
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /bitnami/mongodb
+      containers:
+        - name: mongodb
+          image: docker.io/bitnami/mongodb:6.0.10-debian-11-r8
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MY_POD_HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: K8S_SERVICE_NAME
+              value: "ilum-mongodb-headless"
+            - name: MONGODB_INITIAL_PRIMARY_HOST
+              value: ilum-mongodb-0.$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local
+            - name: MONGODB_REPLICA_SET_NAME
+              value: "rs0"
+            - name: MONGODB_ADVERTISED_HOSTNAME
+              value: "$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: MONGODB_SYSTEM_LOG_VERBOSITY
+              value: "0"
+            - name: MONGODB_DISABLE_SYSTEM_LOG
+              value: "no"
+            - name: MONGODB_DISABLE_JAVASCRIPT
+              value: "no"
+            - name: MONGODB_ENABLE_JOURNAL
+              value: "yes"
+            - name: MONGODB_PORT_NUMBER
+              value: "27017"
+            - name: MONGODB_ENABLE_IPV6
+              value: "no"
+            - name: MONGODB_ENABLE_DIRECTORY_PER_DB
+              value: "no"
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+            exec:
+              command:
+                - /bitnami/scripts/ping-mongodb.sh
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bitnami/scripts/readiness-probe.sh
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /bitnami/mongodb
+              subPath: 
+            - name: common-scripts
+              mountPath: /bitnami/scripts
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+            
+      volumes:
+        - name: common-scripts
+          configMap:
+            name: ilum-mongodb-common-scripts
+            defaultMode: 0550
+        - name: scripts
+          configMap:
+            name: ilum-mongodb-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: datadir
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"

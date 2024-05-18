@@ -1,0 +1,3605 @@
+---
+# Source: promtail/templates/security/podsecuritypolicy.yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: runtime/default,docker/default
+    seccomp.security.alpha.kubernetes.io/defaultProfileName: runtime/default
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+spec:
+  privileged: false
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  fsGroup:
+    rule: RunAsAny
+  runAsUser:
+    rule: RunAsAny
+  seLinux:
+    rule: RunAsAny
+  supplementalGroups:
+    rule: RunAsAny
+  volumes:
+    - secret
+    - configMap
+    - emptyDir
+    - downwardAPI
+    - projected
+    - hostPath
+    - persistentVolumeClaim
+  allowedHostPaths:
+    - pathPrefix: /run/promtail
+      readOnly: false
+    - pathPrefix: /var/log/pods
+      readOnly: true
+    - pathPrefix: /var/lib/docker/containers
+      readOnly: true
+---
+# Source: promtail/templates/security/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+---
+# Source: promtail/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+type: Opaque
+stringData:
+  promtail.yaml: |
+    server:
+      http_listen_address: 0.0.0.0
+      http_listen_port: 3101
+      grpc_listen_address: 0.0.0.0
+      grpc_listen_port: 9095
+      graceful_shutdown_timeout: 30s
+      http_server_read_timeout: 30s
+      http_server_write_timeout: 30s
+      http_server_idle_timeout: 120s
+      grpc_server_max_recv_msg_size: 4194304
+      grpc_server_max_send_msg_size: 4194304
+      grpc_server_max_concurrent_streams: 100
+      log_level: error
+      http_path_prefix: 
+      health_check_target: true
+    
+    clients:
+      - url: http://loki/loki/api/v1/push
+        batchwait: 3s
+        batchsize: 102400
+        tls_config:
+          ca_file: 
+          cert_file: 
+          key_file: 
+          server_name: 
+          insecure_skip_verify: false
+        backoff_config:
+          min_period: 500ms
+          max_period: 5m
+          max_retries: 10
+        timeout: 10s
+    
+    scrape_configs:
+      - job_name: podsName
+        pipeline_stages:
+          - LOGFORMAT: {}
+          - match:
+              selector: '{pod=~".+"} |~ `^level=\w+\s`'
+              stages:
+                - regex:
+                    expression: '^level=(?P<level>\w+)\s+(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|NOTICE|INFO|WARNING|WARN|ERROR)\b`'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>\w+)(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `\b(level=debug|debug=true)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|level=debug|{"level":"debug)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{level="debug"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{debug="true"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{pod=~".+"} |~ `^[\.-]+$`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |= "GET /"'
+              stages:
+                - drop:
+                    expression: '"kube-probe/1.[0-9]+"'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^127.0.0.1 .* 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: 'GET /(healthz|ping|ready)\b.* 200 '
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{pod=~".+"} |~ `\b[Dd][Ee][Pp][Rr][Ee][Cc][Aa][Tt][Ee][Dd]\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_deprecated
+          - match:
+              selector: '{pod=~".+"} |~ ` [+-][0-9]{4}\] "[A-Z]+ `'
+              stages:
+                - regex:
+                    expression: '^(?P<ip>\S+) (?P<identd>\S+) (?P<user>\S+) \[(?P<timestamp>[\w:/]+\s[+\-]\d{4})\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d{3}|-) (?P<size>\d+|-) "(?P<referer>[^"]*)" "(?P<useragent>[^"]*)"?'
+                - drop:
+                    source: useragent
+                    expression: '^kube-probe/[0-9]+'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    source: path
+                    expression: '^(/healthz|ready|ping)$'
+                    drop_counter_reason: drop_readiness_probes
+                - template:
+                    source: parser
+                    template: nginx-access-log
+                - labels:
+                    parser:
+                    method:
+                    protocol:
+                    status:
+                - timestamp:
+                    source: timestamp
+                    format: RFC822Z
+                - template:
+                    source: output
+                    template: '{{ if ne .user "-" }}{{ .user }}@{{ end }}{{ .ip }} {{ .method }} {{ .path }} {{ .size }} {{ if .referer }}{{ .referer }} {{ end }}| {{ .useragent }}
+          '
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^[DNIWEF]\d+ .*.go:\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>[DNIWEF])\d+.*\s(?P<file>[a-zA-Z0-9_/-]+\.go):(?P<line>\d+)\]\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: golang
+                - template:
+                    source: level
+                    template: '{{ if eq .level "D" }}debug{{ else if eq .level "N" }}notice{{ else if eq .level "I" }}info{{ else if eq .level "W" }}warning{{ else if eq .level "E" }}error{{ else if eq .level "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{pod=~".+"} |~ `\d{4} (FINEST|FINER|FINE|CONFIG|INFO|WARNING|WARN|SEVERE) .*\[[\w-]+\]\s+[*]\w+ `'
+              stages:
+                - regex:
+                    expression: '.*\d{4}\s+(?P<level>[A-Z]+)\s+\[(?P<logger>[\w-]+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: java
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: ^fine
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    logger:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="etcd"} |~ `\d [DNIWEF] \| \w+`'
+              stages:
+                - regex:
+                    expression: '.* (?P<level>[DNIWEF]) \| (?P<package>[\w/]+): (?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: etcd
+                - template:
+                    source: level
+                    template: '{{ if eq .Value "D" }}debug{{ else if eq .Value "N" }}notice{{ else if eq .Value "I" }}info{{ else if eq .Value "W" }}warning{{ else if eq .Value "E" }}error{{ else if eq .Value "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: message
+                    expression: health\sOK\s
+                    drop_counter_reason: drop_readiness_probes
+                - labels:
+                    level:
+                    package:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="kubernetes-dashboard"} |~ `^[\d/]+ `'
+              stages:
+                - template:
+                    source: parser
+                    template: kubernetes-dashboard
+                - labels:
+                    parser:
+                - replace:
+                    expression: '^([\d/]+ [\d:]+\s)'
+                    replace: ''
+                - drop:
+                    expression: ' 127.0.0.1 with 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^(Getting|Skipping|Found)\s\w+'
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '^(\[.*\]\s)'
+                    replace: ''
+          - match:
+              selector: '{container="dashboard-metrics-scraper"} |~ `"level":"`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      output: msg
+                      timestamp: time
+                - template:
+                    source: parser
+                    template: dashboard-metrics-scraper-level
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - timestamp:
+                    source: time
+                    format: RFC3339Nano
+                - output:
+                    source: output
+          - match:
+              selector: '{container="grafana"} |~ `^t=\d+`'
+              stages:
+                - regex:
+                    expression: ' lvl=(?P<level>\w+) .* logger=(?P<logger>[^\s]+)'
+                - template:
+                    source: parser
+                    template: grafana
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: status=302
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: remote_addr=127.0.0.1
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '(t=.*msg=).*(logger=[^\s]+)'
+                    replace: ''
+                - labels:
+                    level:
+                    logger:
+                    parser:
+          - match:
+              selector: '{name="grafana-operator"}'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      logger:
+                      message: msg
+                - labels:
+                    level:
+                    logger:
+                - output:
+                    source: message
+          - match:
+              selector: '{app_kubernetes_io_name="rocketmq"}'
+              stages:
+                - regex:
+                    expression: '^(?s).* (?P<level>[A-Z]+) (?P<thread>\S+) - (?P<message>.*)$'
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - labels:
+                    level:
+                    thread:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="gitlab-runner"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      duration:
+                      job:
+                      level:
+                      message: msg
+                      project:
+                      runner:
+                - template:
+                    source: parser
+                    template: gitlab-runner
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    duration:
+                    job:
+                    level:
+                    project:
+                    runner:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="vault"} |~ `^time="\d+`'
+              stages:
+                - regex:
+                    expression: '.* level=(?P<level>\w+) msg="(?P<message>[^"]+)"'
+                - template:
+                    source: parser
+                    template: vault
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="consul"} |~ ` \[[A-Z]+\] `'
+              stages:
+                - regex:
+                    expression: '.* \[(?P<level>\w+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: consul
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="calico-node"} |~ ` \[[A-Z]+\]\[\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)[\d-]+\s+[\d:\.]+\s+\[(?P<level>\w+)\]\[\d+\]\s+(?P<file>[a-zA-Z0-9_/-]+\.go)\s+(?P<line>\d+):\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: calico
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="mongo"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>[^ ]*)\s+(?P<level>\w)\s+(?P<component>[^ ]*)\s+\[(?P<thread>.*)\]\s+(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: mongo
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    component:
+                    thread:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="stolon",component="stolon-keeper"} !~ "^.*cmd/.*\\.go.*"'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<username>\S+)?\s+?-\s+?(?P<database>\S+)?:\s+(?P<level>\b[A-Z0-9]{3,}\b)?:?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: stolon-keeper
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    username:
+                    database:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="pgbouncer"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+\[(?P<pid>.*)\]\s+(?P<level>\b[A-Z0-9]{3,}\b)?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: pgbouncer
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - output:
+                    source: message
+          - match:
+              selector: '{container="velero"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      controller:
+                      level:
+                      message: msg
+                - template:
+                    source: parser
+                    template: velero
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    controller:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{job=~".*gitlab.*"} |~ `^{"\w+":"`'
+              stages:
+                - template:
+                    source: parser
+                    template: gitlab-server
+                - labels:
+                    parser:
+          - match:
+              selector: '{parser="gitlab-server"} |~ `[/"](readiness|liveness|metrics)`'
+              stages:
+                - drop:
+                    expression: '"status":200'
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{parser="gitlab-server"} |~ `"(level|severity)":"\w+`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      severity:
+                - template:
+                    source: level
+                    template: '{{ if .severity }}{{ ToLower .severity }}{{ else }}{{ ToLower .Value }}{{ end }}'
+                - labeldrop:
+                    - severity
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*workhorse.*"}'
+              stages:
+                - json:
+                    expressions:
+                      host:
+                      method:
+                      protocol: proto
+                      status:
+                      uri:
+                      user_agent:
+                      remote_ip:
+                - template:
+                    source: parser
+                    template: gitlab-workhorse
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .uri }} | {{ .user_agent }}'
+                - labels:
+                    host:
+                    method:
+                    protocol:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level="",container=~".*webservice.*"} |~ "path" |~ "remote_ip" |~ "username"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      ua:
+                      remote_ip:
+                      username:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - template:
+                    source: message
+                    template: '{{ if .username }}{{ .username }}@{{ end }}{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}'
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*shell.*"}'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      message: msg
+                      url:
+                - template:
+                    source: parser
+                    template: gitlab-shell
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - replace:
+                    source: url
+                    expression: '(key=AAA[^&"]+)'
+                    replace: 'key=AAA...'
+                - template:
+                    source: message
+                    template: '{{ .Value }}{{ if .url }} | {{ .url }}{{ end }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*webservice.*"} |~ "method" |~ "params" |~ "path" |~ "remote_ip"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      remote_ip:
+                      ua:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}
+          {{ .params }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*sidekiq.*"}'
+              stages:
+                - json:
+                    expressions:
+                      class:
+                      message:
+                      queue:
+                - template:
+                    source: parser
+                    template: gitlab-sidekiq
+                - labels:
+                    class:
+                    queue:
+                    parser:
+                - output:
+                    source: message
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          
+          - target_label: __service__
+            source_labels:
+              - __meta_kubernetes_pod_label_name
+          - action: drop
+            regex: ''
+            source_labels:
+              - __service__
+          - target_label: __host__
+            source_labels:
+              - __meta_kubernetes_pod_node_name
+          - target_label: job
+            separator: /
+            source_labels:
+              - __meta_kubernetes_namespace
+              - __service__
+            replacement: $1
+          - target_label: namespace
+            source_labels:
+              - __meta_kubernetes_namespace
+          - target_label: pod
+            source_labels:
+              - __meta_kubernetes_pod_name
+          - target_label: container
+            source_labels:
+              - __meta_kubernetes_pod_container_name
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: labeldrop
+            regex: '^(controller_uid|controller_revision_hash|pod_template_hash|pod_template_generation|job_name|statefulset_kubernetes_io_pod_name|chart|heritage|app_kubernetes_io_managed_by|helm_sh_chart|addonmanager_kubernetes_io_mode|io_cilium_app|security_banzaicloud_io_mutate|gcp_auth_skip_secret|queue_pod_name)$'
+          - action: labelmap
+            regex: __meta_kubernetes_pod_annotation_logging_kube_ops_io_(.+)
+            replacement: $1
+          - target_label: __path__
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            replacement: /var/log/pods/*$1/*.log
+      
+      - job_name: podsApp
+        pipeline_stages:
+          - LOGFORMAT: {}
+          - match:
+              selector: '{pod=~".+"} |~ `^level=\w+\s`'
+              stages:
+                - regex:
+                    expression: '^level=(?P<level>\w+)\s+(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|NOTICE|INFO|WARNING|WARN|ERROR)\b`'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>\w+)(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `\b(level=debug|debug=true)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|level=debug|{"level":"debug)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{level="debug"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{debug="true"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{pod=~".+"} |~ `^[\.-]+$`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |= "GET /"'
+              stages:
+                - drop:
+                    expression: '"kube-probe/1.[0-9]+"'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^127.0.0.1 .* 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: 'GET /(healthz|ping|ready)\b.* 200 '
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{pod=~".+"} |~ `\b[Dd][Ee][Pp][Rr][Ee][Cc][Aa][Tt][Ee][Dd]\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_deprecated
+          - match:
+              selector: '{pod=~".+"} |~ ` [+-][0-9]{4}\] "[A-Z]+ `'
+              stages:
+                - regex:
+                    expression: '^(?P<ip>\S+) (?P<identd>\S+) (?P<user>\S+) \[(?P<timestamp>[\w:/]+\s[+\-]\d{4})\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d{3}|-) (?P<size>\d+|-) "(?P<referer>[^"]*)" "(?P<useragent>[^"]*)"?'
+                - drop:
+                    source: useragent
+                    expression: '^kube-probe/[0-9]+'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    source: path
+                    expression: '^(/healthz|ready|ping)$'
+                    drop_counter_reason: drop_readiness_probes
+                - template:
+                    source: parser
+                    template: nginx-access-log
+                - labels:
+                    parser:
+                    method:
+                    protocol:
+                    status:
+                - timestamp:
+                    source: timestamp
+                    format: RFC822Z
+                - template:
+                    source: output
+                    template: '{{ if ne .user "-" }}{{ .user }}@{{ end }}{{ .ip }} {{ .method }} {{ .path }} {{ .size }} {{ if .referer }}{{ .referer }} {{ end }}| {{ .useragent }}
+          '
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^[DNIWEF]\d+ .*.go:\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>[DNIWEF])\d+.*\s(?P<file>[a-zA-Z0-9_/-]+\.go):(?P<line>\d+)\]\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: golang
+                - template:
+                    source: level
+                    template: '{{ if eq .level "D" }}debug{{ else if eq .level "N" }}notice{{ else if eq .level "I" }}info{{ else if eq .level "W" }}warning{{ else if eq .level "E" }}error{{ else if eq .level "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{pod=~".+"} |~ `\d{4} (FINEST|FINER|FINE|CONFIG|INFO|WARNING|WARN|SEVERE) .*\[[\w-]+\]\s+[*]\w+ `'
+              stages:
+                - regex:
+                    expression: '.*\d{4}\s+(?P<level>[A-Z]+)\s+\[(?P<logger>[\w-]+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: java
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: ^fine
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    logger:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="etcd"} |~ `\d [DNIWEF] \| \w+`'
+              stages:
+                - regex:
+                    expression: '.* (?P<level>[DNIWEF]) \| (?P<package>[\w/]+): (?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: etcd
+                - template:
+                    source: level
+                    template: '{{ if eq .Value "D" }}debug{{ else if eq .Value "N" }}notice{{ else if eq .Value "I" }}info{{ else if eq .Value "W" }}warning{{ else if eq .Value "E" }}error{{ else if eq .Value "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: message
+                    expression: health\sOK\s
+                    drop_counter_reason: drop_readiness_probes
+                - labels:
+                    level:
+                    package:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="kubernetes-dashboard"} |~ `^[\d/]+ `'
+              stages:
+                - template:
+                    source: parser
+                    template: kubernetes-dashboard
+                - labels:
+                    parser:
+                - replace:
+                    expression: '^([\d/]+ [\d:]+\s)'
+                    replace: ''
+                - drop:
+                    expression: ' 127.0.0.1 with 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^(Getting|Skipping|Found)\s\w+'
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '^(\[.*\]\s)'
+                    replace: ''
+          - match:
+              selector: '{container="dashboard-metrics-scraper"} |~ `"level":"`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      output: msg
+                      timestamp: time
+                - template:
+                    source: parser
+                    template: dashboard-metrics-scraper-level
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - timestamp:
+                    source: time
+                    format: RFC3339Nano
+                - output:
+                    source: output
+          - match:
+              selector: '{container="grafana"} |~ `^t=\d+`'
+              stages:
+                - regex:
+                    expression: ' lvl=(?P<level>\w+) .* logger=(?P<logger>[^\s]+)'
+                - template:
+                    source: parser
+                    template: grafana
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: status=302
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: remote_addr=127.0.0.1
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '(t=.*msg=).*(logger=[^\s]+)'
+                    replace: ''
+                - labels:
+                    level:
+                    logger:
+                    parser:
+          - match:
+              selector: '{name="grafana-operator"}'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      logger:
+                      message: msg
+                - labels:
+                    level:
+                    logger:
+                - output:
+                    source: message
+          - match:
+              selector: '{app_kubernetes_io_name="rocketmq"}'
+              stages:
+                - regex:
+                    expression: '^(?s).* (?P<level>[A-Z]+) (?P<thread>\S+) - (?P<message>.*)$'
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - labels:
+                    level:
+                    thread:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="gitlab-runner"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      duration:
+                      job:
+                      level:
+                      message: msg
+                      project:
+                      runner:
+                - template:
+                    source: parser
+                    template: gitlab-runner
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    duration:
+                    job:
+                    level:
+                    project:
+                    runner:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="vault"} |~ `^time="\d+`'
+              stages:
+                - regex:
+                    expression: '.* level=(?P<level>\w+) msg="(?P<message>[^"]+)"'
+                - template:
+                    source: parser
+                    template: vault
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="consul"} |~ ` \[[A-Z]+\] `'
+              stages:
+                - regex:
+                    expression: '.* \[(?P<level>\w+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: consul
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="calico-node"} |~ ` \[[A-Z]+\]\[\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)[\d-]+\s+[\d:\.]+\s+\[(?P<level>\w+)\]\[\d+\]\s+(?P<file>[a-zA-Z0-9_/-]+\.go)\s+(?P<line>\d+):\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: calico
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="mongo"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>[^ ]*)\s+(?P<level>\w)\s+(?P<component>[^ ]*)\s+\[(?P<thread>.*)\]\s+(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: mongo
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    component:
+                    thread:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="stolon",component="stolon-keeper"} !~ "^.*cmd/.*\\.go.*"'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<username>\S+)?\s+?-\s+?(?P<database>\S+)?:\s+(?P<level>\b[A-Z0-9]{3,}\b)?:?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: stolon-keeper
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    username:
+                    database:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="pgbouncer"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+\[(?P<pid>.*)\]\s+(?P<level>\b[A-Z0-9]{3,}\b)?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: pgbouncer
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - output:
+                    source: message
+          - match:
+              selector: '{container="velero"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      controller:
+                      level:
+                      message: msg
+                - template:
+                    source: parser
+                    template: velero
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    controller:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{job=~".*gitlab.*"} |~ `^{"\w+":"`'
+              stages:
+                - template:
+                    source: parser
+                    template: gitlab-server
+                - labels:
+                    parser:
+          - match:
+              selector: '{parser="gitlab-server"} |~ `[/"](readiness|liveness|metrics)`'
+              stages:
+                - drop:
+                    expression: '"status":200'
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{parser="gitlab-server"} |~ `"(level|severity)":"\w+`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      severity:
+                - template:
+                    source: level
+                    template: '{{ if .severity }}{{ ToLower .severity }}{{ else }}{{ ToLower .Value }}{{ end }}'
+                - labeldrop:
+                    - severity
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*workhorse.*"}'
+              stages:
+                - json:
+                    expressions:
+                      host:
+                      method:
+                      protocol: proto
+                      status:
+                      uri:
+                      user_agent:
+                      remote_ip:
+                - template:
+                    source: parser
+                    template: gitlab-workhorse
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .uri }} | {{ .user_agent }}'
+                - labels:
+                    host:
+                    method:
+                    protocol:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level="",container=~".*webservice.*"} |~ "path" |~ "remote_ip" |~ "username"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      ua:
+                      remote_ip:
+                      username:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - template:
+                    source: message
+                    template: '{{ if .username }}{{ .username }}@{{ end }}{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}'
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*shell.*"}'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      message: msg
+                      url:
+                - template:
+                    source: parser
+                    template: gitlab-shell
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - replace:
+                    source: url
+                    expression: '(key=AAA[^&"]+)'
+                    replace: 'key=AAA...'
+                - template:
+                    source: message
+                    template: '{{ .Value }}{{ if .url }} | {{ .url }}{{ end }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*webservice.*"} |~ "method" |~ "params" |~ "path" |~ "remote_ip"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      remote_ip:
+                      ua:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}
+          {{ .params }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*sidekiq.*"}'
+              stages:
+                - json:
+                    expressions:
+                      class:
+                      message:
+                      queue:
+                - template:
+                    source: parser
+                    template: gitlab-sidekiq
+                - labels:
+                    class:
+                    queue:
+                    parser:
+                - output:
+                    source: message
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          
+          - action: drop
+            regex: .+
+            source_labels:
+              - __meta_kubernetes_pod_label_name
+          - source_labels:
+              - __meta_kubernetes_pod_label_app
+            target_label: __service__
+          - action: drop
+            regex: ''
+            source_labels:
+              - __service__
+          - target_label: __host__
+            source_labels:
+              - __meta_kubernetes_pod_node_name
+          - target_label: job
+            separator: /
+            source_labels:
+              - __meta_kubernetes_namespace
+              - __service__
+            replacement: $1
+          - target_label: namespace
+            source_labels:
+              - __meta_kubernetes_namespace
+          - target_label: pod
+            source_labels:
+              - __meta_kubernetes_pod_name
+          - target_label: container
+            source_labels:
+              - __meta_kubernetes_pod_container_name
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: labeldrop
+            regex: '^(controller_uid|controller_revision_hash|pod_template_hash|pod_template_generation|job_name|statefulset_kubernetes_io_pod_name|chart|heritage|app_kubernetes_io_managed_by|helm_sh_chart|addonmanager_kubernetes_io_mode|io_cilium_app|security_banzaicloud_io_mutate|gcp_auth_skip_secret|queue_pod_name)$'
+          - action: labelmap
+            regex: __meta_kubernetes_pod_annotation_logging_kube_ops_io_(.+)
+            replacement: $1
+          - target_label: __path__
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            replacement: /var/log/pods/*$1/*.log
+      
+      - job_name: podsDirectControllers
+        pipeline_stages:
+          - LOGFORMAT: {}
+          - match:
+              selector: '{pod=~".+"} |~ `^level=\w+\s`'
+              stages:
+                - regex:
+                    expression: '^level=(?P<level>\w+)\s+(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|NOTICE|INFO|WARNING|WARN|ERROR)\b`'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>\w+)(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `\b(level=debug|debug=true)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|level=debug|{"level":"debug)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{level="debug"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{debug="true"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{pod=~".+"} |~ `^[\.-]+$`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |= "GET /"'
+              stages:
+                - drop:
+                    expression: '"kube-probe/1.[0-9]+"'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^127.0.0.1 .* 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: 'GET /(healthz|ping|ready)\b.* 200 '
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{pod=~".+"} |~ `\b[Dd][Ee][Pp][Rr][Ee][Cc][Aa][Tt][Ee][Dd]\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_deprecated
+          - match:
+              selector: '{pod=~".+"} |~ ` [+-][0-9]{4}\] "[A-Z]+ `'
+              stages:
+                - regex:
+                    expression: '^(?P<ip>\S+) (?P<identd>\S+) (?P<user>\S+) \[(?P<timestamp>[\w:/]+\s[+\-]\d{4})\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d{3}|-) (?P<size>\d+|-) "(?P<referer>[^"]*)" "(?P<useragent>[^"]*)"?'
+                - drop:
+                    source: useragent
+                    expression: '^kube-probe/[0-9]+'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    source: path
+                    expression: '^(/healthz|ready|ping)$'
+                    drop_counter_reason: drop_readiness_probes
+                - template:
+                    source: parser
+                    template: nginx-access-log
+                - labels:
+                    parser:
+                    method:
+                    protocol:
+                    status:
+                - timestamp:
+                    source: timestamp
+                    format: RFC822Z
+                - template:
+                    source: output
+                    template: '{{ if ne .user "-" }}{{ .user }}@{{ end }}{{ .ip }} {{ .method }} {{ .path }} {{ .size }} {{ if .referer }}{{ .referer }} {{ end }}| {{ .useragent }}
+          '
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^[DNIWEF]\d+ .*.go:\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>[DNIWEF])\d+.*\s(?P<file>[a-zA-Z0-9_/-]+\.go):(?P<line>\d+)\]\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: golang
+                - template:
+                    source: level
+                    template: '{{ if eq .level "D" }}debug{{ else if eq .level "N" }}notice{{ else if eq .level "I" }}info{{ else if eq .level "W" }}warning{{ else if eq .level "E" }}error{{ else if eq .level "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{pod=~".+"} |~ `\d{4} (FINEST|FINER|FINE|CONFIG|INFO|WARNING|WARN|SEVERE) .*\[[\w-]+\]\s+[*]\w+ `'
+              stages:
+                - regex:
+                    expression: '.*\d{4}\s+(?P<level>[A-Z]+)\s+\[(?P<logger>[\w-]+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: java
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: ^fine
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    logger:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="etcd"} |~ `\d [DNIWEF] \| \w+`'
+              stages:
+                - regex:
+                    expression: '.* (?P<level>[DNIWEF]) \| (?P<package>[\w/]+): (?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: etcd
+                - template:
+                    source: level
+                    template: '{{ if eq .Value "D" }}debug{{ else if eq .Value "N" }}notice{{ else if eq .Value "I" }}info{{ else if eq .Value "W" }}warning{{ else if eq .Value "E" }}error{{ else if eq .Value "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: message
+                    expression: health\sOK\s
+                    drop_counter_reason: drop_readiness_probes
+                - labels:
+                    level:
+                    package:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="kubernetes-dashboard"} |~ `^[\d/]+ `'
+              stages:
+                - template:
+                    source: parser
+                    template: kubernetes-dashboard
+                - labels:
+                    parser:
+                - replace:
+                    expression: '^([\d/]+ [\d:]+\s)'
+                    replace: ''
+                - drop:
+                    expression: ' 127.0.0.1 with 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^(Getting|Skipping|Found)\s\w+'
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '^(\[.*\]\s)'
+                    replace: ''
+          - match:
+              selector: '{container="dashboard-metrics-scraper"} |~ `"level":"`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      output: msg
+                      timestamp: time
+                - template:
+                    source: parser
+                    template: dashboard-metrics-scraper-level
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - timestamp:
+                    source: time
+                    format: RFC3339Nano
+                - output:
+                    source: output
+          - match:
+              selector: '{container="grafana"} |~ `^t=\d+`'
+              stages:
+                - regex:
+                    expression: ' lvl=(?P<level>\w+) .* logger=(?P<logger>[^\s]+)'
+                - template:
+                    source: parser
+                    template: grafana
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: status=302
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: remote_addr=127.0.0.1
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '(t=.*msg=).*(logger=[^\s]+)'
+                    replace: ''
+                - labels:
+                    level:
+                    logger:
+                    parser:
+          - match:
+              selector: '{name="grafana-operator"}'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      logger:
+                      message: msg
+                - labels:
+                    level:
+                    logger:
+                - output:
+                    source: message
+          - match:
+              selector: '{app_kubernetes_io_name="rocketmq"}'
+              stages:
+                - regex:
+                    expression: '^(?s).* (?P<level>[A-Z]+) (?P<thread>\S+) - (?P<message>.*)$'
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - labels:
+                    level:
+                    thread:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="gitlab-runner"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      duration:
+                      job:
+                      level:
+                      message: msg
+                      project:
+                      runner:
+                - template:
+                    source: parser
+                    template: gitlab-runner
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    duration:
+                    job:
+                    level:
+                    project:
+                    runner:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="vault"} |~ `^time="\d+`'
+              stages:
+                - regex:
+                    expression: '.* level=(?P<level>\w+) msg="(?P<message>[^"]+)"'
+                - template:
+                    source: parser
+                    template: vault
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="consul"} |~ ` \[[A-Z]+\] `'
+              stages:
+                - regex:
+                    expression: '.* \[(?P<level>\w+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: consul
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="calico-node"} |~ ` \[[A-Z]+\]\[\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)[\d-]+\s+[\d:\.]+\s+\[(?P<level>\w+)\]\[\d+\]\s+(?P<file>[a-zA-Z0-9_/-]+\.go)\s+(?P<line>\d+):\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: calico
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="mongo"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>[^ ]*)\s+(?P<level>\w)\s+(?P<component>[^ ]*)\s+\[(?P<thread>.*)\]\s+(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: mongo
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    component:
+                    thread:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="stolon",component="stolon-keeper"} !~ "^.*cmd/.*\\.go.*"'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<username>\S+)?\s+?-\s+?(?P<database>\S+)?:\s+(?P<level>\b[A-Z0-9]{3,}\b)?:?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: stolon-keeper
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    username:
+                    database:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="pgbouncer"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+\[(?P<pid>.*)\]\s+(?P<level>\b[A-Z0-9]{3,}\b)?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: pgbouncer
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - output:
+                    source: message
+          - match:
+              selector: '{container="velero"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      controller:
+                      level:
+                      message: msg
+                - template:
+                    source: parser
+                    template: velero
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    controller:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{job=~".*gitlab.*"} |~ `^{"\w+":"`'
+              stages:
+                - template:
+                    source: parser
+                    template: gitlab-server
+                - labels:
+                    parser:
+          - match:
+              selector: '{parser="gitlab-server"} |~ `[/"](readiness|liveness|metrics)`'
+              stages:
+                - drop:
+                    expression: '"status":200'
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{parser="gitlab-server"} |~ `"(level|severity)":"\w+`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      severity:
+                - template:
+                    source: level
+                    template: '{{ if .severity }}{{ ToLower .severity }}{{ else }}{{ ToLower .Value }}{{ end }}'
+                - labeldrop:
+                    - severity
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*workhorse.*"}'
+              stages:
+                - json:
+                    expressions:
+                      host:
+                      method:
+                      protocol: proto
+                      status:
+                      uri:
+                      user_agent:
+                      remote_ip:
+                - template:
+                    source: parser
+                    template: gitlab-workhorse
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .uri }} | {{ .user_agent }}'
+                - labels:
+                    host:
+                    method:
+                    protocol:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level="",container=~".*webservice.*"} |~ "path" |~ "remote_ip" |~ "username"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      ua:
+                      remote_ip:
+                      username:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - template:
+                    source: message
+                    template: '{{ if .username }}{{ .username }}@{{ end }}{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}'
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*shell.*"}'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      message: msg
+                      url:
+                - template:
+                    source: parser
+                    template: gitlab-shell
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - replace:
+                    source: url
+                    expression: '(key=AAA[^&"]+)'
+                    replace: 'key=AAA...'
+                - template:
+                    source: message
+                    template: '{{ .Value }}{{ if .url }} | {{ .url }}{{ end }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*webservice.*"} |~ "method" |~ "params" |~ "path" |~ "remote_ip"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      remote_ip:
+                      ua:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}
+          {{ .params }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*sidekiq.*"}'
+              stages:
+                - json:
+                    expressions:
+                      class:
+                      message:
+                      queue:
+                - template:
+                    source: parser
+                    template: gitlab-sidekiq
+                - labels:
+                    class:
+                    queue:
+                    parser:
+                - output:
+                    source: message
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          
+          - action: drop
+            regex: .+
+            separator: ''
+            source_labels:
+              - __meta_kubernetes_pod_label_name
+              - __meta_kubernetes_pod_label_app
+          - action: drop
+            regex: '[0-9a-z-.]+-[0-9a-f]{8,10}'
+            source_labels:
+              - __meta_kubernetes_pod_controller_name
+          - source_labels:
+              - __meta_kubernetes_pod_controller_name
+            target_label: __service__
+          - action: drop
+            regex: ''
+            source_labels:
+              - __service__
+          - target_label: __host__
+            source_labels:
+              - __meta_kubernetes_pod_node_name
+          - target_label: job
+            separator: /
+            source_labels:
+              - __meta_kubernetes_namespace
+              - __service__
+            replacement: $1
+          - target_label: namespace
+            source_labels:
+              - __meta_kubernetes_namespace
+          - target_label: pod
+            source_labels:
+              - __meta_kubernetes_pod_name
+          - target_label: container
+            source_labels:
+              - __meta_kubernetes_pod_container_name
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: labeldrop
+            regex: '^(controller_uid|controller_revision_hash|pod_template_hash|pod_template_generation|job_name|statefulset_kubernetes_io_pod_name|chart|heritage|app_kubernetes_io_managed_by|helm_sh_chart|addonmanager_kubernetes_io_mode|io_cilium_app|security_banzaicloud_io_mutate|gcp_auth_skip_secret|queue_pod_name)$'
+          - action: labelmap
+            regex: __meta_kubernetes_pod_annotation_logging_kube_ops_io_(.+)
+            replacement: $1
+          - target_label: __path__
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            replacement: /var/log/pods/*$1/*.log
+      
+      - job_name: podsIndirectControllers
+        pipeline_stages:
+          - LOGFORMAT: {}
+          - match:
+              selector: '{pod=~".+"} |~ `^level=\w+\s`'
+              stages:
+                - regex:
+                    expression: '^level=(?P<level>\w+)\s+(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|NOTICE|INFO|WARNING|WARN|ERROR)\b`'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>\w+)(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `\b(level=debug|debug=true)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|level=debug|{"level":"debug)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{level="debug"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{debug="true"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{pod=~".+"} |~ `^[\.-]+$`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |= "GET /"'
+              stages:
+                - drop:
+                    expression: '"kube-probe/1.[0-9]+"'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^127.0.0.1 .* 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: 'GET /(healthz|ping|ready)\b.* 200 '
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{pod=~".+"} |~ `\b[Dd][Ee][Pp][Rr][Ee][Cc][Aa][Tt][Ee][Dd]\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_deprecated
+          - match:
+              selector: '{pod=~".+"} |~ ` [+-][0-9]{4}\] "[A-Z]+ `'
+              stages:
+                - regex:
+                    expression: '^(?P<ip>\S+) (?P<identd>\S+) (?P<user>\S+) \[(?P<timestamp>[\w:/]+\s[+\-]\d{4})\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d{3}|-) (?P<size>\d+|-) "(?P<referer>[^"]*)" "(?P<useragent>[^"]*)"?'
+                - drop:
+                    source: useragent
+                    expression: '^kube-probe/[0-9]+'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    source: path
+                    expression: '^(/healthz|ready|ping)$'
+                    drop_counter_reason: drop_readiness_probes
+                - template:
+                    source: parser
+                    template: nginx-access-log
+                - labels:
+                    parser:
+                    method:
+                    protocol:
+                    status:
+                - timestamp:
+                    source: timestamp
+                    format: RFC822Z
+                - template:
+                    source: output
+                    template: '{{ if ne .user "-" }}{{ .user }}@{{ end }}{{ .ip }} {{ .method }} {{ .path }} {{ .size }} {{ if .referer }}{{ .referer }} {{ end }}| {{ .useragent }}
+          '
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^[DNIWEF]\d+ .*.go:\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>[DNIWEF])\d+.*\s(?P<file>[a-zA-Z0-9_/-]+\.go):(?P<line>\d+)\]\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: golang
+                - template:
+                    source: level
+                    template: '{{ if eq .level "D" }}debug{{ else if eq .level "N" }}notice{{ else if eq .level "I" }}info{{ else if eq .level "W" }}warning{{ else if eq .level "E" }}error{{ else if eq .level "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{pod=~".+"} |~ `\d{4} (FINEST|FINER|FINE|CONFIG|INFO|WARNING|WARN|SEVERE) .*\[[\w-]+\]\s+[*]\w+ `'
+              stages:
+                - regex:
+                    expression: '.*\d{4}\s+(?P<level>[A-Z]+)\s+\[(?P<logger>[\w-]+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: java
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: ^fine
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    logger:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="etcd"} |~ `\d [DNIWEF] \| \w+`'
+              stages:
+                - regex:
+                    expression: '.* (?P<level>[DNIWEF]) \| (?P<package>[\w/]+): (?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: etcd
+                - template:
+                    source: level
+                    template: '{{ if eq .Value "D" }}debug{{ else if eq .Value "N" }}notice{{ else if eq .Value "I" }}info{{ else if eq .Value "W" }}warning{{ else if eq .Value "E" }}error{{ else if eq .Value "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: message
+                    expression: health\sOK\s
+                    drop_counter_reason: drop_readiness_probes
+                - labels:
+                    level:
+                    package:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="kubernetes-dashboard"} |~ `^[\d/]+ `'
+              stages:
+                - template:
+                    source: parser
+                    template: kubernetes-dashboard
+                - labels:
+                    parser:
+                - replace:
+                    expression: '^([\d/]+ [\d:]+\s)'
+                    replace: ''
+                - drop:
+                    expression: ' 127.0.0.1 with 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^(Getting|Skipping|Found)\s\w+'
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '^(\[.*\]\s)'
+                    replace: ''
+          - match:
+              selector: '{container="dashboard-metrics-scraper"} |~ `"level":"`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      output: msg
+                      timestamp: time
+                - template:
+                    source: parser
+                    template: dashboard-metrics-scraper-level
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - timestamp:
+                    source: time
+                    format: RFC3339Nano
+                - output:
+                    source: output
+          - match:
+              selector: '{container="grafana"} |~ `^t=\d+`'
+              stages:
+                - regex:
+                    expression: ' lvl=(?P<level>\w+) .* logger=(?P<logger>[^\s]+)'
+                - template:
+                    source: parser
+                    template: grafana
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: status=302
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: remote_addr=127.0.0.1
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '(t=.*msg=).*(logger=[^\s]+)'
+                    replace: ''
+                - labels:
+                    level:
+                    logger:
+                    parser:
+          - match:
+              selector: '{name="grafana-operator"}'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      logger:
+                      message: msg
+                - labels:
+                    level:
+                    logger:
+                - output:
+                    source: message
+          - match:
+              selector: '{app_kubernetes_io_name="rocketmq"}'
+              stages:
+                - regex:
+                    expression: '^(?s).* (?P<level>[A-Z]+) (?P<thread>\S+) - (?P<message>.*)$'
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - labels:
+                    level:
+                    thread:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="gitlab-runner"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      duration:
+                      job:
+                      level:
+                      message: msg
+                      project:
+                      runner:
+                - template:
+                    source: parser
+                    template: gitlab-runner
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    duration:
+                    job:
+                    level:
+                    project:
+                    runner:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="vault"} |~ `^time="\d+`'
+              stages:
+                - regex:
+                    expression: '.* level=(?P<level>\w+) msg="(?P<message>[^"]+)"'
+                - template:
+                    source: parser
+                    template: vault
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="consul"} |~ ` \[[A-Z]+\] `'
+              stages:
+                - regex:
+                    expression: '.* \[(?P<level>\w+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: consul
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="calico-node"} |~ ` \[[A-Z]+\]\[\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)[\d-]+\s+[\d:\.]+\s+\[(?P<level>\w+)\]\[\d+\]\s+(?P<file>[a-zA-Z0-9_/-]+\.go)\s+(?P<line>\d+):\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: calico
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="mongo"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>[^ ]*)\s+(?P<level>\w)\s+(?P<component>[^ ]*)\s+\[(?P<thread>.*)\]\s+(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: mongo
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    component:
+                    thread:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="stolon",component="stolon-keeper"} !~ "^.*cmd/.*\\.go.*"'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<username>\S+)?\s+?-\s+?(?P<database>\S+)?:\s+(?P<level>\b[A-Z0-9]{3,}\b)?:?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: stolon-keeper
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    username:
+                    database:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="pgbouncer"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+\[(?P<pid>.*)\]\s+(?P<level>\b[A-Z0-9]{3,}\b)?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: pgbouncer
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - output:
+                    source: message
+          - match:
+              selector: '{container="velero"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      controller:
+                      level:
+                      message: msg
+                - template:
+                    source: parser
+                    template: velero
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    controller:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{job=~".*gitlab.*"} |~ `^{"\w+":"`'
+              stages:
+                - template:
+                    source: parser
+                    template: gitlab-server
+                - labels:
+                    parser:
+          - match:
+              selector: '{parser="gitlab-server"} |~ `[/"](readiness|liveness|metrics)`'
+              stages:
+                - drop:
+                    expression: '"status":200'
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{parser="gitlab-server"} |~ `"(level|severity)":"\w+`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      severity:
+                - template:
+                    source: level
+                    template: '{{ if .severity }}{{ ToLower .severity }}{{ else }}{{ ToLower .Value }}{{ end }}'
+                - labeldrop:
+                    - severity
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*workhorse.*"}'
+              stages:
+                - json:
+                    expressions:
+                      host:
+                      method:
+                      protocol: proto
+                      status:
+                      uri:
+                      user_agent:
+                      remote_ip:
+                - template:
+                    source: parser
+                    template: gitlab-workhorse
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .uri }} | {{ .user_agent }}'
+                - labels:
+                    host:
+                    method:
+                    protocol:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level="",container=~".*webservice.*"} |~ "path" |~ "remote_ip" |~ "username"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      ua:
+                      remote_ip:
+                      username:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - template:
+                    source: message
+                    template: '{{ if .username }}{{ .username }}@{{ end }}{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}'
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*shell.*"}'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      message: msg
+                      url:
+                - template:
+                    source: parser
+                    template: gitlab-shell
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - replace:
+                    source: url
+                    expression: '(key=AAA[^&"]+)'
+                    replace: 'key=AAA...'
+                - template:
+                    source: message
+                    template: '{{ .Value }}{{ if .url }} | {{ .url }}{{ end }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*webservice.*"} |~ "method" |~ "params" |~ "path" |~ "remote_ip"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      remote_ip:
+                      ua:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}
+          {{ .params }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*sidekiq.*"}'
+              stages:
+                - json:
+                    expressions:
+                      class:
+                      message:
+                      queue:
+                - template:
+                    source: parser
+                    template: gitlab-sidekiq
+                - labels:
+                    class:
+                    queue:
+                    parser:
+                - output:
+                    source: message
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          
+          - action: drop
+            regex: .+
+            separator: ''
+            source_labels:
+              - __meta_kubernetes_pod_label_name
+              - __meta_kubernetes_pod_label_app
+          - action: keep
+            regex: '[0-9a-z-.]+-[0-9a-f]{8,10}'
+            source_labels:
+              - __meta_kubernetes_pod_controller_name
+          - action: replace
+            regex: '([0-9a-z-.]+)-[0-9a-f]{8,10}'
+            source_labels:
+              - __meta_kubernetes_pod_controller_name
+            target_label: __service__
+          - action: drop
+            regex: ''
+            source_labels:
+              - __service__
+          - target_label: __host__
+            source_labels:
+              - __meta_kubernetes_pod_node_name
+          - target_label: job
+            separator: /
+            source_labels:
+              - __meta_kubernetes_namespace
+              - __service__
+            replacement: $1
+          - target_label: namespace
+            source_labels:
+              - __meta_kubernetes_namespace
+          - target_label: pod
+            source_labels:
+              - __meta_kubernetes_pod_name
+          - target_label: container
+            source_labels:
+              - __meta_kubernetes_pod_container_name
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: labeldrop
+            regex: '^(controller_uid|controller_revision_hash|pod_template_hash|pod_template_generation|job_name|statefulset_kubernetes_io_pod_name|chart|heritage|app_kubernetes_io_managed_by|helm_sh_chart|addonmanager_kubernetes_io_mode|io_cilium_app|security_banzaicloud_io_mutate|gcp_auth_skip_secret|queue_pod_name)$'
+          - action: labelmap
+            regex: __meta_kubernetes_pod_annotation_logging_kube_ops_io_(.+)
+            replacement: $1
+          - target_label: __path__
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            replacement: /var/log/pods/*$1/*.log
+      
+      - job_name: podsStatic
+        pipeline_stages:
+          - LOGFORMAT: {}
+          - match:
+              selector: '{pod=~".+"} |~ `^level=\w+\s`'
+              stages:
+                - regex:
+                    expression: '^level=(?P<level>\w+)\s+(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|NOTICE|INFO|WARNING|WARN|ERROR)\b`'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>\w+)(?P<output>.*)$'
+                - template:
+                    source: parser
+                    template: loglevel
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - template:
+                    source: output
+                    template: '{{ TrimSpace .Value }}'
+                - labels:
+                    level:
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `\b(level=debug|debug=true)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |~ `^(DEBUG|level=debug|{"level":"debug)\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{level="debug"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{debug="true"}'
+              stages:
+                - drop:
+                    source: level
+                    expression: debug
+          - match:
+              selector: '{pod=~".+"} |~ `^[\.-]+$`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_debug
+          - match:
+              selector: '{pod=~".+"} |= "GET /"'
+              stages:
+                - drop:
+                    expression: '"kube-probe/1.[0-9]+"'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^127.0.0.1 .* 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: 'GET /(healthz|ping|ready)\b.* 200 '
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{pod=~".+"} |~ `\b[Dd][Ee][Pp][Rr][Ee][Cc][Aa][Tt][Ee][Dd]\b`'
+              stages:
+                - drop:
+                    expression: .*
+                    drop_counter_reason: drop_deprecated
+          - match:
+              selector: '{pod=~".+"} |~ ` [+-][0-9]{4}\] "[A-Z]+ `'
+              stages:
+                - regex:
+                    expression: '^(?P<ip>\S+) (?P<identd>\S+) (?P<user>\S+) \[(?P<timestamp>[\w:/]+\s[+\-]\d{4})\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d{3}|-) (?P<size>\d+|-) "(?P<referer>[^"]*)" "(?P<useragent>[^"]*)"?'
+                - drop:
+                    source: useragent
+                    expression: '^kube-probe/[0-9]+'
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    source: path
+                    expression: '^(/healthz|ready|ping)$'
+                    drop_counter_reason: drop_readiness_probes
+                - template:
+                    source: parser
+                    template: nginx-access-log
+                - labels:
+                    parser:
+                    method:
+                    protocol:
+                    status:
+                - timestamp:
+                    source: timestamp
+                    format: RFC822Z
+                - template:
+                    source: output
+                    template: '{{ if ne .user "-" }}{{ .user }}@{{ end }}{{ .ip }} {{ .method }} {{ .path }} {{ .size }} {{ if .referer }}{{ .referer }} {{ end }}| {{ .useragent }}
+          '
+                - output:
+                    source: output
+          - match:
+              selector: '{pod=~".+"} |~ `^[DNIWEF]\d+ .*.go:\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)(?P<level>[DNIWEF])\d+.*\s(?P<file>[a-zA-Z0-9_/-]+\.go):(?P<line>\d+)\]\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: golang
+                - template:
+                    source: level
+                    template: '{{ if eq .level "D" }}debug{{ else if eq .level "N" }}notice{{ else if eq .level "I" }}info{{ else if eq .level "W" }}warning{{ else if eq .level "E" }}error{{ else if eq .level "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{pod=~".+"} |~ `\d{4} (FINEST|FINER|FINE|CONFIG|INFO|WARNING|WARN|SEVERE) .*\[[\w-]+\]\s+[*]\w+ `'
+              stages:
+                - regex:
+                    expression: '.*\d{4}\s+(?P<level>[A-Z]+)\s+\[(?P<logger>[\w-]+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: java
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: ^fine
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    logger:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="etcd"} |~ `\d [DNIWEF] \| \w+`'
+              stages:
+                - regex:
+                    expression: '.* (?P<level>[DNIWEF]) \| (?P<package>[\w/]+): (?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: etcd
+                - template:
+                    source: level
+                    template: '{{ if eq .Value "D" }}debug{{ else if eq .Value "N" }}notice{{ else if eq .Value "I" }}info{{ else if eq .Value "W" }}warning{{ else if eq .Value "E" }}error{{ else if eq .Value "F" }}fatal{{ end }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    source: message
+                    expression: health\sOK\s
+                    drop_counter_reason: drop_readiness_probes
+                - labels:
+                    level:
+                    package:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="kubernetes-dashboard"} |~ `^[\d/]+ `'
+              stages:
+                - template:
+                    source: parser
+                    template: kubernetes-dashboard
+                - labels:
+                    parser:
+                - replace:
+                    expression: '^([\d/]+ [\d:]+\s)'
+                    replace: ''
+                - drop:
+                    expression: ' 127.0.0.1 with 200 '
+                    drop_counter_reason: drop_readiness_probes
+                - drop:
+                    expression: '^(Getting|Skipping|Found)\s\w+'
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '^(\[.*\]\s)'
+                    replace: ''
+          - match:
+              selector: '{container="dashboard-metrics-scraper"} |~ `"level":"`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      output: msg
+                      timestamp: time
+                - template:
+                    source: parser
+                    template: dashboard-metrics-scraper-level
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - timestamp:
+                    source: time
+                    format: RFC3339Nano
+                - output:
+                    source: output
+          - match:
+              selector: '{container="grafana"} |~ `^t=\d+`'
+              stages:
+                - regex:
+                    expression: ' lvl=(?P<level>\w+) .* logger=(?P<logger>[^\s]+)'
+                - template:
+                    source: parser
+                    template: grafana
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: status=302
+                    drop_counter_reason: drop_debug
+                - drop:
+                    expression: remote_addr=127.0.0.1
+                    drop_counter_reason: drop_debug
+                - replace:
+                    expression: '(t=.*msg=).*(logger=[^\s]+)'
+                    replace: ''
+                - labels:
+                    level:
+                    logger:
+                    parser:
+          - match:
+              selector: '{name="grafana-operator"}'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      logger:
+                      message: msg
+                - labels:
+                    level:
+                    logger:
+                - output:
+                    source: message
+          - match:
+              selector: '{app_kubernetes_io_name="rocketmq"}'
+              stages:
+                - regex:
+                    expression: '^(?s).* (?P<level>[A-Z]+) (?P<thread>\S+) - (?P<message>.*)$'
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - labels:
+                    level:
+                    thread:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="gitlab-runner"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      duration:
+                      job:
+                      level:
+                      message: msg
+                      project:
+                      runner:
+                - template:
+                    source: parser
+                    template: gitlab-runner
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    duration:
+                    job:
+                    level:
+                    project:
+                    runner:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="vault"} |~ `^time="\d+`'
+              stages:
+                - regex:
+                    expression: '.* level=(?P<level>\w+) msg="(?P<message>[^"]+)"'
+                - template:
+                    source: parser
+                    template: vault
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="consul"} |~ ` \[[A-Z]+\] `'
+              stages:
+                - regex:
+                    expression: '.* \[(?P<level>\w+)\]\s+(?P<message>.*)?'
+                - template:
+                    source: parser
+                    template: consul
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="calico-node"} |~ ` \[[A-Z]+\]\[\d+\] `'
+              stages:
+                - regex:
+                    expression: '^(?s)[\d-]+\s+[\d:\.]+\s+\[(?P<level>\w+)\]\[\d+\]\s+(?P<file>[a-zA-Z0-9_/-]+\.go)\s+(?P<line>\d+):\s+(?P<message>.*)$'
+                - template:
+                    source: parser
+                    template: calico
+                - template:
+                    source: level
+                    template: '{{ ToLower .Value }}'
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    file:
+                    line:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="mongo"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>[^ ]*)\s+(?P<level>\w)\s+(?P<component>[^ ]*)\s+\[(?P<thread>.*)\]\s+(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: mongo
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+                    component:
+                    thread:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{app="stolon",component="stolon-keeper"} !~ "^.*cmd/.*\\.go.*"'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+(?P<username>\S+)?\s+?-\s+?(?P<database>\S+)?:\s+(?P<level>\b[A-Z0-9]{3,}\b)?:?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: stolon-keeper
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    username:
+                    database:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{container="pgbouncer"}'
+              stages:
+                - regex:
+                    expression: '^(?P<timestamp>\S+\s+\S+\s+\S+)\s+\[(?P<pid>.*)\]\s+(?P<level>\b[A-Z0-9]{3,}\b)?\s+?(?P<message>.*)'
+                - template:
+                    source: parser
+                    template: pgbouncer
+                - labels:
+                    level:
+                    parser:
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - output:
+                    source: message
+          - match:
+              selector: '{container="velero"} |~ `^{"\w+":`'
+              stages:
+                - json:
+                    expressions:
+                      controller:
+                      level:
+                      message: msg
+                - template:
+                    source: parser
+                    template: velero
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    controller:
+                    level:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{job=~".*gitlab.*"} |~ `^{"\w+":"`'
+              stages:
+                - template:
+                    source: parser
+                    template: gitlab-server
+                - labels:
+                    parser:
+          - match:
+              selector: '{parser="gitlab-server"} |~ `[/"](readiness|liveness|metrics)`'
+              stages:
+                - drop:
+                    expression: '"status":200'
+                    drop_counter_reason: drop_readiness_probes
+          - match:
+              selector: '{parser="gitlab-server"} |~ `"(level|severity)":"\w+`'
+              stages:
+                - json:
+                    expressions:
+                      level:
+                      severity:
+                - template:
+                    source: level
+                    template: '{{ if .severity }}{{ ToLower .severity }}{{ else }}{{ ToLower .Value }}{{ end }}'
+                - labeldrop:
+                    - severity
+                - drop:
+                    source: level
+                    expression: debug
+                    drop_counter_reason: drop_debug
+                - labels:
+                    level:
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*workhorse.*"}'
+              stages:
+                - json:
+                    expressions:
+                      host:
+                      method:
+                      protocol: proto
+                      status:
+                      uri:
+                      user_agent:
+                      remote_ip:
+                - template:
+                    source: parser
+                    template: gitlab-workhorse
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .uri }} | {{ .user_agent }}'
+                - labels:
+                    host:
+                    method:
+                    protocol:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level="",container=~".*webservice.*"} |~ "path" |~ "remote_ip" |~ "username"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      ua:
+                      remote_ip:
+                      username:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - template:
+                    source: message
+                    template: '{{ if .username }}{{ .username }}@{{ end }}{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}'
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*shell.*"}'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      message: msg
+                      url:
+                - template:
+                    source: parser
+                    template: gitlab-shell
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - replace:
+                    source: url
+                    expression: '(key=AAA[^&"]+)'
+                    replace: 'key=AAA...'
+                - template:
+                    source: message
+                    template: '{{ .Value }}{{ if .url }} | {{ .url }}{{ end }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*webservice.*"} |~ "method" |~ "params" |~ "path" |~ "remote_ip"'
+              stages:
+                - json:
+                    expressions:
+                      method:
+                      status:
+                      path:
+                      remote_ip:
+                      ua:
+                - template:
+                    source: parser
+                    template: gitlab-webservice
+                - labels:
+                    method:
+                    status:
+                    parser:
+                - template:
+                    source: message
+                    template: '{{ .remote_ip }} {{ .method }} {{ .path }} | {{ .ua }}
+          {{ .params }}'
+                - output:
+                    source: message
+          - match:
+              selector: '{parser="gitlab-server",level=~".+",container=~".*sidekiq.*"}'
+              stages:
+                - json:
+                    expressions:
+                      class:
+                      message:
+                      queue:
+                - template:
+                    source: parser
+                    template: gitlab-sidekiq
+                - labels:
+                    class:
+                    queue:
+                    parser:
+                - output:
+                    source: message
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          
+          - action: drop
+            regex: ''
+            source_labels:
+              - __meta_kubernetes_pod_annotation_kubernetes_io_config_mirror
+          - action: replace
+            source_labels:
+              - __meta_kubernetes_pod_label_component
+            target_label: __service__
+          - action: drop
+            regex: ''
+            source_labels:
+              - __service__
+          - target_label: __host__
+            source_labels:
+              - __meta_kubernetes_pod_node_name
+          - target_label: job
+            separator: /
+            source_labels:
+              - __meta_kubernetes_namespace
+              - __service__
+            replacement: $1
+          - target_label: namespace
+            source_labels:
+              - __meta_kubernetes_namespace
+          - target_label: pod
+            source_labels:
+              - __meta_kubernetes_pod_name
+          - target_label: container
+            source_labels:
+              - __meta_kubernetes_pod_container_name
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: labeldrop
+            regex: '^(controller_uid|controller_revision_hash|pod_template_hash|pod_template_generation|job_name|statefulset_kubernetes_io_pod_name|chart|heritage|app_kubernetes_io_managed_by|helm_sh_chart|addonmanager_kubernetes_io_mode|io_cilium_app|security_banzaicloud_io_mutate|gcp_auth_skip_secret|queue_pod_name)$'
+          - action: labelmap
+            regex: __meta_kubernetes_pod_annotation_logging_kube_ops_io_(.+)
+            replacement: $1
+          - target_label: __path__
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_annotation_kubernetes_io_config_mirror
+              - __meta_kubernetes_pod_container_name
+            replacement: /var/log/pods/*$1/*.log
+    
+    positions:
+      filename: /run/promtail/positions.yaml
+      sync_period: 10s
+      ignore_invalid_yaml: false
+    
+    target_config:
+      sync_period: 10s
+---
+# Source: promtail/templates/security/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+rules:
+  - apiGroups: [""]
+    resources:
+      - endpoints
+      - nodes
+      - nodes/proxy
+      - services
+      - pods
+      - pods/log
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - policy
+      - extensions
+    resources:
+      - podsecuritypolicies
+    verbs:
+      - use
+    resourceNames:
+      - release-name-promtail
+---
+# Source: promtail/templates/security/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+roleRef:
+  kind: ClusterRole
+  name: release-name-promtail
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: release-name-promtail
+    namespace: default
+---
+# Source: promtail/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3101
+      nodePort: null
+    - name: grpc
+      protocol: TCP
+      port: 9095
+      targetPort: 9095
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+---
+# Source: promtail/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    helm.sh/chart: promtail-1.5.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.2.1"
+  name: release-name-promtail
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: promtail
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        helm.sh/chart: promtail-1.5.1
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: promtail
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "2.2.1"
+      annotations:
+        checksum/secret: "9ac3e283b7fa4799bc2b9403b28698613b4cfa4a171b55dedeecf91c28cb82a4"
+    spec:
+      volumes:
+        - name: secrets
+          secret:
+            secretName: release-name-promtail
+        - name: autoconfig
+          emptyDir: {}
+        - name: positions
+          hostPath:
+            path: /run/promtail
+            type: DirectoryOrCreate
+        - name: pods
+          hostPath:
+            path: /var/log/pods
+            type: DirectoryOrCreate
+        - name: containers
+          hostPath:
+            path: /var/lib/docker/containers
+            type: DirectoryOrCreate
+      initContainers:
+        - name: cri-autoconfig
+          image: quay.io/kube-ops/promtail-cri-autoconfig:1.0.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: THIS_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: THIS_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: THIS_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: TEMPLATE_DIRECTORY
+              value: /etc/promtail-template
+            - name: OUTPUT_DIRECTORY
+              value: /etc/promtail
+            - name: PODS_DIRECTORY
+              value: /var/log/pods
+            - name: CONTAINERS_DIRECTORY
+              value: /var/lib/docker/containers
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsUser: 0
+          volumeMounts:
+            - name: secrets
+              mountPath: /etc/promtail-template
+              readOnly: true
+            - name: autoconfig
+              mountPath: /etc/promtail
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+      containers:
+        - name: promtail
+          image: quay.io/kube-ops/promtail:2.2.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config.file=/etc/promtail/promtail.yaml
+            - -client.external-labels=hostname=$(HOSTNAME)
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 3101
+              protocol: TCP
+            - name: grpc
+              containerPort: 9095
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 25m
+              memory: 48Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsUser: 0
+          volumeMounts:
+            - name: positions
+              mountPath: /run/promtail
+            - name: autoconfig
+              mountPath: /etc/promtail
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+      serviceAccountName: release-name-promtail
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      terminationGracePeriodSeconds: 30
+  updateStrategy:
+    type: RollingUpdate
+  revisionHistoryLimit: 10

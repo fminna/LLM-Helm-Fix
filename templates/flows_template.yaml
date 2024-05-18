@@ -1,0 +1,411 @@
+---
+# Source: flows/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-flows
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: flows/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  application.yaml: |
+    authentication.url: http://authentication.sqream:8080
+    logging:
+      level:
+        com.sqream: INFO
+    spring:
+      application:
+        name: flows-service
+      datasource:
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        hikari:
+          connection-timeout: 5000
+          max-lifetime: 60000
+          maximum-pool-size: 10
+          pool-name: mysqlAuditPool
+        password: <MYSQL_PASSWORD>
+        url: jdbc:mysql://<MYSQL_USER>:<MYSQL_PASSWORD>@<MYSQL_ADDRESS>:3306/flows
+        username: <MYSQL_USER>
+      jpa:
+        show-sql: false
+      liquibase:
+        change-log: classpath:/db.changelog/changelog-master.xml
+---
+# Source: flows/templates/ClusterRole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-flows-cluster-role
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+---
+# Source: flows/templates/ClusterRoleBinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-flows-pods-viewer
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-flows-cluster-role
+subjects:
+  - kind: ServiceAccount
+    name: release-name-flows
+    namespace: default
+---
+# Source: flows/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-flows
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+---
+# Source: flows/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-flows
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flows
+      app.kubernetes.io/instance: release-name
+      app: flows
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flows
+        app.kubernetes.io/instance: release-name
+        app: flows
+    spec:
+      imagePullSecrets:
+      serviceAccountName: release-name-flows
+      securityContext:
+        {}
+      initContainers:
+      - args:
+        - "/bin/bash <<'EOF'\nMYSQL_PWD=\"${MYSQL_ROOT_PASSWORD}\" mysql -h \"${MYSQL_ADDRESS}\"
+          --skip-column-names -u \"${MYSQL_ROOT_USER}\" -e \"\\q\" --connect-timeout=10\nmysql_status=$?\nretry_number=0\nwhile
+          [ $mysql_status != 0 ] && [ $retry_number -lt 14 ]; do\n  retry_number=$((retry_number+1))\n
+          \ echo \"can't connect to mysql. retry number $retry_number\"\n  sleep 30\n  \n
+          \ MYSQL_PWD=\"${MYSQL_ROOT_PASSWORD}\" mysql -h \"${MYSQL_ADDRESS}\" --skip-column-names
+          -u \"${MYSQL_ROOT_USER}\" -e \"\\q\" --connect-timeout=10\n  mysql_status=$?\ndone\n\necho
+          \"Checking if MySQL locked by previous pod\"\nlocking_pod=$(MYSQL_PWD=\"${MYSQL_ROOT_PASSWORD}\"
+          mysql -h \"${MYSQL_ADDRESS}\" --skip-column-names -u \"${MYSQL_ROOT_USER}\" -e
+          \"select LOCKEDBY from flows.DATABASECHANGELOGLOCK d where d.LOCKED =1;\" | awk
+          '{print $1}')\nif ! [ -z \"$locking_pod\" ]; then\n  echo \"MYSQL dataBase locked
+          by ${locking_pod}\"\n  status=$(kubectl get pods $locking_pod -o=jsonpath='{.status.phase}')\n
+          \ deletionTimestamp=$(kubectl get pods $locking_pod -o=jsonpath='{.metadata.deletionTimestamp}')\n
+          \ if [ -z \"$status\" ] || [ ! -z \"$deletionTimestamp\" ] ; then\n    MYSQL_PWD=\"${MYSQL_ROOT_PASSWORD}\"
+          mysql -h \"${MYSQL_ADDRESS}\" --skip-column-names -u \"${MYSQL_ROOT_USER}\" -e
+          \"update flows.DATABASECHANGELOGLOCK d set d.LOCKED =0, d.LOCKEDBY =null, d.LOCKGRANTED
+          = null where LOCKEDBY like \\\"${locking_pod}%\\\" and locked =1;\"\n    echo
+          \"lock was released\"\n  fi\nelse\n  echo \"MYSQL not locked\"\nfi\necho \"Done\"\nEOF"
+        command:
+        - /bin/bash
+        - -c
+        envFrom:
+        - secretRef:
+            name: 'release-name-local-secret'
+        image: us.gcr.io/blue-shared-resources/mysql-release-lock:1.0.0
+        name: flows-release-mysql-lock
+      containers:
+        - name: flows
+          securityContext:
+            capabilities:
+              add:
+              - SYS_ADMIN
+            privileged: true
+            runAsUser: 0
+          image: ":1.16.0"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: 'release-name-local-secret'
+            - secretRef:
+                name: 'release-name-global-secret'
+          env:
+            - name: AIRFLOW_HOST
+              value: "airflow-webserver.airflow"
+            - name: AIRFLOW_PASSWORD
+              value: "a7fLYiL39o@RLD6R7a5&"
+            - name: AIRFLOW_PORT
+              value: "8080"
+            - name: AIRFLOW_USER
+              value: "blueadmin"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx1524m -Xms512m"
+            - name: cloud_customer_airflow_bucket
+              value: "test-user-355612"
+            - name: cloud_provider
+              value: ""
+            - name: dag_bucket_name
+              value: "blue-devops4-sandbox"
+            - name: dag_local_path
+              value: "/opt/sqream/dag-dir"
+            - name: domain_name
+              value: "http://env.domain.name/override-value-with-set"
+            - name: spring_datasource_password
+              value: "${MYSQL_ROOT_PASSWORD}"
+            - name: spring_datasource_url
+              value: "${CONNECTION_FLOWS}"
+            - name: spring_datasource_username
+              value: "${MYSQL_ROOT_USER}"
+          command:
+            - sh
+            - -c
+            - java $JAVA_TOOL_OPTIONS -jar app.jar --spring.config.additional-location=file:/app/application.yaml
+          args:
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+          startupProbe:
+            failureThreshold: 10
+            httpGet:
+              path: actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 1
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - gcsfuse $dag_bucket_name $dag_local_path
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app
+              readOnly: true
+          resources:
+            limits:
+              memory: 4Gi
+            requests:
+              memory: 2Gi
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-configmap
+      nodeSelector:
+      affinity:
+      tolerations:
+---
+# Source: flows/templates/secrets.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-name-local-secret
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: local-secrets
+    kind: ClusterSecretStore
+  target:
+    name: release-name-local-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        annotations:
+          {}
+        labels:
+          helm.sh/chart: flows-0.6.1
+          app.kubernetes.io/part-of: "java-backend"
+          app.kubernetes.io/using-mysql: "true"
+          app.kubernetes.io/name: flows
+          app.kubernetes.io/instance: release-name
+          app: flows
+          app.kubernetes.io/version: "1.16.0"
+          app.kubernetes.io/managed-by: Helm
+      data:
+        CONNECTION_FLOWS: '{{ .CONNECTION_FLOWS }}'
+        CONNECTION_SQREAM: '{{ .CONNECTION_SQREAM }}'
+        MYSQL_ADDRESS: '{{ .MYSQL_ADDRESS }}'
+        MYSQL_HOSTNAME: '{{ .MYSQL_HOSTNAME }}'
+        MYSQL_ROOT_PASSWORD: '{{ .MYSQL_ROOT_PASSWORD }}'
+        MYSQL_ROOT_USER: '{{ .MYSQL_ROOT_USER }}'
+        REDIS_HOST: '{{ .REDIS_IP_ADDRESS }}'
+        REDIS_PORT: '{{ .REDIS_PORT }}'
+  dataFrom:
+    - extract:
+        key: mysql-managed-instance
+    - extract:
+        key: redis-managed-instance
+---
+# Source: flows/templates/secrets.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-name-global-secret
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: global-secrets
+    kind: ClusterSecretStore
+  target:
+    name: release-name-global-secret
+    creationPolicy: Owner
+  dataFrom:
+    - extract:
+        key: flows-hubspot
+---
+# Source: flows/templates/servicePodMonitor.yaml
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: release-name-flows
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flows
+      app.kubernetes.io/instance: release-name
+      app: flows
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s
+---
+# Source: flows/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-flows-test-connection"
+  labels:
+    helm.sh/chart: flows-0.6.1
+    app.kubernetes.io/part-of: "java-backend"
+    app.kubernetes.io/using-mysql: "true"
+    app.kubernetes.io/name: flows
+    app.kubernetes.io/instance: release-name
+    app: flows
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-flows:8080']
+  restartPolicy: Never

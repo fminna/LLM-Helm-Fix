@@ -1,0 +1,858 @@
+---
+# Source: pan/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgresql-postgres-password: "RmFwcWhTYk5oTw=="
+  postgresql-password: "IUNoYW5nZU1lIQ=="
+---
+# Source: pan/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-pan
+  labels:
+    app.kubernetes.io/name: pan
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  
+  database-url: "cGdzcWw6Ly9leGFtcGxlOiFDaGFuZ2VNZSFAcmVsZWFzZS1uYW1lLXBvc3RncmVzcWwvYXBpP3NlcnZlclZlcnNpb249MTA="
+  
+  app_application_key: "NDVjMWE0YjYtNTlkMy00YTZlLTg2YmYtODhhODcyZjM1ODQ1"
+---
+# Source: pan/charts/redis/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    heritage: Helm
+    release: release-name
+data:
+  start-master.sh: |
+    #!/bin/bash
+    if [[ -n $REDIS_PASSWORD_FILE ]]; then
+      password_aux=`cat ${REDIS_PASSWORD_FILE}`
+      export REDIS_PASSWORD=$password_aux
+    fi
+    if [[ ! -f /opt/bitnami/redis/etc/master.conf ]];then
+      cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ ! -f /opt/bitnami/redis/etc/redis.conf ]];then
+      cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--protected-mode" "no")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec /run.sh "${ARGS[@]}"
+---
+# Source: pan/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    heritage: Helm
+    release: release-name
+data:
+  redis.conf: |-
+    # User-supplied configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+  master.conf: |-
+    dir /data
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+  replica.conf: |-
+    dir /data
+    slave-read-only yes
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+---
+# Source: pan/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    heritage: Helm
+    release: release-name
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+    export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+    export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+    export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+    export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: pan/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-pan
+  #namespace: dev
+  labels:
+    app.kubernetes.io/name: pan
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  project_name: "pan"
+  app-name: "pan"
+  app-version: "V1.0"
+  
+  app-repro: "https://github.com/ConductionNL/pan"
+  app-demo: "www.westfriesland.commonground.nu"
+  app-domain: "zuid-drecht.nl" 
+  app-description: "Naast deze JSON rest API is er ook een [graphql](/graphql) interface beschikbaar."
+  app-type: "component"
+  app-web: "false"
+  app-subpath-routing: "true"
+  app-subpath: "pan"
+  
+  app-auth: "false"
+  app-audittrail: "false"
+  app-notification: "false"
+
+  
+
+  cache: "false"
+  env: "dev"
+  debug: "1"
+  trusted-proxies: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+  trusted-hosts: "^.+$"
+  php-service: pan-dev-php
+---
+# Source: pan/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: pan/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: primary
+---
+# Source: pan/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app: redis
+    release: release-name
+---
+# Source: pan/charts/redis/templates/redis-master-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app: redis
+    release: release-name
+    role: master
+---
+# Source: pan/templates/api-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pan
+  labels:
+    app.kubernetes.io/name: pan
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 80
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: pan-nginx
+    app.kubernetes.io/instance: release-name
+---
+# Source: pan/templates/php-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pan-php
+  labels:
+    app.kubernetes.io/name: pan-php
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+  selector:
+    app.kubernetes.io/name: pan-php
+    app.kubernetes.io/instance: release-name
+---
+# Source: pan/templates/varnish-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: pan-varnish
+  labels:
+    app.kubernetes.io/name: pan-varnish
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: pan-varnish
+    app.kubernetes.io/instance: release-name
+---
+# Source: pan/templates/api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pan-nginx
+  labels:
+    app.kubernetes.io/name: pan-nginx
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+      matchLabels:
+          app.kubernetes.io/name: pan-nginx
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pan-nginx
+        app.kubernetes.io/part-of: pan
+        helm.sh/chart: pan-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+        - name: pan-nginx
+        
+          image: "docker.io/conduction/pan-nginx:dev"
+        
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          env:
+            - name: PHP_SERVICE
+              value: pan-php
+            - name: NGINX_HOST
+              value: pan-php
+            - name: BACKENDS
+              value: pan-php
+          resources:
+            {}
+---
+# Source: pan/templates/php-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pan-php
+  labels:
+    app.kubernetes.io/name: pan-php
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pan-php
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pan-php
+        app.kubernetes.io/part-of: pan
+        helm.sh/chart: pan-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+        - name: pan-php
+        
+          image: "docker.io/conduction/pan-php:dev"
+        
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9000
+          env:
+            - name: JWT_SECRET_KEY
+              value: '%kernel.project_dir%/config/jwt/private.pem'
+            - name: JWT_PUBLIC_KEY
+              value: '%kernel.project_dir%/config/jwt/public.pem'
+            - name: JWT_PASSPHRASE
+              value: 'bafe1dc254b45471754c221081f874aa' #@todo this should be a variable
+            - name: TRUSTED_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: trusted-hosts
+            - name: TRUSTED_PROXIES
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: trusted-proxies
+            - name: APP_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-name
+            - name: APP_DESCRIPTION
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-description
+            - name: APP_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-version
+            - name: APP_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: env
+            - name: APP_DEBUG
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: debug
+            - name: APP_TYPE
+              valueFrom:
+                  configMapKeyRef:
+                      name: release-name-pan
+                      key: app-type
+            
+            - name: APP_DEMO
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-demo
+
+            - name: APP_REPRO
+              valueFrom:
+                  configMapKeyRef:
+                      name: release-name-pan
+                      key: app-repro
+            - name: APP_DOMAIN
+              valueFrom:
+                  configMapKeyRef:
+                      name: release-name-pan
+                      key: app-domain
+            - name: APP_CACHE
+              valueFrom:
+                  configMapKeyRef:
+                      name: release-name-pan
+                      key: cache      
+            # config
+            - name: AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-auth
+            - name: AUDITTRAIL_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-audittrail
+            - name: NOTIFICATION_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-notification
+            - name: APP_WEB
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-web
+            - name: APP_SUBPATH_ROUTING
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-subpath-routing
+            - name: APP_SUBPATH
+              valueFrom:
+                configMapKeyRef:
+                  name: release-name-pan
+                  key: app-subpath
+            
+            # bla bla      
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-pan
+                  key: database-url
+            - name: APP_APPLICATION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-pan
+                  key: app_application_key
+            - name: APP_URL
+              value: https://dev.zuid-drecht.nl/api/v1/pan
+          resources:
+            {}
+---
+# Source: pan/templates/varnish-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pan-varnish
+  labels:
+    app.kubernetes.io/name: pan-varnish
+    app.kubernetes.io/part-of: pan
+    helm.sh/chart: pan-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pan-varnish
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pan-varnish
+        helm.sh/chart: pan-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      containers:
+        - name: pan-varnish
+        
+          image: "docker.io/conduction/pan-varnish:dev"
+        
+          imagePullPolicy: Always
+          env:
+            - name: BACKENDS
+              value: pan-php
+          #command: ["varnishd"]
+          #args: ["-F", "-f", "/usr/local/etc/varnish/default.vcl", "-p", "http_resp_hdr_len=65536", "-p", "http_resp_size=98304"]
+          ports:
+            - containerPort: 80
+          resources:
+            {}
+---
+# Source: pan/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-10.1.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  serviceName: release-name-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-10.1.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: primary
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: release-name-postgresql
+          image: docker.io/bitnami/postgresql:11.10.0-debian-10-r9
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-postgres-password
+            - name: POSTGRES_USER
+              value: "example"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "api"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "example" -d "dbname=api" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "example" -d "dbname=api" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+        - name: data
+          emptyDir: {}
+---
+# Source: pan/charts/redis/templates/redis-master-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app: redis
+    chart: redis-12.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: redis
+      release: release-name
+      role: master
+  serviceName: release-name-redis-headless
+  template:
+    metadata:
+      labels:
+        app: redis
+        chart: redis-12.7.7
+        release: release-name
+        role: master
+      annotations:
+        checksum/health: 33b9e6b0a1a5887a6294bf2b1113ce1917cde93fda1988c64730eacbcbb4aef0
+        checksum/configmap: ee3ce5f8b98d40f87a103aa835187674cae94d182037dd12f868d3d5688f983b
+        checksum/secret: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: default
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:6.0.11-debian-10-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - /bin/bash
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            null
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+              subPath: 
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis
+        - name: redis-tmp-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis
+          release: release-name
+          heritage: Helm
+          component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+        
+        selector:
+  updateStrategy:
+    type: RollingUpdate

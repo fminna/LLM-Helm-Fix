@@ -1,0 +1,977 @@
+---
+# Source: gardenlet/templates/priorityclass.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gardener-system-critical
+value: 999998950
+globalDefault: false
+description: "This class is used to ensure that the gardenlet and some seed system components has a high priority and is not preempted in favor of other pods."
+---
+# Source: gardenlet/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress-from-gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  podSelector:
+    matchLabels:
+      app: gardener
+      role: gardenlet
+      release: release-name
+  egress:
+  - to:
+    - namespaceSelector: {}
+      podSelector: {}
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    - ipBlock:
+        cidr: ::/0
+  policyTypes:
+  - Egress
+---
+# Source: gardenlet/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: gardener
+      role: gardenlet
+      chart: "gardenlet-1.94.1"
+      release: "release-name"
+      heritage: "Helm"
+  unhealthyPodEvictionPolicy: AlwaysAllow
+---
+# Source: gardenlet/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+automountServiceAccountToken: false
+---
+# Source: gardenlet/templates/configmap-componentconfig.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gardenlet-configmap-5bab7cdc
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+    resources.gardener.cloud/garbage-collectable-reference: "true"
+immutable: true
+data:
+  config.yaml: |
+    ---
+    apiVersion: gardenlet.config.gardener.cloud/v1alpha1
+    kind: GardenletConfiguration
+    gardenClientConnection:
+      qps: 100
+      burst: 130
+    seedClientConnection:
+      qps: 100
+      burst: 130
+    shootClientConnection:
+      qps: 25
+      burst: 50
+    controllers:
+      backupBucket:
+        concurrentSyncs: 20
+      backupEntry:
+        concurrentSyncs: 20
+      bastion:
+        concurrentSyncs: 20
+      seed:
+        syncPeriod: 1h
+      shoot:
+        concurrentSyncs: 20
+        syncPeriod: 1h
+        retryDuration: 12h
+      shootCare:
+        concurrentSyncs: 5
+        syncPeriod: 30s
+        staleExtensionHealthChecks:
+          enabled: true
+        managedResourceProgressingThreshold: 1h
+        conditionThresholds:
+        - duration: 1m
+          type: APIServerAvailable
+        - duration: 1m
+          type: ControlPlaneHealthy
+        - duration: 1m
+          type: ObservabilityComponentsHealthy
+        - duration: 1m
+          type: SystemComponentsHealthy
+        - duration: 5m
+          type: EveryNodeReady
+        webhookRemediatorEnabled: false
+      seedCare:
+        syncPeriod: 30s
+        conditionThresholds:
+        - duration: 1m
+          type: SeedSystemComponentsHealthy
+      shootState:
+        concurrentSyncs: 5
+        syncPeriod: 6h
+      managedSeed:
+        concurrentSyncs: 5
+        syncPeriod: 1h
+        waitSyncPeriod: 15s
+        syncJitterPeriod: 5m
+      networkPolicy:
+        concurrentSyncs: 5
+      tokenRequestor:
+        concurrentSyncs: 5
+      vpaEvictionRequirements:
+        concurrentSyncs: 5
+    resources:
+      capacity:
+        shoots: 250
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 15s
+      renewDeadline: 10s
+      retryPeriod: 2s
+      resourceLock: leases
+    logLevel: info
+    logFormat: json
+    server:
+      healthProbes:
+        port: 2728
+      metrics:
+        port: 2729
+    debugging:
+      enableProfiling: false
+      enableContentionProfiling: false
+    nodeToleration:
+      defaultNotReadyTolerationSeconds: 60
+      defaultUnreachableTolerationSeconds: 60
+---
+# Source: gardenlet/templates/clusterrole-apiserver-sni.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gardener.cloud:system:gardenlet:apiserver-sni
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - envoyfilters
+  - gateways
+  - virtualservices
+  verbs:
+  - create
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - envoyfilters
+  - gateways
+  resourceNames:
+  - proxy-protocol
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - virtualservices
+  resourceNames:
+  - proxy-protocol-blackhole
+  verbs:
+  - get
+  - patch
+  - update
+---
+# Source: gardenlet/templates/clusterrole-gardenlet.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gardener.cloud:system:gardenlet
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+- apiGroups:
+  - operator.gardener.cloud
+  resources:
+  - gardens
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+  - watch
+  - delete
+  - deletecollection
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - namespaces
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - create # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  resourceNames:
+  - alertmanager-db-alertmanager-0 # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+  - vali-vali-0
+  - prometheus-db-prometheus-0 # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+  - prometheus-db-seed-prometheus-0 # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+  - prometheus-db-aggregate-prometheus-0 # TODO(rfranzke): Remove this as soon as the Prometheus and Alertmanager migration code is getting deleted.
+  verbs:
+  - delete
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  resourceNames:
+  - etcds.druid.gardener.cloud
+  - etcdcopybackupstasks.druid.gardener.cloud
+  - hvpas.autoscaling.k8s.io
+  - destinationrules.networking.istio.io
+  - envoyfilters.networking.istio.io
+  - gateways.networking.istio.io
+  - serviceentries.networking.istio.io
+  - sidecars.networking.istio.io
+  - virtualservices.networking.istio.io
+  - authorizationpolicies.security.istio.io
+  - peerauthentications.security.istio.io
+  - requestauthentications.security.istio.io
+  - workloadentries.networking.istio.io
+  - workloadgroups.networking.istio.io
+  - telemetries.telemetry.istio.io
+  - wasmplugins.extensions.istio.io
+  - proxyconfigs.networking.istio.io
+  - managedresources.resources.gardener.cloud
+  - clusterfilters.fluentbit.fluent.io
+  - clusterfluentbitconfigs.fluentbit.fluent.io
+  - clusterinputs.fluentbit.fluent.io
+  - clusteroutputs.fluentbit.fluent.io
+  - clusterparsers.fluentbit.fluent.io
+  - clustermultilineparsers.fluentbit.fluent.io
+  - fluentbits.fluentbit.fluent.io
+  - collectors.fluentbit.fluent.io
+  - fluentbitconfigs.fluentbit.fluent.io
+  - filters.fluentbit.fluent.io
+  - outputs.fluentbit.fluent.io
+  - parsers.fluentbit.fluent.io
+  - multilineparsers.fluentbit.fluent.io
+  verbs:
+  - delete
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - deployments/scale
+  - statefulsets
+  - statefulsets/scale
+  - replicasets
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - autoscaling.k8s.io
+  resources:
+  - hvpas
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling.k8s.io
+  resources:
+  - hvpas
+  resourceNames:
+  - etcd-events
+  - etcd-main
+  - kube-apiserver
+  - kube-controller-manager
+  - aggregate-prometheus
+  - prometheus
+  - vali
+  verbs:
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - autoscaling.k8s.io
+  resources:
+  - verticalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - druid.gardener.cloud
+  resources:
+  - etcds
+  - etcdcopybackupstasks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - extensions.gardener.cloud
+  resources:
+  - backupbuckets
+  - backupentries
+  - bastions
+  - clusters
+  - containerruntimes
+  - controlplanes
+  - dnsrecords
+  - extensions
+  - infrastructures
+  - networks
+  - operatingsystemconfigs
+  - workers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - extensions.gardener.cloud
+  resources:
+  - backupbuckets/status
+  - backupentries/status
+  - containerruntimes/status
+  - controlplanes/status
+  - dnsrecords/status
+  - extensions/status
+  - infrastructures/status
+  - networks/status
+  - operatingsystemconfigs/status
+  - workers/status
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - resources.gardener.cloud
+  resources:
+  - managedresources
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - extensions
+  - networking.k8s.io
+  resources:
+  - ingresses
+  - ingressclasses
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - roles
+  verbs:
+  - bind
+  - escalate
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- nonResourceURLs:
+  - /healthz
+  - /version
+  verbs:
+  - get
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  resourceNames:
+  - gardenlet-leader-election
+  verbs:
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  resourceNames:
+  - gardener-extension-heartbeat
+  verbs:
+  - get
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - virtualservices
+  resourceNames:
+  - kube-apiserver
+  verbs:
+  - list
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - destinationrules
+  - gateways
+  - virtualservices
+  - envoyfilters
+  verbs:
+  - delete
+- apiGroups:
+  - machine.sapcloud.io
+  resources:
+  - machineclasses
+  - machinedeployments
+  - machinesets
+  - machines
+  verbs:
+  - list
+  - watch
+  - get
+  - patch
+  - update
+  - delete
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - list
+  - watch
+  - get
+  - create
+  - patch
+  - update
+  - delete
+---
+# Source: gardenlet/templates/clusterrole-istio.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gardener.cloud:system:gardenlet:managed-istio
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+- apiGroups:
+  - networking.istio.io
+  resources:
+  - destinationrules
+  - gateways
+  - virtualservices
+  - envoyfilters
+  - sidecars
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - security.istio.io
+  resources:
+  - peerauthentications
+  verbs:
+  - create
+- apiGroups:
+  - security.istio.io
+  resources:
+  - peerauthentications
+  resourceNames:
+  - default
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  resourceNames:
+  - istiod
+  verbs:
+  - get
+  - patch
+  - update
+---
+# Source: gardenlet/templates/clusterrolebinding-apiserver-sni.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gardener.cloud:system:gardenlet:apiserver-sni
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gardener.cloud:system:gardenlet:apiserver-sni
+subjects:
+- kind: ServiceAccount
+  name: "gardenlet"
+  namespace: garden
+---
+# Source: gardenlet/templates/clusterrolebinding-gardenlet.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gardener.cloud:system:gardenlet
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gardener.cloud:system:gardenlet
+subjects:
+- kind: ServiceAccount
+  name: "gardenlet"
+  namespace: garden
+---
+# Source: gardenlet/templates/clusterrolebinding-istio.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gardener.cloud:system:gardenlet:managed-istio
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gardener.cloud:system:gardenlet:managed-istio
+subjects:
+- kind: ServiceAccount
+  name: "gardenlet"
+  namespace: garden
+---
+# Source: gardenlet/templates/role-garden-gardenlet.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gardener.cloud:system:gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - create
+---
+# Source: gardenlet/templates/rolebinding-garden-gardenlet.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gardener.cloud:system:gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gardener.cloud:system:gardenlet
+subjects:
+- kind: ServiceAccount
+  name: "gardenlet"
+  namespace: default
+---
+# Source: gardenlet/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gardenlet
+  namespace: default
+  labels:
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports: '[{"port":2729,"protocol":"TCP"}]'
+spec:
+  selector:
+    app: gardener
+    role: gardenlet
+    release: release-name
+  ports:
+  - name: metrics
+    protocol: TCP
+    port: 2729
+    targetPort: 2729
+---
+# Source: gardenlet/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gardenlet
+  namespace: default
+  labels:
+    high-availability-config.resources.gardener.cloud/skip: "true"
+    app: gardener
+    role: gardenlet
+    chart: "gardenlet-1.94.1"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    reference.resources.gardener.cloud/configmap-9aeaaead: gardenlet-configmap-5bab7cdc
+spec:
+  revisionHistoryLimit: 2
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gardener
+      role: gardenlet
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/scheme: 'http'
+        prometheus.io/name: 'gardenlet'
+        prometheus.io/port: "2729"
+        reference.resources.gardener.cloud/configmap-9aeaaead: gardenlet-configmap-5bab7cdc
+      labels:
+        app: gardener
+        role: gardenlet
+        chart: "gardenlet-1.94.1"
+        release: "release-name"
+        heritage: "Helm"
+        projected-token-mount.resources.gardener.cloud/skip: "true"
+        seccompprofile.resources.gardener.cloud/skip: "true"
+        topology-spread-constraints.resources.gardener.cloud/skip: "true"
+        networking.resources.gardener.cloud/to-all-shoots-etcd-main-client-tcp-8080: allowed
+        networking.resources.gardener.cloud/to-all-shoots-kube-apiserver-tcp-443: allowed
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: gardener
+            role: gardenlet
+      priorityClassName: gardener-system-critical
+      serviceAccountName: gardenlet
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: gardenlet
+        image: europe-docker.pkg.dev/gardener-project/releases/gardener/gardenlet:v1.94.1
+        imagePullPolicy: IfNotPresent
+        args:
+        - --config=/etc/gardenlet/config/config.yaml
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 2728
+            scheme: HTTP
+          initialDelaySeconds: 15
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 2728
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - name: kube-api-access-gardener
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+        - name: gardenlet-config
+          mountPath: /etc/gardenlet/config
+      tolerations:
+      - effect: NoExecute
+        key: node.kubernetes.io/not-ready
+        operator: Exists
+        tolerationSeconds: 60
+      - effect: NoExecute
+        key: node.kubernetes.io/unreachable
+        operator: Exists
+        tolerationSeconds: 60
+      volumes:
+      - name: kube-api-access-gardener
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 43200
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+      - name: gardenlet-config
+        configMap:
+          name: gardenlet-configmap-5bab7cdc
+---
+# Source: gardenlet/templates/clusterrole-gardenlet.yaml
+# ClusterRole defines the required permissions for the gardenlet in the seed.
+# For now, we provide escalation privileges required by gardener-resource-manager.

@@ -1,0 +1,360 @@
+---
+# Source: bootzooka/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bootzooka-pgsql-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-9.8.12
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgresql-postgres-password: "VElKNG9mb1JQVg=="
+  postgresql-password: "Ym9vdHpvb2th"
+---
+# Source: bootzooka/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: release-name-bootzooka-secret
+data:
+  SQL_PASSWORD: "Ym9vdHpvb2th"
+  SMTP_PASSWORD: "Ym9vdHpvb2th"
+---
+# Source: bootzooka/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-bootzooka-config
+data:
+  SMTP_ENABLED: "true"
+  SMTP_HOST: "server.example.com"
+  SMTP_PORT: "465"
+  SMTP_USERNAME: "server.example.com"
+  SMTP_SSL_CONNECTION: "true"
+  SMTP_VERIFY_SSL_CERTIFICATE: "false"
+  SMTP_FROM: "hello@bootzooka.example.com"
+  PASSWORD_RESET_LINK_PATTERN: "https://bootzooka.example.com/password-reset?code=%s"
+  SQL_USERNAME: "postgres"
+  SQL_DBNAME: "bootzooka"
+  SQL_HOST: "bootzooka-pgsql-postgresql"
+  SQL_PORT: "5432"
+---
+# Source: bootzooka/charts/postgresql/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: bootzooka-pgsql-postgresql-headless
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-9.8.12
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+---
+# Source: bootzooka/charts/postgresql/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: bootzooka-pgsql-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-9.8.12
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    role: master
+---
+# Source: bootzooka/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-bootzooka
+  labels:
+    app.kubernetes.io/name: bootzooka
+    helm.sh/chart: bootzooka-0.2.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: bootzooka
+    app.kubernetes.io/instance: release-name
+---
+# Source: bootzooka/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-bootzooka
+  labels:
+    app.kubernetes.io/name: bootzooka
+    helm.sh/chart: bootzooka-0.2.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bootzooka
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bootzooka
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: bootzooka
+          image: "softwaremill/bootzooka:latest"
+          imagePullPolicy: Always
+          envFrom:
+          - configMapRef:
+              name: release-name-bootzooka-config
+          - secretRef:
+              name: release-name-bootzooka-secret
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            null
+---
+# Source: bootzooka/charts/postgresql/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bootzooka-pgsql-postgresql
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-9.8.12
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  serviceName: bootzooka-pgsql-postgresql-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      role: master
+  template:
+    metadata:
+      name: bootzooka-pgsql-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-9.8.12
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        role: master
+    spec:      
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: bootzooka-pgsql-postgresql
+          image: docker.io/bitnami/postgresql:11.10.0-debian-10-r0
+          imagePullPolicy: "IfNotPresent"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bootzooka-pgsql-postgresql
+                  key: postgresql-password
+            - name: POSTGRES_DB
+              value: "bootzooka"
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -d "dbname=bootzooka" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -d "dbname=bootzooka" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+              subPath: 
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: bootzooka/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-bootzooka-ingress
+  labels:
+    app.kubernetes.io/name: bootzooka
+    helm.sh/chart: bootzooka-0.2.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    kubernetes.io/tls-acme: "true"
+spec:
+  rules:
+  - host: "bootzooka.example.com"
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: release-name-bootzooka
+            port:
+              name: http
+---
+# Source: bootzooka/templates/tests/test-postgresql-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-postgresql-test"
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: release-name-postgresql-test
+      image: "bitnami/postgresql:11"
+      imagePullPolicy: "IfNotPresent"
+      env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: release-name-bootzooka-config
+              key: SQL_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: release-name-bootzooka-config
+              key: SQL_PORT
+        - name: DB_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: release-name-bootzooka-config
+              key: SQL_DBNAME
+        - name: DB_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: release-name-bootzooka-config
+              key: SQL_USERNAME
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-bootzooka-secret
+              key: SQL_PASSWORD
+      command:
+        - /bin/bash
+        - -ec
+        - |
+          PGPASSWORD=$DB_PASSWORD psql --host $DB_HOST --port $DB_PORT -U $DB_USERNAME
+  restartPolicy: Never

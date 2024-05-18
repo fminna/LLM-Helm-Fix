@@ -1,0 +1,238 @@
+---
+# Source: appmesh-spire-server/templates/account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: default
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: appmesh-spire-server/templates/spire-bundle-cfg.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bundle
+  namespace: spire
+---
+# Source: appmesh-spire-server/templates/spire-server-cfg.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      socket_path = "/tmp/spire-server/private/api.sock"
+      trust_domain = "appmesh.aws"
+      data_dir = "/run/spire/data"
+      log_level = "DEBUG"
+      ca_key_type = "rsa-2048"
+
+      default_svid_ttl = "1h"
+      ca_subject = {
+        country = ["US"],
+        organization = ["SPIFFE"],
+        common_name = "",
+      }
+    }
+
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+
+      NodeAttestor "k8s_sat" {
+        plugin_data {
+          clusters = {
+            "k8s-cluster" = {
+              use_token_review_api_validation = true
+              service_account_allow_list = ["spire:spire-agent"]
+            }
+          }
+        }
+      }
+
+      KeyManager "disk" {
+        plugin_data {
+          keys_path = "/run/spire/data/keys.json"
+        }
+      }
+
+      Notifier "k8sbundle" {
+        plugin_data {
+        }
+      }
+      
+    
+    }
+---
+# Source: appmesh-spire-server/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server-role
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+# Source: appmesh-spire-server/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server-rolebinding
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server-role
+subjects:
+- name: spire-server
+  namespace: default
+  kind: ServiceAccount
+---
+# Source: appmesh-spire-server/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spire-server-configmap-role
+  namespace: default
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["patch", "get", "list"]
+---
+# Source: appmesh-spire-server/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spire-server-configmap-rolebinding
+  namespace: default
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+- kind: ServiceAccount
+  name: spire-server
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spire-server-configmap-role
+---
+# Source: appmesh-spire-server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+spec:
+  type: NodePort
+  ports:
+    - port: 8081
+      targetPort: 8081
+      protocol: TCP
+      name: grpc
+  selector:
+    app.kubernetes.io/name: appmesh-spire-server
+---
+# Source: appmesh-spire-server/templates/deployment.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  labels:
+    app.kubernetes.io/name: appmesh-spire-server
+    helm.sh/chart: appmesh-spire-server-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: appmesh-spire-server
+      app.kubernetes.io/instance: release-name
+  serviceName: spire-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: appmesh-spire-server
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/part-of: appmesh
+    spec:
+      serviceAccountName: spire-server
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-server
+      containers:
+        - name: spire-server
+          image: "gcr.io/spiffe-io/spire-server:1.5.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config
+            - /run/spire/config/server.conf
+          ports:
+            - containerPort: 8081
+          livenessProbe:
+            exec:
+              command:
+                - /opt/spire/bin/spire-server
+                - healthcheck
+            failureThreshold: 2
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+              readOnly: false
+  volumeClaimTemplates:
+    - metadata:
+        name: spire-data
+        namespace: spire
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi

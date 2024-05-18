@@ -1,0 +1,418 @@
+---
+# Source: hue/charts/postgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  postgres-password: "cG9zdGdyZXM="
+  password: "aHVl"
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: hue/templates/hue-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hue-config
+data:
+  z-hue-ini: |
+    [desktop]
+
+    [[database]]
+    engine=postgresql_psycopg2
+    host=release-name-hue-postgresql
+    port=5432
+    user=hue
+    password=hue
+    name=hue
+
+    [aws]
+    [[aws_accounts]]
+    [[[default]]]
+    access_key_id=
+    secret_access_key=
+    region=
+
+    [notebook]
+    [[interpreters]]
+---
+# Source: hue/templates/hue-extra-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hue-extra-config
+data:
+  zz-hue-ini: |
+    [desktop]
+    secret_key=hue123
+    app_blacklist=filebrowser,search,hbase,security,jobbrowser,oozie
+    django_debug_mode=false
+    gunicorn_work_class=sync
+    enable_prometheus=true
+    
+    [[task_server]]
+    enabled=false
+    broker_url=redis://redis:6379/0
+    result_cache='{"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://redis:6379/0", "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},"KEY_PREFIX": "queries"}'
+    celery_result_backend=redis://redis:6379/0
+---
+# Source: hue/templates/hue-hive-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hue-hive-config
+data:
+  hive-site: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+    <configuration>
+    </configuration>
+---
+# Source: hue/charts/postgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: hue/charts/postgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: primary
+---
+# Source: hue/templates/hue-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hue
+  labels:
+    app.kubernetes.io/name: hue
+    app.kubernetes.io/component: hue
+    app.kubernetes.io/instance: "release-name"
+spec:
+  selector:
+    app.kubernetes.io/name: hue
+    app.kubernetes.io/component: hue
+    app.kubernetes.io/instance: "release-name"
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8888
+      protocol: TCP
+---
+# Source: hue/charts/postgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: postgresql
+    helm.sh/chart: postgresql-11.6.26
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: primary
+  annotations:
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/name: postgresql
+        helm.sh/chart: postgresql-11.6.26
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: primary
+      annotations:
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: primary
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      initContainers:
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:14.4.0-debian-11-r23
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "hue"
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: password
+            - name: POSTGRES_DB
+              value: "hue"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "hue" -d "dbname=hue" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                
+                - |
+                  exec pg_isready -U "hue" -d "dbname=hue" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: hue/templates/hue-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hue
+  labels:
+    app.kubernetes.io/name: hue
+    app.kubernetes.io/component: hue
+    app.kubernetes.io/instance: "release-name"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hue
+      app.kubernetes.io/component: hue
+      app.kubernetes.io/instance: "release-name"
+  replicas: 1
+  serviceName: release-name-hue
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hue
+        app.kubernetes.io/component: hue
+        app.kubernetes.io/instance: "release-name"
+      annotations:
+        checksum/config: 6b01d2f2c9a61e4631d7e0cd8b759a24910b5a1bb92273bdc40ffaca79d42c2d
+        checksum/config-extra: 65c0e2cdde8f254137b6f9faddcfaba5dd61fcbe1d6cb6427ac4ab38eb655db8
+        checksum/config-hive: efb40b166a881cefaa447e42a79954150ec0ebb74d9323152f4a2d8f1c6a6886
+    spec:
+      initContainers:
+        - name: hue-init
+          image: gethue/hue:4.10.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - /bin/sh
+            - -c
+            - >
+              set -x;
+              while [ $(curl -s --connect-timeout 1 release-name-hue-postgresql:5432 || echo $?) -ne 52 ]; do
+                sleep 1;
+              done
+      containers:
+      - name: hue
+        image: gethue/hue:4.10.0
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 8888
+        resources:
+          requests:
+            # memory: "350Mi"
+            cpu: "50m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /usr/share/hue/desktop/conf/z-hue.ini
+          subPath: z-hue-ini
+        - name: config-volume-extra
+          mountPath: /usr/share/hue/desktop/conf/zz-hue.ini
+          subPath: zz-hue-ini
+        - name: hive-config-volume
+          mountPath: /etc/hive/conf/hive-site.xml
+          subPath: hive-site
+        readinessProbe:
+          httpGet:
+            path: /desktop/debug/is_alive
+            port: 8888
+          initialDelaySeconds: 3
+          periodSeconds: 3
+          failureThreshold: 30
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-hue-config
+        - name: config-volume-extra
+          configMap:
+            name: release-name-hue-extra-config
+        - name: hive-config-volume
+          configMap:
+            name: release-name-hue-hive-config
+---
+# Source: hue/templates/ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#

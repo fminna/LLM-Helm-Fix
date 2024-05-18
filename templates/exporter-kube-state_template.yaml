@@ -1,0 +1,148 @@
+---
+# Source: exporter-kube-state/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: "prometheus"
+    chart: exporter-kube-state-0.1.1
+    heritage: Helm
+    prometheus: release-name
+    release: release-name
+  name: release-name-exporter-ku
+data:
+  kube-state.rules: |-
+    # NOTE: These rules were kindly contributed by the SoundCloud engineering team.
+
+    ALERT K8SNodeNotReady
+      IF kube_node_status_ready{condition="true"} == 0
+      FOR 1h
+      LABELS {
+        service = "k8s",
+        severity = "warning",
+      }
+      ANNOTATIONS {
+        summary = "Node status is NotReady",
+        description = "The Kubelet on {{ $labels.node }} has not checked in with the API, or has set itself to NotReady, for more than an hour",
+      }
+
+    ALERT K8SManyNodesNotReady
+      IF
+        count by (cluster) (kube_node_status_ready{condition="true"} == 0) > 1
+        AND
+          (
+            count by (cluster) (kube_node_status_ready{condition="true"} == 0)
+          /
+            count by (cluster) (kube_node_status_ready{condition="true"})
+          ) > 0.2
+      FOR 1m
+      LABELS {
+        service = "k8s",
+        severity = "critical",
+      }
+      ANNOTATIONS {
+        summary = "Many K8s nodes are Not Ready",
+        description = "{{ $value }} K8s nodes (more than 10% of cluster {{ $labels.cluster }}) are in the NotReady state.",
+      }
+---
+# Source: exporter-kube-state/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-exporter-ku
+  labels:
+    app: exporter-kube-state
+    component: kube-state
+    heritage: Helm
+    release: release-name
+    chart: exporter-kube-state-0.1.1
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: nginx
+  selector:
+    app: exporter-kube-state
+---
+# Source: exporter-kube-state/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: exporter-kube-state
+  labels:
+    app: exporter-kube-state
+    component: kube-state
+    heritage: Helm
+    release: release-name
+    chart: exporter-kube-state-0.1.1
+    version: "v0.3.0"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: exporter-kube-state
+  template:
+    metadata:
+      labels:
+        app: exporter-kube-state
+        version: "v0.3.0"
+    spec:
+      containers:
+      - name: exporter-kube-state
+        image: "gcr.io/google_containers/kube-state-metrics:v0.3.0"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+        resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+# Source: exporter-kube-state/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app: prometheus
+    chart: "exporter-kube-state-0.1.1"
+    component: kube-state
+    heritage: "Helm"
+    release: "release-name"
+    prometheus: release-name
+  name: release-name-exporter-ku
+spec:
+  jobLabel: exporter-kube-state
+  selector:
+    matchLabels:
+      app: exporter-kube-state
+      component: kube-state
+  namespaceSelector:
+    matchNames:
+      - "default"
+  endpoints:
+  - port: nginx
+    interval: 15s

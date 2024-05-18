@@ -1,0 +1,303 @@
+---
+# Source: superstream/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-superstream
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: superstream/templates/secret-data-plane.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superstream-creds
+  namespace: default
+type: Opaque
+data:
+  ENCRYPTION_SECRET_KEY: "MnVqNHBXdVhObmE2OENidFRBWndVNVNnOWJsWTNvUGE="
+  ACTIVATION_TOKEN: ""
+---
+# Source: superstream/templates/configmap-syslog.yaml
+# templates/configmap.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syslog-config
+data:
+  syslog-ng.conf: |
+    @version: 4.2
+    @include "scl.conf"
+
+    # Define source for incoming logs
+    source s_local {
+      internal();
+    };
+
+    source s_network {
+      syslog(transport(UDP) port(5514));
+    };
+
+    # Define RFC5424 template
+    template t_rfc5424 {
+    #    template("<${PRI}>1 ${ISODATE} ${HOST} ${PROGRAM} ${PID} ${MSGID} [exampleSDID@0 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] ${MSG}\n");
+        template("<${PRI}>1 ${ISODATE} ${HOST} ${PROGRAM} 1 - [SDID@0 eventSource=\"Application\"] ${MSG}\n");
+        template_escape(no);
+    };
+
+    # Define destination where the formatted logs will be sent
+    destination d_local {
+        file("/config/log/rfc5424.log" template(t_rfc5424));
+    };
+    # Define destination for forwarding logs to a remote syslog server
+    destination d_remote_syslog {
+        network("telegraf.default" port(6514) transport("udp") template(t_rfc5424));
+        # Change "remote-syslog-server-address" to your remote syslog server's IP or hostname
+        # Adjust the port if your remote server listens on a different port
+        # Change transport to "udp" if your remote server expects UDP
+    };
+
+    # Log path to process and route the logs
+    log {
+      source(s_local);
+      source(s_network);
+      destination(d_local); # Local file destination
+      destination(d_remote_syslog); # Remote syslog server destination
+    };
+---
+# Source: superstream/templates/service-data-plane.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-superstream-data-plane
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7777
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name-data-plane
+---
+# Source: superstream/templates/service-syslog.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-superstream-syslog
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5514
+      targetPort: syslog
+      protocol: UDP
+      name: syslog
+  selector:
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name-syslog
+---
+# Source: superstream/templates/deployment-data-plane.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-superstream-data-plane
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: superstream
+      app.kubernetes.io/instance: release-name-data-plane
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /monitoring/metrics
+        prometheus.io/port: "7777"
+        prometheus.io/scrape: "true"
+      labels:
+        releaseDate: 2024-03-20-11-12
+        helm.sh/chart: superstream-0.2.3
+        app.kubernetes.io/name: superstream
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "1.0.4"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: superstream
+        app.kubernetes.io/instance: release-name-data-plane
+    spec:
+      initContainers:
+      - name: check-nats-readiness
+        image: curlimages/curl:8.6.0
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: NATS_HOST
+            value: .default    
+        command: 
+          - "sh"
+          - "-c"
+          - |
+            until nc -z $NATS_HOST.svc.cluster.local 4222 ; do
+              echo waiting for $NATS_HOST
+              sleep 2
+            done
+      serviceAccountName: release-name-superstream
+      securityContext:
+        {}
+      containers:
+        - name: superstream-data-plane
+          securityContext:
+            {}
+          image: "memphisos/superstream-data-plane-be:latest"
+          imagePullPolicy: Always
+          ports:
+          - name: data-plane
+            containerPort: 7777
+            protocol: TCP
+          env:
+            - name: ENV_NAME
+              value: 
+            - name: IS_HA
+              value: "true"
+            - name: VERSION
+              value: 1.0.4
+            - name: ACTIVATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: superstream-creds
+                  key: ACTIVATION_TOKEN
+            - name: PORT
+              value: "7777"
+            - name: ENCRYPTION_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: superstream-creds
+                  key: ENCRYPTION_SECRET_KEY
+            - name: NATS_HOST
+              value: .default
+            - name: NATS_PORT
+              value: "4222"
+            - name: CONTROL_PLANE_HOST
+              value: 
+            - name: CONTROL_PLANE_PORT
+              value: "4222"
+            - name: SYSLOG
+              value: "true"
+            - name: SYSLOG_HOST
+              value: superstream-syslog.default
+            - name: SYSLOG_PROTOCOL
+              value: udp
+            - name: SYSLOG_PORT
+              value: "5514"
+          resources:
+            limits:
+              cpu: "8"
+              memory: 8Gi
+            requests:
+              cpu: 50m
+              memory: 100Mi
+---
+# Source: superstream/templates/deployment-syslog.yaml
+# templates/deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:  release-name-superstream-syslog
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: superstream
+      app.kubernetes.io/instance: release-name-syslog
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "false"
+      labels:
+        app.kubernetes.io/name: superstream
+        app.kubernetes.io/instance: release-name-syslog
+    spec:
+      securityContext:
+        fsGroup: 911
+      containers:
+      - name: syslog-ng
+        image: "linuxserver/syslog-ng:4.5.0"
+        ports:
+          - name: syslog
+            containerPort: 5514
+            protocol: UDP
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config/syslog-ng.conf
+          subPath: syslog-ng.conf
+      volumes:
+      - name: config-volume
+        configMap:
+          name: syslog-config
+---
+# Source: superstream/templates/hpa-data-plane.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-superstream-data-plane
+  labels:
+    helm.sh/chart: superstream-0.2.3
+    app.kubernetes.io/name: superstream
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: release-name-superstream-data-plane
+  minReplicas: 1
+  maxReplicas: 5
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 180
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75

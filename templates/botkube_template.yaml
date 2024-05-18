@@ -1,0 +1,787 @@
+---
+# Source: botkube/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-botkube-sa
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: botkube/templates/communicationsecret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-botkube-communication-secret
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    botkube.io/config-watch: "true"
+stringData:
+  comm_config.yaml: |
+    # Communication settings
+    communications:
+      default-group:
+        discord:
+          botID: DISCORD_BOT_ID
+          channels:
+            default:
+              bindings:
+                executors:
+                - k8s-default-tools
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+              id: DISCORD_CHANNEL_ID
+              notification:
+                disabled: false
+          enabled: false
+          token: DISCORD_TOKEN
+        elasticsearch:
+          awsSigning:
+            awsRegion: us-east-1
+            enabled: false
+            roleArn: ""
+          enabled: false
+          indices:
+            default:
+              bindings:
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+              name: botkube
+              replicas: 0
+              shards: 1
+              type: botkube-event
+          logLevel: ""
+          password: ELASTICSEARCH_PASSWORD
+          server: ELASTICSEARCH_ADDRESS
+          skipTLSVerify: false
+          username: ELASTICSEARCH_USERNAME
+        mattermost:
+          botName: Botkube
+          channels:
+            default:
+              bindings:
+                executors:
+                - k8s-default-tools
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+              name: MATTERMOST_CHANNEL
+              notification:
+                disabled: false
+          enabled: false
+          team: MATTERMOST_TEAM
+          token: MATTERMOST_TOKEN
+          url: MATTERMOST_SERVER_URL
+        socketSlack:
+          appToken: ""
+          botToken: ""
+          channels:
+            default:
+              bindings:
+                executors:
+                - k8s-default-tools
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+              name: SLACK_CHANNEL
+          enabled: false
+        webhook:
+          bindings:
+            sources:
+            - k8s-err-events
+            - k8s-recommendation-events
+          enabled: false
+          url: WEBHOOK_URL
+---
+# Source: botkube/templates/global-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-botkube-global-config
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    botkube.io/config-watch: "false" # explicitly disable config watcher
+data:
+  global_config.yaml: |
+    executors:
+      k8s-default-tools:
+        botkube/kubectl:
+          config:
+            defaultNamespace: default
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          displayName: Kubectl
+          enabled: false
+
+    aliases:
+      k:
+        command: kubectl
+        displayName: Kubectl alias
+      kc:
+        command: kubectl
+        displayName: Kubectl alias
+
+    actions:
+      describe-created-resource:
+        bindings:
+          executors:
+          - k8s-default-tools
+          sources:
+          - k8s-create-events
+        command: kubectl describe {{ .Event.Kind | lower }}{{ if .Event.Namespace }} -n
+          {{ .Event.Namespace }}{{ end }} {{ .Event.Name }}
+        displayName: Describe created resource
+        enabled: false
+      show-logs-on-error:
+        bindings:
+          executors:
+          - k8s-default-tools
+          sources:
+          - k8s-err-with-logs-events
+        command: kubectl logs {{ .Event.Kind | lower }}/{{ .Event.Name }} -n {{ .Event.Namespace
+          }}
+        displayName: Show logs on error
+        enabled: false
+
+    settings:
+      clusterName: not-configured
+      healthPort: 2114
+      log:
+        disableColors: false
+        formatter: json
+        level: info
+      persistentConfig:
+        runtime:
+          configMap:
+            annotations: {}
+            name: botkube-runtime-config
+          fileName: _runtime_state.yaml
+        startup:
+          configMap:
+            annotations: {}
+            name: botkube-startup-config
+          fileName: _startup_state.yaml
+      systemConfigMap:
+        name: botkube-system
+      upgradeNotifier: true
+
+    sources:
+      k8s-all-events:
+        botkube/kubernetes:
+          config:
+            annotations: {}
+            event:
+              message:
+                exclude: []
+                include: []
+              reason:
+                exclude: []
+                include: []
+              types:
+              - create
+              - delete
+              - error
+            filters:
+              nodeEventsChecker: true
+              objectAnnotationChecker: true
+            labels: {}
+            namespaces:
+              include:
+              - .*
+            resources:
+            - type: v1/pods
+            - type: v1/services
+            - type: networking.k8s.io/v1/ingresses
+            - event:
+                message:
+                  exclude:
+                  - .*nf_conntrack_buckets.*
+              type: v1/nodes
+            - type: v1/namespaces
+            - type: v1/persistentvolumes
+            - type: v1/persistentvolumeclaims
+            - type: v1/configmaps
+            - type: rbac.authorization.k8s.io/v1/roles
+            - type: rbac.authorization.k8s.io/v1/rolebindings
+            - type: rbac.authorization.k8s.io/v1/clusterrolebindings
+            - type: rbac.authorization.k8s.io/v1/clusterroles
+            - event:
+                types:
+                - create
+                - update
+                - delete
+                - error
+              type: apps/v1/daemonsets
+              updateSetting:
+                fields:
+                - spec.template.spec.containers[*].image
+                - status.numberReady
+                includeDiff: true
+            - event:
+                types:
+                - create
+                - update
+                - delete
+                - error
+              type: batch/v1/jobs
+              updateSetting:
+                fields:
+                - spec.template.spec.containers[*].image
+                - status.conditions[*].type
+                includeDiff: true
+            - event:
+                types:
+                - create
+                - update
+                - delete
+                - error
+              type: apps/v1/deployments
+              updateSetting:
+                fields:
+                - spec.template.spec.containers[*].image
+                - status.availableReplicas
+                includeDiff: true
+            - event:
+                types:
+                - create
+                - update
+                - delete
+                - error
+              type: apps/v1/statefulsets
+              updateSetting:
+                fields:
+                - spec.template.spec.containers[*].image
+                - status.readyReplicas
+                includeDiff: true
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          enabled: true
+        displayName: Kubernetes Info
+      k8s-create-events:
+        botkube/kubernetes:
+          config:
+            event:
+              types:
+              - create
+            namespaces:
+              include:
+              - .*
+            resources:
+            - type: v1/pods
+            - type: v1/services
+            - type: networking.k8s.io/v1/ingresses
+            - type: v1/nodes
+            - type: v1/namespaces
+            - type: v1/configmaps
+            - type: apps/v1/deployments
+            - type: apps/v1/statefulsets
+            - type: apps/v1/daemonsets
+            - type: batch/v1/jobs
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          enabled: true
+        displayName: Kubernetes Resource Created Events
+      k8s-err-events:
+        botkube/kubernetes:
+          config:
+            event:
+              types:
+              - error
+            namespaces:
+              include:
+              - .*
+            resources:
+            - type: v1/pods
+            - type: v1/services
+            - type: networking.k8s.io/v1/ingresses
+            - event:
+                message:
+                  exclude:
+                  - .*nf_conntrack_buckets.*
+              type: v1/nodes
+            - type: v1/namespaces
+            - type: v1/persistentvolumes
+            - type: v1/persistentvolumeclaims
+            - type: v1/configmaps
+            - type: rbac.authorization.k8s.io/v1/roles
+            - type: rbac.authorization.k8s.io/v1/rolebindings
+            - type: rbac.authorization.k8s.io/v1/clusterrolebindings
+            - type: rbac.authorization.k8s.io/v1/clusterroles
+            - type: apps/v1/deployments
+            - type: apps/v1/statefulsets
+            - type: apps/v1/daemonsets
+            - type: batch/v1/jobs
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          enabled: true
+        displayName: Kubernetes Errors
+      k8s-err-with-logs-events:
+        botkube/kubernetes:
+          config:
+            event:
+              types:
+              - error
+            namespaces:
+              include:
+              - .*
+            resources:
+            - type: v1/pods
+            - type: apps/v1/deployments
+            - type: apps/v1/statefulsets
+            - type: apps/v1/daemonsets
+            - type: batch/v1/jobs
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          enabled: true
+        displayName: Kubernetes Errors for resources with logs
+      k8s-recommendation-events:
+        botkube/kubernetes:
+          config:
+            namespaces:
+              include:
+              - .*
+            recommendations:
+              ingress:
+                backendServiceValid: true
+                tlsSecretValid: true
+              pod:
+                labelsSet: true
+                noLatestImageTag: true
+          context:
+            rbac:
+              group:
+                prefix: ""
+                static:
+                  values:
+                  - botkube-plugins-default
+                type: Static
+          enabled: true
+        displayName: Kubernetes Recommendations
+
+    configWatcher:
+      enabled: true
+      inCluster:
+        informerResyncPeriod: 10m
+
+    plugins:
+      cacheDir: /tmp
+      repositories:
+        botkube:
+          url: https://github.com/kubeshop/botkube/releases/download/v1.11.0/plugins-index.yaml
+      incomingWebhook:
+        enabled: true
+        # port and baseInClusterURL are set via envs
+      restartPolicy:
+        type: DeactivatePlugin
+        threshold: 10
+      healthCheckInterval: 10s
+
+    analytics:
+      disable: false
+---
+# Source: botkube/templates/persistent-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botkube-runtime-config
+  annotations:
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    botkube.io/config-watch: "true"
+data:
+  # This file has a special prefix to load it as the last config file during Botkube startup.
+  _runtime_state.yaml: |
+    actions:
+      describe-created-resource:
+        enabled: false
+      show-logs-on-error:
+        enabled: false
+    communications:
+      default-group:
+        discord:
+          channels:
+            default:
+              bindings:
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+        mattermost:
+          channels:
+            default:
+              bindings:
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+        socketSlack:
+          channels:
+            default:
+              bindings:
+                sources:
+                - k8s-err-events
+                - k8s-recommendation-events
+---
+# Source: botkube/templates/persistent-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botkube-startup-config
+  annotations:
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    botkube.io/config-watch: "false" # Explicitly don't watch this ConfigMap
+data:
+  # This file has a special prefix to load it as the last config file during Botkube startup.
+  _startup_state.yaml: |
+    communications:
+      default-group:
+        discord:
+          channels:
+            default:
+              notification:
+                disabled: false
+        mattermost:
+          channels:
+            default:
+              notification:
+                disabled: false
+        socketSlack:
+          channels:
+            default:
+              notification:
+                disabled: false
+---
+# Source: botkube/templates/system-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botkube-system
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    botkube.io/config-watch: "false" # Explicitly don't watch this ConfigMap
+---
+# Source: botkube/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-botkube-clusterrole
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "namespaces" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "" ]
+    resources: [ "secrets", "configmaps" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "nodes" ]
+    verbs: [ "list" ]
+  - apiGroups: [ "" ]
+    resources: [ "users", "groups", "serviceaccounts" ]
+    verbs: [ "impersonate" ]
+---
+# Source: botkube/templates/rbac-groups.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: botkube-plugins-default
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+    - '*'
+    resources:
+    - '*'
+    verbs:
+    - get
+    - watch
+    - list
+---
+# Source: botkube/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-botkube-clusterrolebinding
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-botkube-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: release-name-botkube-sa
+  namespace: default
+---
+# Source: botkube/templates/rbac-groups.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: botkube-plugins-default
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: botkube-plugins-default
+subjects:
+  - kind: Group
+    name: botkube-plugins-default
+    apiGroup: rbac.authorization.k8s.io
+---
+# Source: botkube/templates/systemroles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-botkube-system
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["update", "create"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+
+  # Ensure Botkube can restart itself via Kubernetes API to avoid CrashLoopBackOff errors
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+---
+# Source: botkube/templates/systemroles.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-botkube-system
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-botkube-system
+subjects:
+- kind: ServiceAccount
+  name: release-name-botkube-sa
+  namespace: default
+---
+# Source: botkube/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-botkube
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app: botkube
+spec:
+  type: ClusterIP
+  ports:
+  - name: "incoming-webhook"
+    port: 2115
+    targetPort: 2115
+  selector:
+    app: botkube
+---
+# Source: botkube/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-botkube
+  labels:
+    app.kubernetes.io/name: botkube
+    helm.sh/chart: botkube-v1.11.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    component: controller
+    app: botkube
+  annotations:
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RollingUpdate doesn't work with SocketSlack integration as it requires a single connection to Slack API.
+  selector:
+    matchLabels:
+      component: controller
+      app: botkube
+  template:
+    metadata:
+      labels:
+        component: controller
+        app: botkube
+      annotations:
+        checksum/config: a3b5ee031a2f412617062fe6584ccab73f08e378596e085b8deb3767826d1130
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: release-name-botkube-sa
+      containers:
+        - name: botkube
+          image: "ghcr.io/kubeshop/botkube:v1.11.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+          
+          readinessProbe:
+            successThreshold: 1
+            failureThreshold: 35
+            periodSeconds: 2
+            initialDelaySeconds: 1
+            timeoutSeconds: 1
+            httpGet:
+              path: /healthz
+              port: 2114
+          livenessProbe:
+            successThreshold: 1
+            failureThreshold: 35
+            periodSeconds: 2
+            initialDelaySeconds: 1
+            timeoutSeconds: 1
+            httpGet:
+              path: /healthz
+              port: 2114
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /tmp
+            - name: default-sa
+              mountPath: /var/run/7e7fd2f5-b15d-4803-bc52-f54fba357e76/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: config-volume
+              mountPath: "/config"
+            - name: startup-config
+              mountPath: "/startup-config"
+            - name: cache
+              mountPath: "/.kube/cache"
+          env:
+            - name: BOTKUBE_CONFIG_PATHS
+              value: "/config/global_config.yaml,/config/comm_config.yaml,/config/_runtime_state.yaml,/startup-config/_startup_state.yaml"
+            - name: BOTKUBE_SETTINGS_METRICS__PORT
+              value: "2112"
+            - name: BOTKUBE_SETTINGS_SYSTEM__CONFIG__MAP_NAMESPACE
+              value: "default"
+            - name: BOTKUBE_SETTINGS_PERSISTENT__CONFIG_RUNTIME_CONFIG__MAP_NAMESPACE
+              value: "default"
+            - name: BOTKUBE_SETTINGS_PERSISTENT__CONFIG_STARTUP_CONFIG__MAP_NAMESPACE
+              value: "default"
+            - name: BOTKUBE_CONFIG__WATCHER_DEPLOYMENT_NAMESPACE
+              value: "default"
+            - name: BOTKUBE_CONFIG__WATCHER_DEPLOYMENT_NAME
+              value: "release-name-botkube"
+            - name: CONFIG_PROVIDER_ENDPOINT
+              value: https://api.botkube.io/graphql
+            - name: BOTKUBE_SETTINGS_SA__CREDENTIALS__PATH__PREFIX
+              value: /var/run/7e7fd2f5-b15d-4803-bc52-f54fba357e76/secrets/kubernetes.io/serviceaccount/default-sa
+            - name: BOTKUBE_PLUGINS_INCOMING__WEBHOOK_PORT
+              value: "2115"
+            - name: BOTKUBE_PLUGINS_INCOMING__WEBHOOK_IN__CLUSTER__BASE__U__R__L
+              value: "http://release-name-botkube.default.svc.cluster.local:2115"
+            
+            - name: LOG_LEVEL_SOURCE_BOTKUBE_KUBERNETES
+              value: debug
+      volumes:
+        - name: cache-volume
+          emptyDir: {}
+        - name: default-sa
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: default-sa-token
+                  expirationSeconds: 3600
+              - configMap:
+                  items:
+                  - key: ca.crt
+                    path: default-sa-ca.crt
+                  name: kube-root-ca.crt
+        - name: config-volume
+          projected:
+            sources:
+            - configMap:
+                name: release-name-botkube-global-config
+            - secret:
+                name: release-name-botkube-communication-secret
+            - configMap:
+                name: botkube-runtime-config
+        # Startup ConfigMap need to be mounted separately to avoid triggering Config Watcher.
+        # When using `projected.sources`, each file is removed and added when any ConfigMap/Secret changes.
+        - name: startup-config
+          configMap:
+            name: botkube-startup-config
+        
+        - name: cache
+          emptyDir: {}
+      securityContext:
+        runAsUser: 101
+        runAsGroup: 101

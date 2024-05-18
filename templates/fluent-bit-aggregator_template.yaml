@@ -1,0 +1,209 @@
+---
+# Source: fluent-bit-aggregator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-fluent-bit-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+---
+# Source: fluent-bit-aggregator/templates/configmap-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fluent-bit-aggregator-config
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+  fluent-bit.conf: |-
+    [SERVICE]
+        daemon false
+        http_Port 2020
+        http_listen 0.0.0.0
+        http_server true
+        log_level info
+        parsers_file /fluent-bit/etc/parsers.conf
+        storage.metrics true
+        storage.path /fluent-bit/data
+
+    [INPUT]
+        name              forward
+        listen            0.0.0.0
+        port              24224
+        buffer_chunk_size 1M
+        buffer_max_size   6M
+        storage.type      filesystem
+    
+    [OUTPUT]
+        name   stdout
+        match  *
+---
+# Source: fluent-bit-aggregator/templates/configmap-scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-fluent-bit-aggregator-scripts
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+data:
+---
+# Source: fluent-bit-aggregator/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fluent-bit-aggregator-headless
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+    prometheus.io/service-monitor: "false"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: 2020
+      targetPort: http
+      protocol: TCP
+    - name: http-forward
+      port: 24224
+      targetPort: http-forward
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+---
+# Source: fluent-bit-aggregator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-fluent-bit-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 2020
+      targetPort: http
+      protocol: TCP
+    - name: http-forward
+      port: 24224
+      targetPort: http-forward
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+---
+# Source: fluent-bit-aggregator/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-fluent-bit-aggregator
+  namespace: default
+  labels:
+    helm.sh/chart: fluent-bit-aggregator-0.14.3
+    app.kubernetes.io/name: fluent-bit-aggregator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.0.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: release-name-fluent-bit-aggregator-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluent-bit-aggregator
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluent-bit-aggregator
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: a3856e3e8d779f42ea5b53e295406ed8a72603a08ca877a217eb0bdbc083819d
+    spec:
+      serviceAccountName: release-name-fluent-bit-aggregator
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: aggregator
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          image: cr.fluentbit.io/fluent/fluent-bit:3.0.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - /fluent-bit/bin/fluent-bit
+          args:
+            - --workdir=/fluent-bit/etc
+            - --config=/fluent-bit/etc/conf/fluent-bit.conf
+          ports:
+            - name: http
+              containerPort: 2020
+              protocol: TCP
+            - name: http-forward
+              containerPort: 24224
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 12
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/conf
+            - name: data
+              mountPath: /fluent-bit/data
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-fluent-bit-aggregator-config
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,1530 @@
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/010-ServiceAccount-strimzi-cluster-operator.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: strimzi-cluster-operator
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: service-account
+    release: release-name
+    heritage: Helm
+---
+# Source: egeria-base/templates/serviceAccount.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-base
+  namespace: default
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/050-ConfigMap-strimzi-cluster-operator.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: strimzi-cluster-operator
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: logging-config-map
+    release: release-name
+    heritage: Helm
+data:
+  log4j2.properties: |
+    name = COConfig
+    monitorInterval = 30
+
+    appender.console.type = Console
+    appender.console.name = STDOUT
+    appender.console.layout.type = PatternLayout
+    appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
+
+    rootLogger.level = ${env:STRIMZI_LOG_LEVEL:-INFO}
+    rootLogger.appenderRefs = stdout
+    rootLogger.appenderRef.console.ref = STDOUT
+
+    # Kafka AdminClient logging is a bit noisy at INFO level
+    logger.kafka.name = org.apache.kafka
+    logger.kafka.level = WARN
+
+    # Zookeeper is very verbose even on INFO level -> We set it to WARN by default
+    logger.zookeepertrustmanager.name = org.apache.zookeeper
+    logger.zookeepertrustmanager.level = WARN
+
+    # Keeps separate level for Netty logging -> to not be changed by the root logger
+    logger.netty.name = io.netty
+    logger.netty.level = INFO
+
+    # Keeps separate log level for OkHttp client
+    logger.okhttp3.name = okhttp3
+    logger.okhttp3.level = INFO
+---
+# Source: egeria-base/templates/egeria-autostart.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-autostart
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  # Server autostart
+  # When initially created this is set to the null list - so no servers are auto started.
+  # However after configuration completes, we will set this via a job,
+  # STARTUP_SERVER_LIST: mds1,view1
+  STARTUP_SERVER_LIST: ""
+---
+# Source: egeria-base/templates/env.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-env
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  # Disables strict checking by egeria of TLS certs. Needed for self-signed
+  STRICT_SSL: "false"
+  EGERIA_ENDPOINT: https://release-name-platform:9443
+  EGERIA_USER: garygeeke
+  EGERIA_COHORT: mds
+  KAFKA_ENDPOINT: release-name-strimzi-kafka-bootstrap:9092
+  EGERIA_SERVER: mds1
+  VIEW_SERVER: view1
+  EGERIA_PRESENTATIONSERVER_SERVER_org: "{\"remoteServerName\":\"view1\",\"remoteURL\":\"https://release-name-platform:9443\"}"
+  EGERIA_PRESENTATIONSERVER_REJECTUNAUTHORIZED_FOR_OMAG: "false"
+  BASE_TOPIC_NAME: egeria.omag
+  # Server autostart
+  POSTCONFIG_STARTUP_SERVER_LIST: mds1,view1
+  STARTUP_CONFIGMAP: release-name-autostart
+  LOADER_PATH: /extlib,/deployments/server/extralib,/deployments/server/lib
+  # Additional values inserted by user
+---
+# Source: egeria-base/templates/extlib.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+
+# This configmap is used to load additional libraries such as
+# connectors into the loader path for egeria
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: extlib
+  name: release-name-extlib
+---
+# Source: egeria-base/templates/scripts.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: scripts
+  name: release-name-scripts-configmap
+data:
+  config-egeria.sh: "#!/usr/bin/env bash\n\n# SPDX-License-Identifier: Apache-2.0\n#
+    Copyright Contributors to the Egeria project.\n\n# Script will be run by k8s as
+    part of our initialization job.\n# Assumed here - platform up & responding to REST
+    api, plus Kafka is available\n\n# Note - expect to port this to python, aligned
+    with our notebook configuration\n# - this will facilitate error handling (vs very
+    verbose scripting). Groovy an alternative\n# Initial a version a script to get the
+    basics working\n\n# exit when any command fails\nset -e\n\n# Create the post data
+    for the event bus according to \n# kafka security (KAFKA_SECURITY_ENABLED) and consumer
+    group id (KAFKA_CONSUMER_GROUP_ID)\n# inspired by https://stackoverflow.com/a/17032673/20379936\nconsumer=$(jq
+    -n --arg bootstrap.servers \"${KAFKA_ENDPOINT}\" '$ARGS.named')\nproducer=$(jq -n
+    --arg bootstrap.servers \"${KAFKA_ENDPOINT}\" '$ARGS.named')\n\nif [ \"${KAFKA_SECURITY_ENABLED}\"
+    = \"true\" ]; then\n  consumer=$(echo $consumer | \\\n    jq --arg security.protocol
+    \"${KAFKA_SECURITY_PROTOCOL}\" \\\n    --arg ssl.keystore.location \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"
+    \\\n    --arg ssl.keystore.password \"${KAFKA_SECURITY_KEYSTORE_PASSWORD}\" \\\n
+    \   --arg ssl.truststore.location \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\" \\\n
+    \   --arg ssl.truststore.password \"${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\" \\\n
+    \   '. += $ARGS.named')\n  producer=$(echo $producer | \\\n    jq --arg security.protocol
+    \"${KAFKA_SECURITY_PROTOCOL}\" \\\n    --arg ssl.keystore.location \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"
+    \\\n    --arg ssl.keystore.password \"${KAFKA_SECURITY_KEYSTORE_PASSWORD}\" \\\n
+    \   --arg ssl.truststore.location \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\" \\\n
+    \   --arg ssl.truststore.password \"${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\" \\\n
+    \   '. += $ARGS.named')\nfi\n\nif [ ! -z \"${KAFKA_CONSUMER_GROUP_ID}\" ]; then\n
+    \ consumer=$(echo $consumer | jq --arg group.id \"${KAFKA_CONSUMER_GROUP_ID}\" '.
+    += $ARGS.named')\nfi\n\npostData=$(jq -n --argjson producer \"$producer\" \\\n  --argjson
+    consumer \"$consumer\" \\\n  '$ARGS.named')\n\nprintf -- \"-- Needed environment
+    variables from egeria-base --\\n\"\nprintf \"EGERIA_ENDPOINT=%s\\n\" \"${EGERIA_ENDPOINT}\"\nprintf
+    \"EGERIA_USER=%s\\n\" \"${EGERIA_USER}\"\nprintf \"EGERIA_SERVER=%s\\n\" \"${EGERIA_SERVER}\"\nprintf
+    \"BASE_TOPIC_NAME=%s\\n\" \"${BASE_TOPIC_NAME}\"\nprintf \"EGERIA_COHORT=%s\\n\"
+    \"${EGERIA_COHORT}\"\nprintf \"VIEW_SERVER=%s\\n\" \"${VIEW_SERVER}\"\nprintf \"STARTUP_CONFIGMAP=%s\\n\"
+    \"${STARTUP_CONFIGMAP}\"\nprintf \"POSTCONFIG_STARTUP_SERVER_LIST=%s\\n\" \"${POSTCONFIG_STARTUP_SERVER_LIST}\"\nprintf
+    \"KAFKA_ENDPOINT=%s\\n\" \"${KAFKA_ENDPOINT}\"\nif [ \"${KAFKA_SECURITY_ENABLED}\"
+    = \"true\" ]; then\n  printf \"KAFKA_SECURITY_PROTOCOL=%s\\n\" \"${KAFKA_SECURITY_PROTOCOL}\"\n
+    \ printf \"KAFKA_SECURITY_KEYSTORE_LOCATION=%s\\n\" \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"\n
+    \ printf \"KAFKA_SECURITY_KEYSTORE_PASSWORD=%s\\n\" \"\\${KAFKA_SECURITY_KEYSTORE_PASSWORD}\"\n
+    \ printf \"KAFKA_SECURITY_TRUSTSTORE_LOCATION=%s\\n\" \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\"\n
+    \ printf \"KAFKA_SECURITY_TRUSTSTORE_PASSWORD=%s\\n\" \"\\${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\"\nfi\nprintf
+    -- \"-- End of Needed environment variables --\\n\\n\"\n\nprintf -- \"-- Configuring
+    platform with required servers\\n\"\n\n\n# Set the URL root\nprintf \"\\n\\n > Setting
+    server URL root:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/server-url-root?url=${EGERIA_ENDPOINT}\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Setting server
+    URL root successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting the URL root
+    failed.\\n\"\n\texit 1\nfi\n\n# Setup the event bus\nprintf \"\\n\\n > Setting up
+    event bus:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic admin:admin
+    \\\n  --header \"Content-Type: application/json\" \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/event-bus?topicURLRoot=${BASE_TOPIC_NAME}\"
+    \\\n  --data \"$postData\" | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n
+    \ printf \"Setting up event bus successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting
+    up event bus failed.\\n\"\n\texit 1\nfi\n\n# Enable all the access services (we
+    will adjust this later)\nprintf \"\\n\\n > Enabling all access services:\\n\"\nRC=$(curl
+    -k -s -o /dev/null -w \"%{http_code}\" --basic admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/access-services?serviceMode=ENABLED\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Enabling all access
+    services successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nEnabling all access
+    services failed.\\n\"\n\texit 1\nfi\n\n# Use a local graph repo\nprintf \"\\n\\n
+    > Use a local graph repo:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\"
+    --basic admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/local-repository/mode/local-graph-repository\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Using local graph
+    repo successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nUsing local graph repo
+    failed.\\n\"\n\texit 1\nfi\n\n# Configure the cohort membership\nprintf \"\\n\\n
+    > Configuring cohort membership:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\"
+    --basic admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/cohorts/${EGERIA_COHORT}\"
+    | cut -d \"}\" -f2)\n\t\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Configuring
+    cohort membership successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nConfiguring
+    cohort membership failed.\\n\"\n\texit 1\nfi\n\n# Start up the server\nprintf \"\\n\\n
+    > Starting the server:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST --max-time 900 \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_SERVER}/instance\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Starting the server
+    successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nStarting the server failed.\\n\"\n\texit
+    1\nfi\n\n# --- Now the view server\n\n# Set the URL root\nprintf \"\\n\\n > Setting
+    view server URL root:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/server-url-root?url=${EGERIA_ENDPOINT}\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Setting view server
+    URL root successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting view server
+    URL root failed.\\n\"\n\texit 1\nfi\n\n# Setup the event bus\nprintf \"\\n\\n >
+    Setting up event bus:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/event-bus?topicURLRoot=${BASE_TOPIC_NAME}\"
+    \\\n  --data \"$postData\" | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n
+    \ printf \"Setting up event bus successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting
+    up event bus failed.\\n\"\n\texit 1\nfi\n\n# Set as view server\nprintf \"\\n\\n
+    > Set as view server:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/server-type?typeName=View%20Server\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Setting as view
+    server successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting as view server
+    failed.\\n\"\n\texit 1\nfi\n\n# Configure the view server cohort membership\nprintf
+    \"\\n\\n > Configuring cohort membership:\\n\"\n\nRC=$(curl -k -s -o /dev/null -w
+    \"%{http_code}\" --basic admin:admin -X POST \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/cohorts/${EGERIA_COHORT}\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Configuring cohort
+    membership successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nConfiguring cohort
+    membership failed.\\n\"\n\texit 1\nfi\n\n# Configure the view services\nprintf \"\\n\\n
+    > Setting up Glossary Author:\\n\"\n\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\"
+    --basic admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n
+    \ \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/view-services/glossary-author\"
+    \\\n  --data @- << EOF | cut -d \"}\" -f2\n{\n  \"class\": \"ViewServiceConfig\",\n
+    \ \"omagserverPlatformRootURL\": \"${EGERIA_ENDPOINT}\",\n  \"omagserverName\" :
+    \"${EGERIA_SERVER}\"\n}\nEOF\n\n)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Setting
+    up Glossary Author successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nSetting
+    up Glossary Author failed.\\n\"\n\texit 1\nfi\n\n# Setting up TEX\nprintf \"\\n\\n
+    > Setting up TEX:\\n\"\n\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/view-services/tex\"
+    \\\n  --data @- << EOF | cut -d \"}\" -f2\n{\n  \"class\":\"IntegrationViewServiceConfig\",\n
+    \ \"viewServiceAdminClass\":\"org.odpi.openmetadata.viewservices.tex.admin.TexViewAdmin\",\n
+    \ \"viewServiceFullName\":\"Type Explorer\",\n  \"viewServiceOperationalStatus\":\"ENABLED\",\n
+    \ \"omagserverPlatformRootURL\": \"UNUSED\",\n  \"omagserverName\" : \"UNUSED\",\n
+    \ \"resourceEndpoints\" : [\n    {\n      \"class\"              : \"ResourceEndpointConfig\",\n
+    \     \"resourceCategory\"   : \"Platform\",\n      \"description\"        : \"Platform\",\n
+    \     \"platformName\"       : \"platform\",\n      \"platformRootURL\"    : \"${EGERIA_ENDPOINT}\"\n
+    \   },\n    {\n      \"class\"              : \"ResourceEndpointConfig\",\n      \"resourceCategory\"
+    \  : \"Server\",\n      \"serverInstanceName\" : \"${EGERIA_SERVER}\",\n      \"description\"
+    \       : \"Server\",\n      \"platformName\"       : \"platform\",\n      \"serverName\"
+    \        : \"${EGERIA_SERVER}\"\n    }\n  ]\n}\nEOF\n\n)\n\nif [ \"${RC}\" -eq 200
+    ]; then\n  printf \"Setting up TEX successful.\\n\"\n  unset RC\nelse\n\tprintf
+    \"\\n\\nSetting up TEX failed.\\n\"\n\texit 1\nfi\n\n# Setting up REX\nprintf \"\\n\\n
+    > Setting up REX:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/view-services/rex\"
+    \\\n  --data @- << EOF | cut -d \"}\" -f2\n{\n  \"class\":\"IntegrationViewServiceConfig\",\n
+    \ \"viewServiceAdminClass\":\"org.odpi.openmetadata.viewservices.rex.admin.RexViewAdmin\",\n
+    \ \"viewServiceFullName\":\"Repository Explorer\",\n  \"viewServiceOperationalStatus\":\"ENABLED\",\n
+    \ \"omagserverPlatformRootURL\": \"UNUSED\",\n  \"omagserverName\" : \"UNUSED\",\n
+    \ \"resourceEndpoints\" : [\n    {\n\t\t\t\"class\"              : \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"
+    \  : \"Platform\",\n\t\t\t\"description\"        : \"Platform\",\n\t\t\t\"platformName\"
+    \      : \"platform\",\n\t\t\t\"platformRootURL\"    : \"${EGERIA_ENDPOINT}\"\n
+    \   },\n\t\t{\n\t\t\t\"class\"              : \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"
+    \  : \"Server\",\n\t\t\t\"serverInstanceName\" : \"${EGERIA_SERVER}\",\n\t\t\t\"description\"
+    \       : \"Server\",\n\t\t\t\"platformName\"       : \"platform\",\n\t\t\t\"serverName\"
+    \        : \"${EGERIA_SERVER}\"\n    }\n  ]\n}\nEOF\n\n)\n\nif [ \"${RC}\" -eq 200
+    ]; then\n  printf \"Setting up REX successful.\\n\"\n  unset RC\nelse\n\tprintf
+    \"\\n\\nSetting up REX failed.\\n\"\n\texit 1\nfi\n\n# Setting up DINO\nprintf \"\\n\\n
+    > Setting up DINO:\\n\"\n\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic
+    admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/view-services/dino\"
+    \\\n  --data @- << EOF | cut -d \"}\" -f2\n{\n  \"class\":\"IntegrationViewServiceConfig\",\n
+    \ \"viewServiceAdminClass\":\"org.odpi.openmetadata.viewservices.dino.admin.DinoViewAdmin\",\n
+    \ \"viewServiceFullName\":\"Dino\",\n  \"viewServiceOperationalStatus\":\"ENABLED\",\n
+    \ \"omagserverPlatformRootURL\": \"UNUSED\",\n  \"omagserverName\" : \"UNUSED\",\n
+    \ \"resourceEndpoints\" : [\n    {\n\t\t\t\"class\"              : \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"
+    \  : \"Platform\",\n\t\t\t\"description\"        : \"Platform\",\n\t\t\t\"platformName\"
+    \      : \"platform\",\n\t\t\t\"platformRootURL\"    : \"${EGERIA_ENDPOINT}\"\n
+    \   },\n    {\n\t\t\t\"class\"              : \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"
+    \  : \"Server\",\n\t\t\t\"serverInstanceName\" : \"${EGERIA_SERVER}\",\n\t\t\t\"description\"
+    \       : \"Server\",\n\t\t\t\"platformName\"       : \"platform\",\n\t\t\t\"serverName\"
+    \        : \"${EGERIA_SERVER}\"\n    },\n    {\n\t\t\t\"class\"              : \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"
+    \  : \"Server\",\n\t\t\t\"serverInstanceName\" : \"${VIEW_SERVER}\",\n\t\t\t\"description\"
+    \       : \"Server\",\n\t\t\t\"platformName\"       : \"platform\",\n\t\t\t\"serverName\"
+    \        : \"${VIEW_SERVER}\"\n    }\n  ]\n}\nEOF\n\n)\n\nif [ \"${RC}\" -eq 200
+    ]; then\n  printf \"Setting up DINO successful.\\n\"\n  unset RC\nelse\n\tprintf
+    \"\\n\\nSetting up DINO failed.\\n\"\n\texit 1\nfi\n\n# Setting up Server Author\nprintf
+    \"\\n\\n > Setting up Server Author:\\n\"\n\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\"
+    --basic admin:admin -X POST \\\n  --header \"Content-Type: application/json\" \\\n
+    \ \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/view-services/server-author\"
+    \\\n  --data @- << EOF | cut -d \"}\" -f2\n{\n\t\"class\":\"IntegrationViewServiceConfig\",\n\t\"viewServiceAdminClass\":\"org.odpi.openmetadata.viewservices.serverauthor.admin.ServerAuthorViewAdmin\",\n\t\"viewFullServiceName\":\"ServerAuthor\",\n\t\"viewServiceOperationalStatus\":\"ENABLED\",\n\t\"omagserverPlatformRootURL\":
+    \"${EGERIA_ENDPOINT}\",\n\t\"resourceEndpoints\" : [\n\t\t{\n\t\t\t\"class\"              :
+    \"ResourceEndpointConfig\",\n\t\t\t\"resourceCategory\"   : \"Platform\",\n\t\t\t\"description\"
+    \       : \"Platform\",\n\t\t\t\"platformName\"       : \"platform\",\n\t\t\t\"platformRootURL\"
+    \   : \"${EGERIA_ENDPOINT}\"\n\t\t}\n\t]\n}\nEOF\n\n)\n\nif [ \"${RC}\" -eq 200
+    ]; then\n  printf \"Setting up Server Author successful.\\n\"\n  unset RC\nelse\n\tprintf
+    \"\\n\\nSetting up Server Author failed.\\n\"\n\texit 1\nfi\n\n# Start up the view
+    server\nprintf \"\\n\\n > Starting the view server:\\n\"\n\nRC=$(curl -k -s -o /dev/null
+    -w \"%{http_code}\" --basic admin:admin -X POST --max-time 900 \\\n  \"${EGERIA_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${VIEW_SERVER}/instance\"
+    | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Starting the view
+    server successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nStarting the view server
+    failed.\\n\"\n\texit 1\nfi\n\nprintf -- \"-- End of configuration\\n\"\nexit 0\n"
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/020-ClusterRole-strimzi-cluster-operator-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-namespaced
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role
+    release: release-name
+    heritage: Helm
+rules:
+# Resources in this role are used by the operator based on an operand being deployed in some namespace. When needed, you
+# can deploy the operator as a cluster-wide operator. But grant the rights listed in this role only on the namespaces
+# where the operands will be deployed. That way, you can limit the access the operator has to other namespaces where it
+# does not manage any clusters.
+- apiGroups:
+  - "rbac.authorization.k8s.io"
+  resources:
+    # The cluster operator needs to access and manage rolebindings to grant Strimzi components cluster permissions
+  - rolebindings
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - "rbac.authorization.k8s.io"
+  resources:
+    # The cluster operator needs to access and manage roles to grant the entity operator permissions
+  - roles
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+    # The cluster operator needs to access and delete pods, this is to allow it to monitor pod health and coordinate rolling updates
+  - pods
+    # The cluster operator needs to access and manage service accounts to grant Strimzi components cluster permissions
+  - serviceaccounts
+    # The cluster operator needs to access and manage config maps for Strimzi components configuration
+  - configmaps
+    # The cluster operator needs to access and manage services and endpoints to expose Strimzi components to network traffic
+  - services
+  - endpoints
+    # The cluster operator needs to access and manage secrets to handle credentials
+  - secrets
+    # The cluster operator needs to access and manage persistent volume claims to bind them to Strimzi components for persistent data
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - "apps"
+  resources:
+    # The cluster operator needs to access and manage deployments to run deployment based Strimzi components
+  - deployments
+  - deployments/scale
+  - deployments/status
+    # The cluster operator needs to access and manage stateful sets to run stateful sets based Strimzi components
+  - statefulsets
+    # The cluster operator needs to access replica-sets to manage Strimzi components and to determine error states
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - ""   # legacy core events api, used by topic operator
+  - "events.k8s.io" # new events api, used by cluster operator
+  resources:
+    # The cluster operator needs to be able to create events and delegate permissions to do so
+  - events
+  verbs:
+  - create
+- apiGroups:
+    # Kafka Connect Build on OpenShift requirement
+  - build.openshift.io
+  resources:
+  - buildconfigs
+  - buildconfigs/instantiate
+  - builds
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+    # The cluster operator needs to access and manage network policies to lock down communication between Strimzi components
+  - networkpolicies
+    # The cluster operator needs to access and manage ingresses which allow external access to the services in a cluster
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - route.openshift.io
+  resources:
+    # The cluster operator needs to access and manage routes to expose Strimzi components for external access
+  - routes
+  - routes/custom-host
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - image.openshift.io
+  resources:
+  # The cluster operator needs to verify the image stream when used for Kafka Connect image build
+  - imagestreams
+  verbs:
+  - get
+- apiGroups:
+  - policy
+  resources:
+    # The cluster operator needs to access and manage pod disruption budgets this limits the number of concurrent disruptions
+    # that a Strimzi component experiences, allowing for higher availability
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/021-ClusterRole-strimzi-cluster-operator-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-global
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - "rbac.authorization.k8s.io"
+  resources:
+    # The cluster operator needs to create and manage cluster role bindings in the case of an install where a user
+    # has specified they want their cluster role bindings generated
+  - clusterrolebindings
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - storage.k8s.io
+  resources:
+    # The cluster operator requires "get" permissions to view storage class details
+    # This is because only a persistent volume of a supported storage class type can be resized
+  - storageclasses
+  verbs:
+  - get
+- apiGroups:
+    - ""
+  resources:
+    # The cluster operator requires "list" permissions to view all nodes in a cluster
+    # The listing is used to determine the node addresses when NodePort access is configured
+    # These addresses are then exposed in the custom resource states
+  - nodes
+  verbs:
+  - list
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/022-ClusterRole-strimzi-cluster-operator-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-leader-election
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+    # The cluster operator needs to access and manage leases for leader election
+    # The "create" verb cannot be used with "resourceNames"
+  - leases
+  verbs:
+  - create
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+    # The cluster operator needs to access and manage leases for leader election
+  - leases
+  resourceNames:
+    # The default RBAC files give the operator only access to the Lease resource names strimzi-cluster-operator
+    # If you want to use another resource name or resource namespace, you have to configure the RBAC resources accordingly
+  - strimzi-cluster-operator
+  verbs:
+  - get
+  - list
+  - watch
+  - delete
+  - patch
+  - update
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/023-ClusterRole-strimzi-cluster-operator-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-watched
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role
+    release: release-name
+    heritage: Helm
+rules:
+# Resources in this role are being watched by the operator. When operator is deployed as cluster-wide, these permissions
+# need to be granted to the operator on a cluster wide level as well, even if the operands will be deployed only in
+# few of the namespaces in given cluster. This is required to set up the Kubernetes watches and informers.
+# Note: The rights included in this role might change in the future
+- apiGroups:
+  - ""
+  resources:
+    # The cluster operator needs to access and delete pods, this is to allow it to monitor pod health and coordinate rolling updates
+  - pods
+  verbs:
+  - watch
+  - list
+- apiGroups:
+  - "kafka.strimzi.io"
+  resources:
+  # The cluster operator runs the KafkaAssemblyOperator, which needs to access and manage Kafka resources
+  - kafkas
+  - kafkas/status
+    # The cluster operator runs the KafkaAssemblyOperator, which needs to access and manage KafkaNodePool resources
+  - kafkanodepools
+  - kafkanodepools/status
+  # The cluster operator runs the KafkaConnectAssemblyOperator, which needs to access and manage KafkaConnect resources
+  - kafkaconnects
+  - kafkaconnects/status
+  # The cluster operator runs the KafkaConnectorAssemblyOperator, which needs to access and manage KafkaConnector resources
+  - kafkaconnectors
+  - kafkaconnectors/status
+  # The cluster operator runs the KafkaMirrorMakerAssemblyOperator, which needs to access and manage KafkaMirrorMaker resources
+  - kafkamirrormakers
+  - kafkamirrormakers/status
+  # The cluster operator runs the KafkaBridgeAssemblyOperator, which needs to access and manage BridgeMaker resources
+  - kafkabridges
+  - kafkabridges/status
+  # The cluster operator runs the KafkaMirrorMaker2AssemblyOperator, which needs to access and manage KafkaMirrorMaker2 resources
+  - kafkamirrormaker2s
+  - kafkamirrormaker2s/status
+  # The cluster operator runs the KafkaRebalanceAssemblyOperator, which needs to access and manage KafkaRebalance resources
+  - kafkarebalances
+  - kafkarebalances/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - "core.strimzi.io"
+  resources:
+  # The cluster operator uses StrimziPodSets to manage the Kafka and ZooKeeper pods
+  - strimzipodsets
+  - strimzipodsets/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/030-ClusterRole-strimzi-kafka-broker.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-kafka-broker
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: broker-role
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - ""
+  resources:
+    # The Kafka Brokers require "get" permissions to view the node they are on
+    # This information is used to generate a Rack ID that is used for High Availability configurations
+  - nodes
+  verbs:
+  - get
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/031-ClusterRole-strimzi-entity-operator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-entity-operator
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: entity-operator-role
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - "kafka.strimzi.io"
+  resources:
+    # The entity operator runs the KafkaTopic assembly operator, which needs to access and manage KafkaTopic resources
+  - kafkatopics
+  - kafkatopics/status
+    # The entity operator runs the KafkaUser assembly operator, which needs to access and manage KafkaUser resources
+  - kafkausers
+  - kafkausers/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - patch
+  - update
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+    # The entity operator needs to be able to create events
+  - create
+- apiGroups:
+  - ""
+  resources:
+    # The entity operator user-operator needs to access and manage secrets to store generated credentials
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - patch
+  - update
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/033-ClusterRole-strimzi-kafka-client.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-kafka-client
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: client-role
+    release: release-name
+    heritage: Helm
+rules:
+- apiGroups:
+  - ""
+  resources:
+    # The Kafka clients (Connect, Mirror Maker, etc.) require "get" permissions to view the node they are on
+    # This information is used to generate a Rack ID (client.rack option) that is used for consuming from the closest
+    # replicas when enabled
+  - nodes
+  verbs:
+  - get
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/021-ClusterRoleBinding-strimzi-cluster-operator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role-binding
+    release: release-name
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-cluster-operator-global
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/030-ClusterRoleBinding-strimzi-cluster-operator-kafka-broker-delegation.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-kafka-broker-delegation
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: broker-role-binding
+    release: release-name
+    heritage: Helm
+# The Kafka broker cluster role must be bound to the cluster operator service account so that it can delegate the cluster role to the Kafka brokers.
+# This must be done to avoid escalating privileges which would be blocked by Kubernetes.
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-kafka-broker
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/033-ClusterRoleBinding-strimzi-cluster-operator-kafka-client-delegation.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-kafka-client-delegation
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: client-role-binding
+    release: release-name
+    heritage: Helm
+# The Kafka clients cluster role must be bound to the cluster operator service account so that it can delegate the
+# cluster role to the Kafka clients using it for consuming from closest replica.
+# This must be done to avoid escalating privileges which would be blocked by Kubernetes.
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-kafka-client
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/templates/rbac.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-base-api-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints","pods","services","configmaps"]
+    verbs: ["get", "list", "watch","patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get"]
+---
+# Source: egeria-base/templates/rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-base-strimzi-role
+  namespace: default
+rules:
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["kafkas", "kafkas/status", "kafkatopics", "kafkatopics/status"]
+    verbs: ["get"]
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/020-RoleBinding-strimzi-cluster-operator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role-binding
+    release: release-name
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-cluster-operator-namespaced
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/022-RoleBinding-strimzi-cluster-operator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-leader-election
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role-binding
+    release: release-name
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-cluster-operator-leader-election
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/023-RoleBinding-strimzi-cluster-operator.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-watched
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: role-binding
+    release: release-name
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-cluster-operator-watched
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/031-RoleBinding-strimzi-cluster-operator-entity-operator-delegation.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-entity-operator-delegation
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: entity-operator-role-binding
+    release: release-name
+    heritage: Helm
+# The Entity Operator cluster role must be bound to the cluster operator service account so that it can delegate the cluster role to the Entity Operator.
+# This must be done to avoid escalating privileges which would be blocked by Kubernetes.
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: strimzi-entity-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: egeria-base/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-base-api-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: egeria-base
+    namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: egeria-base-api-role
+---
+# Source: egeria-base/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-base-strimzi-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: egeria-base
+    namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: egeria-base-strimzi-role
+---
+# Source: egeria-base/templates/platform.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: platform
+  name: release-name-platform
+
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9443
+      targetPort: 9443
+  
+  selector:
+    app.kubernetes.io/name: egeria-base
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: platform
+...
+---
+# Source: egeria-base/templates/presentation.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: presentation
+  name: release-name-presentation
+
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8091
+      targetPort: 8091
+  selector:
+    app.kubernetes.io/name: egeria-base
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: presentation
+...
+---
+# Source: egeria-base/charts/strimzi-kafka-operator/templates/060-Deployment-strimzi-cluster-operator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strimzi-cluster-operator
+  namespace: default
+  labels:
+    app: strimzi
+    chart: strimzi-kafka-operator-0.37.0
+    component: deployment
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: strimzi-cluster-operator
+      strimzi.io/kind: cluster-operator
+  template:
+    metadata:
+      labels:
+        name: strimzi-cluster-operator
+        strimzi.io/kind: cluster-operator
+    spec:
+      serviceAccountName: strimzi-cluster-operator
+      volumes:
+        - name: strimzi-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: co-config-volume
+          configMap:
+            name: strimzi-cluster-operator
+      containers:
+        - name: strimzi-cluster-operator
+          image: quay.io/strimzi/operator:0.37.0
+          ports:
+            - containerPort: 8080
+              name: http
+          args:
+            - /opt/strimzi/bin/cluster_operator_run.sh
+          volumeMounts:
+            - name: strimzi-tmp
+              mountPath: /tmp
+            - name: co-config-volume
+              mountPath: /opt/strimzi/custom-config/
+          env:
+            - name: STRIMZI_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STRIMZI_FULL_RECONCILIATION_INTERVAL_MS
+              value: "120000"
+            - name: STRIMZI_OPERATION_TIMEOUT_MS
+              value: "300000"
+            - name: STRIMZI_DEFAULT_TLS_SIDECAR_ENTITY_OPERATOR_IMAGE
+              value: quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_DEFAULT_KAFKA_EXPORTER_IMAGE
+              value: quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_DEFAULT_CRUISE_CONTROL_IMAGE
+              value: quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_KAFKA_IMAGES
+              value: |                 
+                3.4.0=quay.io/strimzi/kafka:0.37.0-kafka-3.4.0
+                3.4.1=quay.io/strimzi/kafka:0.37.0-kafka-3.4.1
+                3.5.0=quay.io/strimzi/kafka:0.37.0-kafka-3.5.0
+                3.5.1=quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_KAFKA_CONNECT_IMAGES
+              value: |                 
+                3.4.0=quay.io/strimzi/kafka:0.37.0-kafka-3.4.0
+                3.4.1=quay.io/strimzi/kafka:0.37.0-kafka-3.4.1
+                3.5.0=quay.io/strimzi/kafka:0.37.0-kafka-3.5.0
+                3.5.1=quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_KAFKA_MIRROR_MAKER_IMAGES
+              value: |                 
+                3.4.0=quay.io/strimzi/kafka:0.37.0-kafka-3.4.0
+                3.4.1=quay.io/strimzi/kafka:0.37.0-kafka-3.4.1
+                3.5.0=quay.io/strimzi/kafka:0.37.0-kafka-3.5.0
+                3.5.1=quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES
+              value: |                 
+                3.4.0=quay.io/strimzi/kafka:0.37.0-kafka-3.4.0
+                3.4.1=quay.io/strimzi/kafka:0.37.0-kafka-3.4.1
+                3.5.0=quay.io/strimzi/kafka:0.37.0-kafka-3.5.0
+                3.5.1=quay.io/strimzi/kafka:0.37.0-kafka-3.5.1
+            - name: STRIMZI_DEFAULT_TOPIC_OPERATOR_IMAGE
+              value: quay.io/strimzi/operator:0.37.0
+            - name: STRIMZI_DEFAULT_USER_OPERATOR_IMAGE
+              value: quay.io/strimzi/operator:0.37.0
+            - name: STRIMZI_DEFAULT_KAFKA_INIT_IMAGE
+              value: quay.io/strimzi/operator:0.37.0
+            - name: STRIMZI_DEFAULT_KAFKA_BRIDGE_IMAGE
+              value: quay.io/strimzi/kafka-bridge:0.26.1
+            - name: STRIMZI_DEFAULT_KANIKO_EXECUTOR_IMAGE
+              value: quay.io/strimzi/kaniko-executor:0.37.0
+            - name: STRIMZI_DEFAULT_MAVEN_BUILDER
+              value: quay.io/strimzi/maven-builder:0.37.0
+            - name: STRIMZI_OPERATOR_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            
+            - name: STRIMZI_FEATURE_GATES
+              value: ""
+            - name: STRIMZI_LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: STRIMZI_LEADER_ELECTION_LEASE_NAME
+              value: "strimzi-cluster-operator"
+            - name: STRIMZI_LEADER_ELECTION_LEASE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STRIMZI_LEADER_ELECTION_IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 384Mi
+            requests:
+              cpu: 200m
+              memory: 384Mi
+---
+# Source: egeria-base/templates/presentation.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egeria-base-presentation
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: presentation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egeria-base
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: presentation
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: egeria-base
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: presentation
+    spec:
+      serviceAccountName: egeria-base
+      containers:
+        - name: presentation
+          image: "quay.io/\
+                  odpi/\
+                  egeria-react-ui\
+                  :3.10.0"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-env
+          ports:
+            - containerPort: 8091
+          # No other checks until this passes
+          startupProbe:
+            tcpSocket:
+              port: 8091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 15
+          # Is pod ready to service network requests - it will pause (for replicas, others will take the load)
+          readinessProbe:
+            httpGet:
+              path: /org
+              port: 8091
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          # Is pod doing useful work - if not we will restart it
+          livenessProbe:
+            httpGet:
+              path: /org
+              port: 8091
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {}
+      restartPolicy: Always
+
+...
+---
+# Source: egeria-base/templates/platform.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: egeria-base-platform
+  labels:
+    app.kubernetes.io/name: egeria-base
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  serviceName: release-name-platform
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egeria-base
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: egeria-base
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/component: platform
+    spec:
+      serviceAccountName: egeria-base
+
+      containers:
+        - name: egeria
+          image: "quay.io/\
+                  odpi/\
+                  egeria\
+                  :4.3"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-env
+            - configMapRef:
+                name: release-name-autostart
+          env:
+          - name: JAVA_DEBUG
+          
+            value: "false"
+          
+          ports:
+            - containerPort: 9443
+          
+          # No other checks until this passes
+          startupProbe:
+            tcpSocket:
+              port: 9443
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 25
+          # Is pod ready to service network requests - it will pause (for replicas, others will take the load)
+          readinessProbe:
+            httpGet:
+              path: /open-metadata/platform-services/users/garygeeke/server-platform/origin
+              port: 9443
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          # Is pod doing useful work - if not we will restart it
+          livenessProbe:
+            httpGet:
+              path: /open-metadata/platform-services/users/garygeeke/server-platform/origin
+              port: 9443
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {}
+          volumeMounts:
+          
+            - mountPath: "/deployments/data"
+              # NO need to include release name in template - included as a SS
+              name: data
+          
+            - name: extlib
+              mountPath: /extlib
+            - mountPath:  /deployments/server/extralib
+              name: egeria-connector-volume
+              readOnly: true
+      restartPolicy: Always
+      volumes:
+        - name: extlib
+          configMap:
+            name: release-name-extlib
+        - name: egeria-connector-volume
+          emptyDir: {}
+      securityContext:
+        {  }
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 8Gi
+  
+...
+---
+# Source: egeria-base/templates/config.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-config
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/name: egeria-base
+
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: egeria-base
+    spec:
+      serviceAccountName: egeria-base
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-egeria
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.3"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE
+              value: release-name-platform
+        - name: wait-for-kafka
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.3"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE
+              value: release-name-strimzi-kafka-bootstrap
+      containers:
+        - name: initialize
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.3"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-env
+          command: [ "/bin/bash" ]
+          args: [ "/scripts/config-egeria.sh" ]
+          volumeMounts:
+          - name: scripts-vol
+            mountPath: /scripts
+      volumes:
+        - name: scripts-vol
+          configMap:
+            name: release-name-scripts-configmap
+  # Keep trying quite a few times to aid in debugging
+  backoffLimit: 60
+---
+# Source: egeria-base/templates/egeria-autostart-job.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-autostart
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: egeria-base-4.3.0
+    app.kubernetes.io/name: egeria-base
+
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: egeria-base
+    spec:
+      serviceAccountName: egeria-base
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-egeria-base-configuration
+          image: "docker.io/bitnami/kubectl:latest"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              printf "Checking the job \"release-name-config\"...\n"
+              until [ "$(kubectl get job release-name-config -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')" = "True" ]; do
+                printf "Waiting for job \"release-name-config\" to complete...\n"
+                sleep 10
+              done
+      containers:
+      - name: initialize
+        image: "docker.io/bitnami/kubectl:latest"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+          - configMapRef:
+              name: release-name-env
+        command:
+        - /bin/bash
+        - -c
+        - |
+          currentValue=$(kubectl get configmaps/release-name-autostart -o jsonpath='{.data.STARTUP_SERVER_LIST}');
+          postconfigStartupServerList=($(echo "${POSTCONFIG_STARTUP_SERVER_LIST}" | tr "," "\n"));
+          tempList=();
+
+          if [[ -z "${postconfigStartupServerList}" ]]; then {
+            printf "POSTCONFIG_STARTUP_SERVER_LIST is empty, nothing to do.\n";
+            exit 0;
+          } fi
+
+          if [[ -z "${currentValue}" ]]; then {
+            printf "Currently Value in the ConfigMaps is empty, patching now with \"%s\"...\n" "${postconfigStartupServerList[*]}";
+            tempList=("${postconfigStartupServerList[@]}");
+          } else {
+            printf "Current values in the ConfigMaps: \n%s\n\n" "${currentValue}";
+            tempList=($(echo "${currentValue}" | tr "," "\n"));
+            
+            for ((i=0; i<"${#postconfigStartupServerList[@]}"; i++)) {
+              if [[ "${currentValue}" == *${postconfigStartupServerList[i]}* ]]; then {
+                printf "Current value already contains \"%s\", skipping...\n" "${postconfigStartupServerList[i]}";
+              } else {
+                tempList+=("${postconfigStartupServerList[i]}");
+              } fi
+            }
+          } fi
+          
+          # make it comma seperated
+          newServers=$(printf '%s,' "${tempList[@]}");
+          unset tempList
+          # remove the trailing comma
+          newServers=${newServers%,};
+
+          printf "Enabling auto-start for following servers: \"%s\"\n" "${newServers}"
+          kubectl patch configmaps/release-name-autostart --type merge -p "{\"data\":{\"STARTUP_SERVER_LIST\":\"${newServers}\"}}";
+          if [[ "$?" -eq 0 ]]; then {
+            printf "Enabling auto-start for the configured servers was successful.\n"
+            exit 0
+          } else {
+            printf "Enabling auto-start for the configured servers has failed.\n"
+            exit 1
+          } fi
+  # Keep trying quite a few times to aid in debugging
+  backoffLimit: 60
+---
+# Source: egeria-base/templates/egeria-autostart.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+---
+# Source: egeria-base/templates/env.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+---
+# Source: egeria-base/templates/kafka-cluster.yaml
+# SPDX-License-Identifier: Apache-2.0
+  # Copyright Contributors to the Egeria project.
+---
+# Source: egeria-base/templates/platform.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+---
+# Source: egeria-base/templates/presentation.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+---
+# Source: egeria-base/templates/kafka-cluster.yaml
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: release-name-strimzi
+spec:
+  kafka:
+    version: 3.5.1
+    replicas: 1
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+
+      - name: external
+        port: 9094
+        type: nodeport
+        tls: false
+        configuration:
+          bootstrap:
+            nodePort: 32000
+          brokers:
+          - broker: 0
+            advertisedHost: localhost
+
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      auto.create.topics.enable: "true"
+    readinessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    livenessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    storage:
+      type: persistent-claim
+      size: 5Gi
+      deleteClaim: true
+  zookeeper:
+    replicas: 1
+    storage:
+      type: persistent-claim
+      size: 1Gi
+      deleteClaim: true
+  entityOperator:
+    topicOperator:
+      reconciliationIntervalSeconds: 5
+    userOperator: 
+      reconciliationIntervalSeconds: 20

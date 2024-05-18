@@ -1,0 +1,242 @@
+---
+# Source: platform-api/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-platform-api-data
+  namespace: default
+  labels:
+    helm.sh/chart: platform-api-v2024.5.3
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: platform-api/templates/license-checker-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-platform-api-license-checker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: appscode:license-checker
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: platform-api/templates/license-reader-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-platform-api-license-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: appscode:license-reader
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: platform-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-platform-api
+  namespace: default
+  labels:
+    helm.sh/chart: platform-api-v2024.5.3
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+---
+# Source: platform-api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-platform-api-headless
+  namespace: default
+  labels:
+    helm.sh/chart: platform-api-v2024.5.3
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # for headless service
+  clusterIP: None
+  # port needed to create SRV records, SRV records have pod DNS name
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  # selector needed to create pods dns name
+  selector:
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+---
+# Source: platform-api/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-platform-api
+  namespace: default
+  labels:
+    helm.sh/chart: platform-api-v2024.5.3
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v2024.5.3"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  podManagementPolicy: "Parallel"
+  serviceName: release-name-platform-api-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-api
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-api
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: default
+      securityContext:
+        {}
+      containers:
+        - name: platform-api
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          image: "ghcr.io/appscode/b3:v2024.5.3"
+          imagePullPolicy: Always
+          args:
+            - api
+          ports:
+            - name: http
+              containerPort: 3003
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+            # wait for cert and nats to be ready
+            initialDelaySeconds: 60
+            failureThreshold: 18
+            periodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+          resources:
+            {}
+          env:
+            - name: B3_CONFIG_SECRET_NAME
+              value: 
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-platform-api-data
+---
+# Source: platform-api/templates/license.yaml
+# if license file is provided, then create a secret for license
+---
+# Source: platform-api/templates/license-checker-cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appscode:license-checker
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+# Get cluster id
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs: ["get"]
+# Issue license
+- apiGroups:
+  - proxyserver.licenses.appscode.com
+  resources:
+  - licenserequests
+  verbs: ["create"]
+# Detect workload/owner of operator pod
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs: ["get"]
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - replicasets
+  verbs: ["get"]
+# Write events in case of license verification failure
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs: ["get", "list", "create", "patch"]
+---
+# Source: platform-api/templates/license-reader-cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appscode:license-reader
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+# Detect license server endpoint for kubedb addons
+- apiGroups:
+  - apiregistration.k8s.io
+  resources:
+  - apiservices
+  verbs: ["get"]
+- nonResourceURLs:
+  - /appscode/license
+  verbs: ["get"]

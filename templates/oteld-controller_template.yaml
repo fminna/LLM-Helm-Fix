@@ -1,0 +1,300 @@
+---
+# Source: oteld-controller/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oteld-controller
+  labels:
+    helm.sh/chart: oteld-controller-0.2.0
+    app.kubernetes.io/name: oteld-controller
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: oteld-controller/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: oteld-controller
+  labels:
+    helm.sh/chart: oteld-controller-0.2.0
+    app.kubernetes.io/name: oteld-controller
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/proxy", "nodes/stats", "nodes/metrics"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services", "secrets", "pods", "nodes", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: [""]
+    resources:
+    - events
+    - namespaces
+    - namespaces/status
+    - nodes
+    - nodes/spec
+    - pods
+    - pods/status
+    - replicationcontrollers
+    - replicationcontrollers/status
+    - resourcequotas
+    - services
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
+    resources:
+    - daemonsets
+    - deployments
+    - replicasets
+    - statefulsets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+  - apiGroups:
+    - extensions
+    resources:
+    - daemonsets
+    - deployments
+    - replicasets
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - batch
+    resources:
+    - jobs
+    - cronjobs
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps.kubeblocks.io
+    resources:
+      - clusterdefinitions
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - apps.kubeblocks.io
+    resources:
+      - clusterdefinitions/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - apps.kubeblocks.io
+    resources:
+      - clusterdefinitions/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - monitor.kubeblocks.io
+    resources:
+      - logsexportersinks
+      - metricsexportersinks
+      - collectordatasources
+      - oteldcollectortemplates
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Source: oteld-controller/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oteld-controller
+  labels:
+    helm.sh/chart: oteld-controller-0.2.0
+    app.kubernetes.io/name: oteld-controller
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: oteld-controller
+subjects:
+  - kind: ServiceAccount
+    name: oteld-controller
+    namespace: default
+---
+# Source: oteld-controller/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "oteld"
+  labels:
+    helm.sh/chart: oteld-controller-0.2.0
+    app.kubernetes.io/name: oteld-controller
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: "oteld"
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oteld-controller
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oteld-controller
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: oteld-controller
+      containers:
+        - name: manager
+          image: "docker.io/kubejocker/kubeblocks-monitor:0.7.0-alpha.11"
+          env:
+            - name: OTELD_NAMESPACE
+              value: default
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - mountPath: /etc/oteld
+              name: manager-config
+      volumes:
+        - name: manager-config
+          configMap:
+            name: oteld-manager-config
+---
+# Source: oteld-controller/templates/mysqlDataSource.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: AppDataSource
+metadata:
+  name: mysql
+spec:
+  clusterName: pea70
+  componentName: mysql
+  containerName: mysql
+  metrics:
+    enabled: true
+    collectionInterval: 15s
+    enabledMetrics:
+      - "global_status"
+      - "global_variables"
+      - "slave_status"
+  logs:
+    enabled: true
+    logCollector:
+      errorlog:
+        include:
+          - "/data/mysql/log/mysqld-error.log"
+      slow:
+        include:
+          - "/data/mysql/log/mysqld-slowquery.log"
+---
+# Source: oteld-controller/templates/collectordatasource.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: CollectorDataSource
+metadata:
+  name: datasource-metrics
+spec:
+  exporterRef:
+    - prometheus
+  type: metrics
+  mode: daemonset
+  collectionInterval: 15s
+  dataSourceList:
+    - name: kubeletstats
+    - name: node
+---
+# Source: oteld-controller/templates/datasource-deployment.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: CollectorDataSource
+metadata:
+  name: datasource-metrics-deployment
+spec:
+  exporterRef:
+    - prometheus
+  type: metrics
+  mode: deployment
+  collectionInterval: 15s
+  dataSourceList:
+    - name: k8s_cluster
+---
+# Source: oteld-controller/templates/lokiexporter.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: LogsExporterSink
+metadata:
+  name: loki
+spec:
+  type: loki
+  lokiConfig:
+    endpoint: "http://loki-gateway/loki/api/v1/push"
+    serviceConnectionCredential: loki-service
+---
+# Source: oteld-controller/templates/prometheusexporter.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: MetricsExporterSink
+metadata:
+  name: prometheus
+spec:
+  type: prometheus
+  prometheusConfig:
+    endpoint: ${env:HOST_IP}:1234
+    serviceConnectionCredential: prometheus-service
+---
+# Source: oteld-controller/templates/daemonsettemplate.yaml
+apiVersion: monitor.kubeblocks.io/v1alpha1
+kind: OTeld
+metadata:
+  name: oteld-collector-template-daemonset
+spec:
+  image: "docker.io/apecloud/oteld:0.0.3-demo"
+  logLevel: debug
+  metricsPort: 6648
+  collectionInterval: 15s
+  resource:
+    requests:
+      cpu: 1000m
+      memory: 1000Mi
+    limits:
+      cpu: 2000m
+      memory: 2000Mi
+  mode: daemonset
+  useConfigMap: true

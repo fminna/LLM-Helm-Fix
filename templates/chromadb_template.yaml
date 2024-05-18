@@ -1,0 +1,212 @@
+---
+# Source: chromadb/templates/config.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chromadb-auth
+  namespace: default
+type: Opaque
+data:
+  token: "YkhhNmxUb0hTbW5jSGhnQVNIMmx3Znkxd3FTRXJyZVU="
+  header: "QXV0aG9yaXphdGlvbg=="
+---
+# Source: chromadb/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-chromadb-log-config
+  namespace: default
+data:
+  log_config.yaml: |-
+    version: 1
+    disable_existing_loggers: False
+    formatters:
+      default:
+        "()": uvicorn.logging.DefaultFormatter
+        format: '%(levelprefix)s [%(asctime)s] %(message)s'
+        use_colors: null
+        datefmt: '%d-%m-%Y %H:%M:%S'
+      access:
+        "()": uvicorn.logging.AccessFormatter
+        format: '%(levelprefix)s [%(asctime)s] %(client_addr)s - "%(request_line)s" %(status_code)s'
+        datefmt: '%d-%m-%Y %H:%M:%S'
+    handlers:
+      default:
+        formatter: default
+        class: logging.StreamHandler
+        stream: ext://sys.stderr
+      access:
+        formatter: access
+        class: logging.StreamHandler
+        stream: ext://sys.stdout
+      console:
+        class: logging.StreamHandler
+        stream: ext://sys.stdout
+        formatter: default
+    loggers:
+      root:
+        level: WARN
+        handlers: [console]
+      chromadb:
+        level: DEBUG
+      uvicorn:
+        level: INFO
+---
+# Source: chromadb/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-chromadb
+  labels:
+    helm.sh/chart: chromadb-0.1.19
+    app.kubernetes.io/name: chromadb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.14"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: chromadb
+    app.kubernetes.io/instance: release-name
+---
+# Source: chromadb/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-chromadb
+  namespace: "default"
+  labels:
+    helm.sh/chart: chromadb-0.1.19
+    app.kubernetes.io/name: chromadb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.14"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: "release-name-chromadb"
+  podManagementPolicy: "Parallel" # This setting means that the StatefulSet controller doesn't block applying changes until the existing Pod is READY.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chromadb
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: chromadb-0.1.19
+        app.kubernetes.io/name: chromadb
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.4.14"
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+        checksum/config: ddef8f89e6a58b6aecf2fc40b3497818c02efbf900715b9d9ffaa344c8dd5487 # Automatically Roll Deployments
+    spec:
+      securityContext: 
+        {}
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: "chromadb"
+          image: "ghcr.io/amikos-tech/chromadb-chart/chroma:0.4.14"
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: IS_PERSISTENT
+              value: "true"
+            - name: PERSIST_DIRECTORY
+              value: "/index_data"
+            - name: ALLOW_RESET
+              value: "false"
+            - name: ANONYMIZED_TELEMETRY
+              value: "false"
+            - name: CHROMA_SERVER_CORS_ALLOW_ORIGINS
+              value: '["*"]'
+            - name: CHROMA_API_IMPL
+              value: "chromadb.api.segment.SegmentAPI"
+            - name: CHROMA_SERVER_HOST
+              value: "0.0.0.0"
+            - name: CHROMA_SERVER_HTTP_PORT
+              value: "8000"
+            - name: CHROMA_SERVER_AUTH_CREDENTIALS
+              valueFrom:
+                secretKeyRef:
+                  key: token
+                  name: chromadb-auth
+            - name: CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER
+              value: chromadb.auth.token.TokenConfigServerAuthCredentialsProvider
+            - name: CHROMA_SERVER_AUTH_PROVIDER
+              value: chromadb.auth.token.TokenAuthServerProvider
+            - name: CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER
+              value: AUTHORIZATION
+          ports:
+            - containerPort: 8000
+              name: http
+          securityContext: 
+              {}
+          volumeMounts:
+            - mountPath: /chroma/log_config.yaml
+              name: log-config
+              subPath: log_config.yaml
+            - mountPath: "/index_data"
+              name: data
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            failureThreshold: 20
+            timeoutSeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            failureThreshold: 40
+            timeoutSeconds: 10
+            periodSeconds: 5
+          startupProbe:
+            tcpSocket:
+              port: 8000
+            failureThreshold: 1000
+            periodSeconds: 5
+            initialDelaySeconds: 10
+      volumes:
+        - name: log-config
+          configMap:
+            name: "release-name-chromadb-log-config"
+            defaultMode: 0644
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Source: chromadb/templates/config.yaml
+---
+---
+# Source: chromadb/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-chromadb-test-connection"
+  labels:
+    helm.sh/chart: chromadb-0.1.19
+    app.kubernetes.io/name: chromadb
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.14"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-chromadb:']
+  restartPolicy: Never

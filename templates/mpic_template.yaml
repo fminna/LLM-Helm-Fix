@@ -1,0 +1,614 @@
+---
+# Source: mpic/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:  
+  name: mpic-release-name
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: mpic
+      release: release-name
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    - ports:      
+      - port: 8080
+        protocol: TCP      
+      - port: 8000
+        protocol: TCP
+      - port: 1667
+        protocol: TCP
+  egress:
+    - to:
+      - ipBlock:
+          cidr: 10.64.138.8/32
+      ports:
+      - protocol: TCP
+        port: 3306
+    - to:
+      - ipBlock:
+          cidr: 10.64.142.7/32
+      ports:
+      - protocol: TCP
+        port: 3306
+---
+# Source: mpic/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:  
+  name: mpic-release-name-secret-config
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  database_password: "ZGJwYXNzdmFsdWU="
+  idp_client_secret: "aWRwY2xpZW50c2VjcmV0"
+---
+# Source: mpic/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mpic-base-config  
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |-     
+    logging:
+      level: trace
+    
+    service:
+      name: mpic
+      port: 8080
+      cors: "*"
+      max_body_size: 100kb
+    
+    database:
+      engine: mysql
+      host: localhost
+      database: mpic
+      username: mpic
+      port: 3306
+    
+    idp:
+      oidc_url: https://idp-test.wikimedia.org/oidc
+      client_id: mpic
+      redirect_uri: http://mpic-next.wikimedia.org/login/callback
+---
+# Source: mpic/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:  
+  name: mpic-release-name-envoy-config-volume
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+data:
+  envoy.yaml: |-
+    admin:
+      access_log:
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+          # Don't write this to stdout/stderr to not send all the requests for metrics from prometheus to logstash.
+          path: /var/log/envoy/admin-access.log
+      address:    
+        pipe:
+          path: /var/run/envoy/admin.sock
+      # Don't apply global connection limits to the admin listener so we can still get metrics when overloaded
+      ignore_global_conn_limit: true
+    layered_runtime:
+      layers:
+        # Limit the total number of allowed active connections per envoy instance.
+        # Envoys configuration best practice "Configuring Envoy as an edge proxy" uses 50k connections
+        # which is still essentially unlimited in our use case.
+        - name: static_layer_0
+          static_layer:
+            overload:
+              global_downstream_max_connections: 50000
+        # Include an empty admin_layer *after* the static layer, so we can
+        # continue to make changes via the admin console and they'll overwrite
+        # values from the previous layer.
+        - name: admin_layer_0
+          admin_layer: {}
+    static_resources:
+      clusters:  
+      - name: local_service
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            common_http_protocol_options:
+              idle_timeout: 4.5s
+            # This allows switching on protocol based on what protocol the downstream connection used.
+            use_downstream_protocol_config: {}
+        connect_timeout: 1.0s
+        lb_policy: round_robin
+        load_assignment:
+          cluster_name: local_service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address: {address: 127.0.0.1, port_value: 8080 }
+        type: strict_dns  
+      - name: admin_interface
+        type: static
+        connect_timeout: 1.0s
+        lb_policy: round_robin
+        load_assignment:
+          cluster_name: admin_interface
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:            
+                  pipe:
+                    path: /var/run/envoy/admin.sock
+      listeners:  
+      - address:
+          socket_address:
+            address: "::"
+            port_value: 1667
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: admin_interface
+                  routes:
+                  - match: {prefix: /stats }
+                    route:
+                      cluster: admin_interface
+                      timeout: 5.0s
+                  - match: {prefix: /healthz}
+                    direct_response:
+                      status: 200
+                      body: {inline_string: "OK"}
+                  - match: {prefix: /}
+                    direct_response:
+                      status: 403
+                      body: {inline_string: "You can't access this url."}
+              stat_prefix: admin_interface  
+      - address:
+          socket_address:
+            address: "0.0.0.0"
+            port_value: 1667
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: admin_interface
+                  routes:
+                  - match: {prefix: /stats }
+                    route:
+                      cluster: admin_interface
+                      timeout: 5.0s
+                  - match: {prefix: /healthz}
+                    direct_response:
+                      status: 200
+                      body: {inline_string: "OK"}
+                  - match: {prefix: /}
+                    direct_response:
+                      status: 403
+                      body: {inline_string: "You can't access this url."}
+              stat_prefix: admin_interface  
+      - address:
+          socket_address:
+            address: "::"
+            port_value: 8000
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              access_log:
+              - filter:
+                  status_code_filter:
+                    comparison:
+                      op: "GE"
+                      value:
+                        default_value: 200
+                        runtime_key: tls_terminator_min_log_code
+                # TODO: use a stream logger once we upgrade from 1.15
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                  path: "/dev/stdout"
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: tls_termination
+                  routes:
+                  - match: {prefix: /}
+                    route:
+                      cluster: local_service
+                      timeout: 60s        
+              stat_prefix: ingress_https_release-name
+              server_name: release-name-tls
+              server_header_transformation: APPEND_IF_ABSENT
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificate_sds_secret_configs:
+                  name: tls_sds
+                  sds_config:
+                    path_config_source:
+                      path: /etc/envoy/tls_certificate_sds_secret.yaml
+                    resource_api_version: V3
+        listener_filters:
+        - name: envoy.filters.listener.tls_inspector
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector  
+      - address:
+          socket_address:
+            address: "0.0.0.0"
+            port_value: 8000
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              access_log:
+              - filter:
+                  status_code_filter:
+                    comparison:
+                      op: "GE"
+                      value:
+                        default_value: 200
+                        runtime_key: tls_terminator_min_log_code
+                # TODO: use a stream logger once we upgrade from 1.15
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                  path: "/dev/stdout"
+              http_filters:
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              http_protocol_options: {accept_http_10: true}
+              route_config:
+                virtual_hosts:
+                - domains: ['*']
+                  name: tls_termination
+                  routes:
+                  - match: {prefix: /}
+                    route:
+                      cluster: local_service
+                      timeout: 60s        
+              stat_prefix: ingress_https_release-name
+              server_name: release-name-tls
+              server_header_transformation: APPEND_IF_ABSENT
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificate_sds_secret_configs:
+                  name: tls_sds
+                  sds_config:
+                    path_config_source:
+                      path: /etc/envoy/tls_certificate_sds_secret.yaml
+                    resource_api_version: V3
+        listener_filters:
+        - name: envoy.filters.listener.tls_inspector
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+  tls_certificate_sds_secret.yaml: |-
+    resources:
+    - "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret"
+      name: tls_sds
+      tls_certificate:
+        certificate_chain:
+          filename: /etc/envoy/ssl/tls.crt
+        private_key:
+          filename: /etc/envoy/ssl/tls.key
+---
+# Source: mpic/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:  
+  name: mpic-release-name-tls-service
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app: mpic
+    routed_via: release-name
+  ports:
+    - name: mpic-release-name-https
+      protocol: TCP
+      port: 8000
+---
+# Source: mpic/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:  
+  name: mpic-release-name
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  selector:    
+    matchLabels:
+      app: mpic
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:        
+        app: mpic
+        release: release-name
+        routed_via: release-name
+      annotations:        
+        checksum/secrets: 8ab8740aa2787d10fed6c4c092143413956c03d4938fd21fec6006c0c1c5e853        
+        checksum/tls-config: 817db5131abb0b68c9b744520b39b152488e521bd121cbd020e6ab50f88cbf8c
+        envoyproxy.io/scrape: "true"
+        envoyproxy.io/port: "1667"
+        checksum/config: a47c630dbfc2f676de0d45e28797155eb9dc3add80b14950a1b9d019ffbcd3f7
+        checksum/db-password: 117b92ae4222c4342423208581175ae61e6003a1689ea70597f65e1f5ac5f412
+        checksum/idp-client-secret: 13da57a8862be9dafcd8bdc5f4377004d3f020501b8175fc6f4ec78af6d32e1a
+
+    spec:
+      containers:        
+        # The main application container
+        - name: mpic-release-name
+          image: "docker-registry.wikimedia.org/repos/data-engineering/mpic:latest"
+          imagePullPolicy: IfNotPresent  
+          command:
+            - node
+          args:
+            - "server.js"
+            - "--config"
+            - "/etc/mpic/config.yaml"
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: mpic-release-name
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mpic-release-name-secret-config
+                  key: database_password
+            - name: IDP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mpic-release-name-secret-config
+                  key: idp_client_secret
+          
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 1
+              memory: 400Mi
+          volumeMounts:
+            - mountPath: /etc/mpic/
+              name: config-volume        
+        - name: mpic-release-name-tls-proxy
+          image: docker-registry.wikimedia.org/envoy:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE_NAME
+              value: release-name
+            - name: SERVICE_ZONE
+              value: "default"
+            - name: ADMIN_PORT
+              value: "1666"
+            - name: DRAIN_TIME_S
+              value: "600"
+            - name: DRAIN_STRATEGY
+              value: gradual
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 1667
+          volumeMounts:
+            - name: envoy-config-volume
+              mountPath: /etc/envoy/
+              readOnly: true
+            - name: tls-certs-volume
+              mountPath: /etc/envoy/ssl
+              readOnly: true
+        
+          resources:
+            limits:
+              cpu: 500m
+              memory: 500Mi
+            requests:
+              cpu: 200m
+              memory: 100Mi
+      volumes:        
+        - configMap:
+            name: mpic-base-config
+          name: config-volume        
+        - name: envoy-config-volume
+          configMap:
+            name: mpic-release-name-envoy-config-volume
+        - name: tls-certs-volume
+          secret:
+            secretName: mpic-release-name-tls-proxy-certs
+---
+# Source: mpic/templates/vendor/mesh/certificate_1.1.0.tpl
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:  
+  name: mpic-release-name-tls-proxy-certs
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  # CommonName is a common name to be used on the Certificate. The CommonName
+  # should have a length of 64 characters or fewer to avoid generating invalid
+  # CSRs. This value is ignored by TLS clients when any subject alt name is
+  # set. This is x509 behavior: https://tools.ietf.org/html/rfc6125#section-6.4.4
+  commonName: mpic-release-name-tls-proxy-certs
+  secretName: mpic-release-name-tls-proxy-certs
+  dnsNames:
+    - mpic-release-name-tls-service.default.svc.cluster.local
+    
+  # revisionHistoryLimit is the maximum number of CertificateRequest revisions that are maintained in the Certificat's history.
+  # If not set, cert-manager will not clean up old CertificateRequests at all. Setting this to 2 makes to have the CR from the
+  # previous Certificate still around after refresh.
+  revisionHistoryLimit: 2
+  issuerRef:
+    # This references the cfssl ClusterIssuer "discovery" defined in admin_ng/cert-manager/cfssl-issuer-values.yaml
+    name: discovery
+    group: cfssl-issuer.wikimedia.org
+    kind: ClusterIssuer
+---
+# Source: mpic/templates/ingress.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:  
+  name: mpic-release-name
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  host: mpic-release-name-tls-service.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      caCertificates: /etc/ssl/certs/wmf-ca-certificates.crt
+      subjectAltNames:
+      # Discovery certificate (cergen)
+      - default.discovery.wmnet
+      # Default tls-service certificates (tls.servicefqdn)
+      - mpic-release-name-tls-service.default.svc.cluster.local
+      # Gateway hosts
+      - default.discovery.wmnet
+      - default.svc.codfw.wmnet
+      - default.svc.eqiad.wmnet
+      
+      # Route hosts (in case existing Gateway is used)
+      - default.discovery.wmnet
+      - default.svc.codfw.wmnet
+      - default.svc.eqiad.wmnet
+---
+# Source: mpic/templates/ingress.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:  
+  name: mpic-release-name
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    # This is the istio-ingressgateway this gateway will be attached to (provided by SRE)
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      # credentialName is a secret that needs to be created in istio-system namespace.
+      # This is done in a generic fashion by helmfile.d/admin_ng/helmfile_namespace_certs.yaml
+      credentialName: default-tls-certificate
+      mode: SIMPLE
+    hosts:
+    # TLS hosts can only be registered once. Another gateway using the same host will be ignored.
+    - default.discovery.wmnet
+    - default.svc.codfw.wmnet
+    - default.svc.eqiad.wmnet
+---
+# Source: mpic/templates/ingress.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:  
+  name: mpic-release-name
+  labels:
+    app: mpic
+    chart: mpic-0.0.4
+    release: release-name
+    heritage: Helm
+spec:
+  hosts:
+  - default.discovery.wmnet
+  - default.svc.codfw.wmnet
+  - default.svc.eqiad.wmnet
+  
+  gateways:
+  - mpic-release-name
+  http:
+  - name: "default-destination"
+    route:
+    - destination:
+        host: mpic-release-name-tls-service.default.svc.cluster.local
+        port:
+          number: 8000
+---
+# Source: mpic/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'mpic-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'mpic-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(MPIC_RELEASE_NAME_SERVICE_HOST)', 'http://mpic-release-name:8080']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

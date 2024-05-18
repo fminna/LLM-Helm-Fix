@@ -1,0 +1,316 @@
+---
+# Source: edgemesh/charts/agent/templates/01-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-agent
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-agent
+---
+# Source: edgemesh/charts/server/templates/01-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-server
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-server
+---
+# Source: edgemesh/charts/agent/templates/04-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-agent-cfg
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-agent
+data:
+  edgemesh-agent.yaml: |-
+    apiVersion: agent.edgemesh.config.kubeedge.io/v1alpha1
+    kind: EdgeMeshAgent
+    commonConfig:
+      dummyDeviceName: edgemesh0
+      dummyDeviceIP: 169.254.96.16
+      configMapName: release-name-agent-cfg
+    goChassisConfig:
+      protocol:
+        tcpBufferSize: 8192
+        tcpClientTimeout: 5
+        tcpReconnectTimes: 3
+      loadBalancer:
+        defaultLBStrategy: RoundRobin
+        supportLBStrategies:
+        - RoundRobin
+        - Random
+        - ConsistentHash
+        consistentHash:
+          partitionCount: 100
+          replicationFactor: 10
+          load: 1.25
+    modules:
+      edgeDNS:
+        listenPort: 53
+      edgeProxy:
+        enable: true
+        listenPort: 40001
+        socks5Proxy:
+          enable: false
+          listenPort: 10800
+      tunnel:
+        enable: true
+        listenPort: 20006
+        security:
+          enable: false
+          httpServer: 
+          tlsCaFile: /etc/kubeedge/edgemesh/agent/acls/rootCA.crt
+          tlsCertFile: /etc/kubeedge/edgemesh/agent/acls/server.crt
+          tlsPrivateKeyFile: /etc/kubeedge/edgemesh/agent/acls/server.key
+        enableHolePunch: true
+---
+# Source: edgemesh/charts/server/templates/04-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-server-cfg
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-server
+data:
+  edgemesh-server.yaml: |
+    apiVersion: server.edgemesh.config.kubeedge.io/v1alpha1
+    kind: EdgeMeshServer
+    kubeAPIConfig:
+      burst: 200
+      contentType: application/vnd.kubernetes.protobuf
+      kubeConfig: 
+      master: 
+      qps: 100
+    modules:
+      tunnel:
+        enable: true
+        listenPort: 20004
+        security:
+          enable: false
+          httpServer: 
+          tlsCaFile: /etc/kubeedge/edgemesh/server/acls/rootCA.crt
+          tlsCertFile: /etc/kubeedge/edgemesh/server/acls/server.crt
+          tlsPrivateKeyFile: /etc/kubeedge/edgemesh/server/acls/server.key
+---
+# Source: edgemesh/charts/agent/templates/02-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-agent
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-agent
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: edgemesh/charts/server/templates/02-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-server
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-server
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update"]
+---
+# Source: edgemesh/charts/agent/templates/03-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-agent
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-agent
+subjects:
+  - kind: ServiceAccount
+    name: release-name-agent
+    namespace: kubeedge
+---
+# Source: edgemesh/charts/server/templates/03-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-server
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-server
+subjects:
+  - kind: ServiceAccount
+    name: release-name-server
+    namespace: kubeedge
+---
+# Source: edgemesh/charts/agent/templates/05-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-agent
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-agent
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kubeedge
+      kubeedge: edgemesh-agent
+  template:
+    metadata:
+      labels:
+        k8s-app: kubeedge
+        kubeedge: edgemesh-agent
+    spec:
+      hostNetwork: true
+      containers:
+        - name: release-name-agent
+          livenessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            tcpSocket:
+              port: 20006
+          securityContext:
+            privileged: true
+          image: kubeedge/edgemesh-agent:latest
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            limits:
+              cpu: 1
+              memory: 256Mi
+            requests:
+              cpu: 0.5
+              memory: 128Mi
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/kubeedge/config
+            - name: resolv
+              mountPath: /etc/resolv.conf
+            - name: edgemesh
+              mountPath: /etc/kubeedge/edgemesh
+            - name: ca-server-token
+              mountPath: /etc/kubeedge/cert
+            - name: host-time
+              mountPath: /etc/localtime
+              readOnly: true
+      restartPolicy: Always
+      serviceAccountName: release-name-agent
+      volumes:
+        - name: conf
+          configMap:
+            name: release-name-agent-cfg
+        - name: resolv
+          hostPath:
+            path: /etc/resolv.conf
+        - name: edgemesh
+          hostPath:
+            path: /etc/kubeedge/edgemesh
+            type: DirectoryOrCreate
+        - name: ca-server-token
+          secret:
+            secretName: tokensecret
+        - name: host-time
+          hostPath:
+            path: /etc/localtime
+---
+# Source: edgemesh/charts/server/templates/05-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-server
+  namespace: kubeedge
+  labels:
+    k8s-app: kubeedge
+    kubeedge: edgemesh-server
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kubeedge
+      kubeedge: edgemesh-server
+  template:
+    metadata:
+      labels:
+        k8s-app: kubeedge
+        kubeedge: edgemesh-server
+    spec:
+      hostNetwork: true
+      nodeName: your node name
+      containers:
+      - name: release-name-server
+        livenessProbe:
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          tcpSocket:
+            port: 20004
+        image: kubeedge/edgemesh-server:latest
+        env:
+          - name: MY_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+        ports:
+        - containerPort: 20004
+          name: relay
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 1
+            memory: 1Gi
+          requests:
+            cpu: 0.5
+            memory: 512Mi
+        volumeMounts:
+          - name: conf
+            mountPath: /etc/kubeedge/config
+          - name: edgemesh
+            mountPath: /etc/kubeedge/edgemesh
+          - name: ca-server-token
+            mountPath: /etc/kubeedge/cert
+          - name: host-time
+            mountPath: /etc/localtime
+            readOnly: true
+      restartPolicy: Always
+      serviceAccountName: release-name-server
+      volumes:
+        - name: conf
+          configMap:
+            name: release-name-server-cfg
+        - name: edgemesh
+          hostPath:
+            path: /etc/kubeedge/edgemesh
+            type: DirectoryOrCreate
+        - name: ca-server-token
+          secret:
+            secretName: tokensecret
+        - name: host-time
+          hostPath:
+            path: /etc/localtime

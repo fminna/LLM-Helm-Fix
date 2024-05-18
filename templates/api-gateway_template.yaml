@@ -1,0 +1,482 @@
+---
+# Source: api-gateway/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway-release-name
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8087
+        protocol: TCP
+---
+# Source: api-gateway/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-gateway-release-name-secret-config
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+type: Opaque
+---
+# Source: api-gateway/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-release-name-base-config
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+data:
+  envoy.yaml: |-     
+    # api gateway envoy config
+    static_resources:
+      listeners:
+      - name: listener_0
+        address:
+          socket_address:
+            protocol: TCP
+            address: 0.0.0.0
+            port_value: 8087
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: ingress_http
+              # configure logging
+              access_log:
+                name: envoy.file_access_log
+                filter:
+                  and_filter:
+                    filters:
+                      - not_health_check_filter: {}
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                  path: /dev/stdout
+                  log_format:
+                    omit_empty_values: true
+                    json_format:
+                      $schema: "/api-gateway/request/1.0.0"
+                      meta:
+                        uri: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                        request_id: "%REQ(X-REQUEST-ID)%"
+                        dt: "%START_TIME(%FT%TZ)%"
+                        domain: "%REQ(HOST)%"
+                        stream: "api-gateway.request"
+                      http:
+                        method: "%REQ(:METHOD)%"
+                        protocol: "%PROTOCOL%"
+                        status_code: "%RESPONSE_CODE%"
+                        client_ip: "%REQ(X-FORWARDED-FOR)%"
+                        request_headers:
+                          user-agent: "%REQ(USER-AGENT)%"
+                      total_time_ms: "%DURATION%"
+                      client_id: "%DYNAMIC_METADATA(envoy.filters.http.jwt_authn:jwt_payload:aud)%"
+                      route: "%ROUTE_NAME%"
+              use_remote_address: true
+              local_reply_config:
+                # Override the empty %LOCAL_REPLY_BODY% for 404 to "Not Found"
+                mappers:
+                  - filter:
+                      status_code_filter:
+                        comparison:
+                          op: EQ
+                          value:
+                            default_value: 404
+                            runtime_key: unused_key_404
+                    body:
+                      inline_string: "Not Found"
+                # Default format applied to all error responses
+                body_format:
+                  json_format:
+                    httpCode: "%RESPONSE_CODE%"
+                    httpReason: "%LOCAL_REPLY_BODY%"
+              route_config:
+    
+                name: api_wikimedia_org_route
+                virtual_hosts:
+                - name: api_wikimedia_org_vhost
+                  domains:
+                  - "localhost"
+                  - "localhost:*"
+                  - "127.0.0.1"
+                  - "127.0.0.1:*"
+                  virtual_clusters:
+                    - name: rw
+                      headers:
+                        - name: ":method"
+                          safe_regex_match:
+                            google_re2: {}
+                            regex: "(POST|PUT|PATCH|DELETE)"
+                        - name: ":path"
+                          exact_match: "/healthz"
+                          invert_match: true
+                    - name: r
+                      headers:
+                        - name: ":method"
+                          safe_regex_match:
+                            google_re2: {}
+                            regex: "(GET|HEAD|OPTIONS)"
+                        - name: ":path"
+                          exact_match: "/healthz"
+                          invert_match: true
+                  rate_limits:
+                    # For all rate limits, the top-level key is route_name. This is provided by custom
+                    # routes like discovery services in order to allow them to define their own limits,
+                    # but *also* to allow them to have their own rate limit counters. If a service does
+                    # not have a custom rate limit defined, it will be considered part of the global rate
+                    # limit (in this case the default route_name of "default_rate").
+    
+                    # We define custom rate limits in our values file, which translates into providing
+                    # route-level metadata. Metadata cannot be provided at cluster level for it to be
+                    # obeyed in this section, so we don't
+    
+                    # For authenticated requests, the following descriptor is produced:
+                    # - {value: ("route_name", "<route_name>")("client_id","<aud>")("user_id","<uid>"), override:(value:1000,unit:MINUTE)}
+                    # Applying limit/unit for client_id/user_id pair.
+                    #
+                    # If JWT is absent, no descriptor generated.
+                    # If override is missing, descriptor is ignored since it's not configured in the service
+                    - stage: 0
+                      actions:
+                        - metadata:
+                            source: ROUTE_ENTRY
+                            metadata_key:
+                              key: envoy.filters.http.ratelimit
+                              path:
+                                - key: route_name
+                            descriptor_key: route_name
+                            default_value: default_rate
+                        - metadata:
+                            source: DYNAMIC
+                            descriptor_key: client_id
+                            metadata_key:
+                              key: envoy.filters.http.jwt_authn
+                              path:
+                                - key: jwt_payload
+                                - key: aud
+                        - metadata:
+                            source: DYNAMIC
+                            descriptor_key: user_id
+                            metadata_key:
+                              key: envoy.filters.http.jwt_authn
+                              path:
+                                - key: jwt_payload
+                                - key: sub
+                      limit:
+                        dynamic_metadata:
+                          metadata_key:
+                            key: envoy.filters.http.jwt_authn
+                            path:
+                              - key: jwt_payload
+                              - key: ratelimit
+                    # For authenticated requests emit the following descriptor:
+                    # - {value: ("route_name", "<route_name>")("user_class_anon_fallback","<class>")("client_ip","123.123.123.123)}
+                    # which will be ignored by the service, since we only match on "anon" class.
+                    # For unauthenticated requests <class> would fallback to "anon", and the statically
+                    # configured limit will kick in.
+                    - stage: 0
+                      actions:
+                        - metadata:
+                            source: ROUTE_ENTRY
+                            metadata_key:
+                              key: envoy.filters.http.ratelimit
+                              path:
+                                - key: route_name
+                            descriptor_key: route_name
+                            default_value: default_rate
+                        - metadata:
+                            source: DYNAMIC
+                            descriptor_key: user_class_anon_fallback
+                            metadata_key:
+                              key: envoy.filters.http.jwt_authn
+                              path:
+                                - key: jwt_payload
+                                - key: aud
+                            default_value: anon
+                        - request_headers:
+                            # Use x-client-ip because Envoy's X-forwarded-for won't trust
+                            # the upstream IP in cases of more than one IP in the list.
+                            header_name: x-client-ip
+                            descriptor_key: client_ip
+                  routes:
+                  - name: api-portal-redirect
+                    match:
+                      path: '/'
+                    redirect:
+                      path_redirect: '/wiki/'
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: api-portal
+                    match:
+                      prefix: "/wiki/"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: api-portal-static
+                    match:
+                      prefix: "/static/"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: api-portal-restbase
+                    match:
+                      prefix: "/api/rest_v1/"
+                    route:
+                      cluster: restbase_cluster
+                      prefix_rewrite: "/api.wikimedia.org/v1/"
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: favicon
+                    match:
+                      path: "/favicon.ico"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: robotstxt
+                    match:
+                      path: "/robots.txt"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: appletouch-icon
+                    match:
+                      path: "/apple-touch-icon.png"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: api-portal
+                    match:
+                      prefix: "/w/"
+                    route:
+                      cluster: appserver_cluster
+                    typed_per_filter_config:
+                      envoy.filters.http.ratelimit:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute
+                        vh_rate_limits: IGNORE
+                  - name: feed
+                    match:
+                      prefix: "/feed/"
+                    route:
+                      cors: &api_cors
+                        allow_origin_string_match:
+                          - prefix: "*"
+                        allow_headers: 'Api-User-Agent,Authorization,Content-type'
+                      regex_rewrite:
+                        pattern:
+                          google_re2: {}
+                          regex: '^/feed/v1/(\w+)/(\w+)/'
+                        substitution: '/\2.\1.org/v1/feed/'
+                      cluster: restbase_cluster
+                  - name: descriptions
+                    match:
+                      safe_regex:
+                        google_re2: {}
+                        regex: '^/core/v1/(\w+)/(\w+)/page/(.*)/description$'
+                    response_headers_to_add:
+                      - header:
+                          key: "cache-control"
+                          value: "no-cache"
+                        append: false
+                    route:
+                      cors: *api_cors
+                      regex_rewrite:
+                        pattern:
+                          google_re2: {}
+                          regex: '^/core/v1/(\w+)/(\w+)/page/(.*)/description$'
+                        substitution: '/\2.\1.org/v1/page/description/\3'
+                      cluster: mobileapps_cluster
+              http_filters:
+              - name: envoy.health_check
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+                  pass_through_mode: false
+                  headers:
+                    - name: ":path"
+                      exact_match: "/healthz"
+              - name: envoy.filters.http.cors
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+              - name: envoy.filters.http.header_to_metadata
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config
+                  request_rules:
+                    - header: "x-wikimedia-debug"
+                      on_header_present:
+                        metadata_namespace: envoy.lb
+                        key: x_wikimedia_debug_server
+                        regex_value_rewrite:
+                          pattern:
+                            google_re2: {}
+                            regex: "^backend=([\\w.]+).*$"
+                          substitution: "\\1"
+                      on_header_missing:
+                        metadata_namespace: envoy.lb
+                        key: x_wikimedia_debug_server
+                        value: none
+                        type: STRING
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+---
+# Source: api-gateway/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-release-name-ratelimit-config
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |-     
+    ---
+    domain: wikimedia
+    descriptors:
+      - key: route_name
+        value: default_rate
+        descriptors:
+          - key: user_class_anon_fallback
+            value: anon
+            descriptors:
+              - key: client_ip
+                rate_limit:
+                  requests_per_unit: 500
+                  unit: HOUR
+          # Normally would be overriden by JWT override set OAuthRateLimiter
+          - key: client_id
+            descriptors:
+              - key: user_id
+                rate_limit:
+                  requests_per_unit: 5000
+                  unit: HOUR
+---
+# Source: api-gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway-release-name
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: api-gateway
+    release: release-name
+    routed_via: release-name
+  ports:
+    - name: api-gateway
+      targetPort: 8087
+      port: 8087
+---
+# Source: api-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway-release-name
+  labels:
+    app: api-gateway
+    chart: api-gateway-0.7.7
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/config: 1cfb8f41b26fed95f827156e3990f770ff0c69b5424f42a492f226d1c484bb45
+        checksum/secrets: 55a3b6f0eeb750823ebc656a0a76c2404955a6fbe9c7d11b418c10568a10fc87
+        checksum/ratelimit: 77da9b8900425c7e455fe0808f5b23f01a57c9d29c14a5957abaec321e46b79f
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+        
+    spec:
+      containers:
+        # The main application container
+        - name: api-gateway-release-name
+          image: "docker-registry.wikimedia.org/envoy:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8087
+          livenessProbe:
+            tcpSocket:
+              port: 8087
+          env:
+            - name: SERVICE_NAME
+              value: release-name
+            - name: SERVICE_ZONE
+              value: "default"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 500Mi
+            limits:
+              cpu: 1
+              memory: 800Mi
+          volumeMounts:
+            - name: release-name-base-config
+              mountPath: /etc/envoy/          
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+               drop:
+               - ALL
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: release-name-base-config
+          configMap:
+            name: api-gateway-release-name-base-config
+        - name: release-name-ratelimit-config
+          configMap:
+            name: api-gateway-release-name-ratelimit-config

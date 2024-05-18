@@ -1,0 +1,500 @@
+---
+# Source: kubeservice-scheduler-plus/templates/controller-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeservice-scheduler-controller
+  namespace: default
+---
+# Source: kubeservice-scheduler-plus/templates/scheduler-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeservice-scheduler
+  namespace: default
+---
+# Source: kubeservice-scheduler-plus/templates/controller-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dynamic-scheduler-policy
+  namespace: default
+data:
+  policy.yaml: |
+    apiVersion: scheduler.policy.crane.io/v1alpha1
+    kind: DynamicSchedulerPolicy
+    spec:
+      syncPolicy:
+        ##cpu usage
+        - name: cpu_usage_avg_5m
+          period: 3m
+        - name: cpu_usage_max_avg_1h
+          period: 15m
+        - name: cpu_usage_max_avg_1d
+          period: 3h
+        ##memory usage
+        - name: mem_usage_avg_5m
+          period: 3m
+        - name: mem_usage_max_avg_1h
+          period: 15m
+        - name: mem_usage_max_avg_1d
+          period: 3h
+
+      predicate:
+        ##cpu usage
+        - name: cpu_usage_avg_5m
+          maxLimitPecent: 65
+        - name: cpu_usage_max_avg_1h
+          maxLimitPecent: 75
+        ##memory usage
+        - name: mem_usage_avg_5m
+          maxLimitPecent: 65
+        - name: mem_usage_max_avg_1h
+          maxLimitPecent: 75
+
+      priority:
+        ###score = sum(() * weight) / len,  0 <= score <= 10
+        ##cpu usage
+        - name: cpu_usage_avg_5m
+          weight: 0.2
+        - name: cpu_usage_max_avg_1h
+          weight: 0.3
+        - name: cpu_usage_max_avg_1d
+          weight: 0.5
+        ##memory usage
+        - name: mem_usage_avg_5m
+          weight: 0.2
+        - name: mem_usage_max_avg_1h
+          weight: 0.3
+        - name: mem_usage_max_avg_1d
+          weight: 0.5
+
+      hotValue:
+        - timeRange: 5m
+          count: 5
+        - timeRange: 1m
+          count: 2
+---
+# Source: kubeservice-scheduler-plus/templates/scheduler-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scheduler-config
+  namespace: default
+data:
+  scheduler-config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1beta3
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: true
+    profiles:
+    - schedulerName: crane-scheduler
+      plugins:
+        filter:
+          enabled:
+          - name: Dynamic
+        score:
+          enabled:
+          - name: Dynamic
+            weight: 3
+      pluginConfig:
+      - name: Dynamic
+        args:
+          policyConfigPath: /etc/kubernetes/policy.yaml
+---
+# Source: kubeservice-scheduler-plus/templates/controller-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubeservice-scheduler-controller
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - nodes
+  - namespaces
+  verbs:
+  - list
+  - watch
+  - get
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - endpoints
+  - events
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - create
+  - patch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - update
+---
+# Source: kubeservice-scheduler-plus/templates/scheduler-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubeservice-scheduler
+rules:
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+- apiGroups:
+  - coordination.k8s.io
+  resourceNames:
+  - kube-scheduler
+  resources:
+  - leases
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resourceNames:
+  - kube-scheduler
+  resources:
+  - endpoints
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - bindings
+  - pods/binding
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - replicationcontrollers
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  - extensions
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - "*"
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Source: kubeservice-scheduler-plus/templates/controller-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeservice-scheduler-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubeservice-scheduler-controller
+subjects:
+- kind: ServiceAccount
+  name: kubeservice-scheduler-controller
+  namespace: default
+---
+# Source: kubeservice-scheduler-plus/templates/scheduler-rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kubeservice-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubeservice-scheduler
+subjects:
+- kind: ServiceAccount
+  name: kubeservice-scheduler
+  namespace: default
+---
+# Source: kubeservice-scheduler-plus/templates/node-metrics.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    helm.sh/chart: kubeservice-scheduler-plus-0.2.0
+    app.kubernetes.io/name: kubeservice-scheduler-plus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+  name: kubeservice-node-metrics
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: kubeservice-node-metrics
+  template:
+    metadata:
+      labels:
+        app: kubeservice-node-metrics
+    spec:
+      containers:
+      - image:  "docker.io/dongjiang1989/node-metrics:latest"
+        imagePullPolicy: IfNotPresent
+        name: kubeservice-node-metrics
+        env:
+          - name: TZ
+            value: Asia/Shanghai
+          - name: CRANE_SYSTEM_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        args:
+        - --web.listen-address=0.0.0.0:19101
+        resources:
+          limits:
+            cpu: 102m
+            memory: 180Mi
+          requests:
+            cpu: 102m
+            memory: 180Mi
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+---
+# Source: kubeservice-scheduler-plus/templates/controller-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    helm.sh/chart: kubeservice-scheduler-plus-0.2.0
+    app.kubernetes.io/name: kubeservice-scheduler-plus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+  name: kubeservice-scheduler-controller
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubeservice-scheduler-plus
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubeservice-scheduler-plus
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: kubeservice-scheduler-controller
+      containers:
+        - name: kubeservice-scheduler-controller
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: CRANE_SYSTEM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          command:
+            - /controller
+            - --policy-config-path=/data/policy.yaml
+            - --port=19101
+          image:  "docker.io/dongjiang1989/crane-scheduler-controller:main"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 8090
+              scheme: HTTP
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+              scheme: HTTP
+          volumeMounts:
+            - mountPath: /data
+              name: dynamic-scheduler-policy
+          resources:
+            requests:
+              cpu: 200m
+              memory: 200Mi
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: dynamic-scheduler-policy
+          name: dynamic-scheduler-policy
+---
+# Source: kubeservice-scheduler-plus/templates/scheduler-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    helm.sh/chart: kubeservice-scheduler-plus-0.2.0
+    app.kubernetes.io/name: kubeservice-scheduler-plus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.1"
+    app.kubernetes.io/managed-by: Helm
+  name: kubeservice-scheduler
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubeservice-scheduler-plus
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubeservice-scheduler-plus
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: kubeservice-scheduler
+      containers:
+      - command:
+        - /scheduler
+        - --leader-elect=false
+        - --config=/etc/kubernetes/kube-scheduler/scheduler-config.yaml
+        image: "docker.io/dongjiang1989/crane-scheduler:main"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 15
+        name: kubeservice-scheduler
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+        resources:
+          requests:
+            cpu: '0.2'
+        securityContext:
+          privileged: false
+        volumeMounts:
+        - name: scheduler-config
+          mountPath: /etc/kubernetes/kube-scheduler
+          readOnly: true
+        - name: dynamic-scheduler-policy
+          mountPath: /etc/kubernetes
+          readOnly: true
+      hostNetwork: false
+      hostPID: false
+      volumes:
+      - name: scheduler-config
+        configMap:
+          name: scheduler-config
+      - name: dynamic-scheduler-policy
+        configMap:
+          name: dynamic-scheduler-policy

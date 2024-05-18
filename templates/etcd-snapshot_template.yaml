@@ -1,0 +1,190 @@
+---
+# Source: etcd-snapshot/templates/sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "release-name"
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+---
+# Source: etcd-snapshot/templates/cm-sync-sh.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-sync-sh
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+data:
+  etcd-snapshot-sync.sh: |+
+    #! /usr/bin/env bash
+    
+    set -x
+      rsync --archive --delete --verbose --human-readable \
+        --rsh 'ssh -l core -o "StrictHostKeyChecking=no"' \
+        ${2}/ ${3}/
+---
+# Source: etcd-snapshot/templates/pv.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: "release-name"
+provisioner: nfs.csi.k8s.io
+parameters:
+  type: gp2
+reclaimPolicy: Retain
+allowVolumeExpansion: false
+volumeBindingMode: Immediate
+---
+# Source: etcd-snapshot/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: "release-name"
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+spec:
+  capacity:
+    storage: 100G
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: "release-name"
+  nfs:
+    server: truenas.0.taranto.dev
+    path: /mnt/pool-0/backups/ocpb
+---
+# Source: etcd-snapshot/templates/pv.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "release-name"
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100G
+    limits:
+      storage: 100G
+  storageClassName: "release-name"
+---
+# Source: etcd-snapshot/templates/sa.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-privileged
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+- kind: ServiceAccount
+  name: "release-name"
+  namespace: "default"
+---
+# Source: etcd-snapshot/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: "release-name"
+  labels:
+    taranto.dev/app: release-name
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: release-name
+spec:
+  concurrencyPolicy: Forbid
+  schedule: "30 13 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            etcd-snapshot.taranto.dev/role: snapshot
+          tolerations:
+          - key: "node-role.kubernetes.io/master"
+            operator: "Exists"
+            effect: "NoSchedule"
+          restartPolicy: Never
+          serviceAccountName: "release-name"
+          terminationGracePeriodSeconds: 1
+          volumes:
+          - name: etcd-snapshot-sync-sh
+            configMap:
+              name: release-name-sync-sh
+              defaultMode: 0755
+          - name: host
+            hostPath:
+              path: /
+          - name: source-dir
+            hostPath:
+              path: /var/home/core/etcd-snapshots
+          - name: target-dir
+            persistentVolumeClaim: 
+              claimName: "release-name"
+
+          initContainers:
+          - name: snapshotter
+            image: staranto/etcd-snapshot:0.1.5 
+            imagePullPolicy: IfNotPresent
+            command:
+            - "chroot"
+            - "/host"
+            - "/usr/local/bin/etcd-snapshot.sh"
+            - "--force"
+            - "--host"
+            - "pod-mode"
+            - "--output"
+            - "/var/home/core/etcd-snapshots"
+            - "--purge"
+            - "1"
+            securityContext:
+              privileged: true
+              runAsUser: 0
+              runAsGroup: 0
+            volumeMounts:
+            - name: host
+              mountPath: /host
+
+          containers:
+          - name: syncer
+            image: "staranto/etcd-snapshot:0.1.5" 
+            imagePullPolicy: IfNotPresent
+            command:
+              - "/etcd-snapshot-sync/etcd-snapshot-sync.sh"
+              - "pv"
+              - "/source-dir"
+              - "/target-dir"
+            securityContext:
+              privileged: true
+              runAsUser: 0
+              runAsGroup: 0
+            volumeMounts:
+            - name: etcd-snapshot-sync-sh
+              mountPath: /etcd-snapshot-sync
+            - name: source-dir
+              mountPath: /source-dir
+              readOnly: false
+            - name: target-dir
+              mountPath: /target-dir
+              readOnly: false
+...

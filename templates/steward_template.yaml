@@ -1,0 +1,115 @@
+---
+# Source: steward/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: release-name-steward
+data:
+  VCS_TOKEN:
+---
+# Source: steward/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-steward
+data:
+  git_ask_pass_script.sh: |-
+    #!/bin/bash
+    set -u
+    echo ${VCS_TOKEN}
+  repos.md: |-
+    - org/repo-name
+    
+  default.scala-steward.conf: |-
+---
+# Source: steward/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-steward
+  annotations:
+    "helm.sh/resource-policy": keep
+  labels:
+    app: steward
+    chart: "steward-0.1.12"
+    release: "release-name"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+  storageClassName: "standard"
+---
+# Source: steward/templates/cron-job.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-steward
+  labels:
+    app: steward
+    chart: steward-0.1.12
+    release: release-name
+spec:
+  schedule: "@daily"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: steward
+            release: release-name
+          annotations:
+            releaseTimestamp: 2024-05-15 10:50:04.540928 +0200 CEST m=+1.498470556
+        spec:
+          containers:
+            - name: steward
+              image: "fthomas/scala-steward:latest"
+              imagePullPolicy: IfNotPresent
+              args:
+              - --workspace
+              - /opt/scala-steward/workspace
+              - --repos-file
+              - /opt/config_values/repos.md
+              - --git-author-name
+              - $(GIT_AUTHOR_NAME)
+              - --git-author-email
+              - $(GIT_AUTHOR_EMAIL)
+              - --vcs-api-host
+              - https://api.github.com
+              - --vcs-login
+              - $(VCS_LOGIN)
+              - --git-ask-pass
+              - /opt/config_values/git_ask_pass_script.sh
+              - --do-not-fork
+              volumeMounts:
+                - name: data
+                  mountPath: /opt/scala-steward/workspace
+                  subPath: workspace
+                - name: data
+                  mountPath: /root/.ivy2
+                  subPath: .ivy2
+                - name: config-values
+                  mountPath: /opt/config_values
+              envFrom:
+                - secretRef:
+                    name: release-name-steward
+              env:
+                - name: GIT_AUTHOR_NAME
+                  value: "steward"
+                - name: GIT_AUTHOR_EMAIL
+                  value: "steward@example.com"
+                - name: VCS_LOGIN
+                  value: 
+              resources:
+                {}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: release-name-steward
+            - name: config-values
+              configMap:
+                name: release-name-steward
+                defaultMode: 493
+          restartPolicy: OnFailure

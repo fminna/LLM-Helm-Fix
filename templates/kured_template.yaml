@@ -1,0 +1,147 @@
+---
+# Source: kured/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kured
+  namespace: default
+---
+# Source: kured/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-kured
+  labels:
+    app: kured
+    chart: kured-1.2.0
+    release: release-name
+    heritage: Helm
+rules:
+# Allow kured to read spec.unschedulable
+# Allow kubectl to drain/uncordon
+#
+# NB: These permissions are tightly coupled to the bundled version of kubectl; the ones below
+# match https://github.com/kubernetes/kubernetes/blob/v1.12.1/pkg/kubectl/cmd/drain.go
+#
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs:     ["get", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs:     ["list","delete","get"]
+- apiGroups: ["extensions"]
+  resources: ["daemonsets"]
+  verbs:     ["get"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs:     ["create"]
+---
+# Source: kured/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-kured
+  labels:
+    app: kured
+    chart: kured-1.2.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-kured
+subjects:
+- kind: ServiceAccount
+  name: release-name-kured
+  namespace: default
+---
+# Source: kured/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: release-name-kured
+  labels:
+    app: kured
+    chart: kured-1.2.0
+    release: release-name
+    heritage: Helm
+rules:
+# Allow kured to lock/unlock itself
+- apiGroups:     ["extensions"]
+  resources:     ["daemonsets"]
+  resourceNames: ["release-name-kured"]
+  verbs:         ["update"]
+---
+# Source: kured/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: default
+  name: release-name-kured
+  labels:
+    app: kured
+    chart: kured-1.2.0
+    release: release-name
+    heritage: Helm
+subjects:
+- kind: ServiceAccount
+  namespace: default
+  name: release-name-kured
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-kured
+---
+# Source: kured/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: release-name-kured
+  namespace: default
+  labels:
+    app: kured
+    chart: kured-1.2.0
+    release: release-name
+    heritage: Helm
+
+spec:
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: kured
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: kured
+        release: release-name
+    spec:
+      serviceAccountName: release-name-kured
+      hostPID: true
+      restartPolicy: Always
+      containers:
+        - name: kured
+          image: "weaveworks/kured:1.2.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true # Give permission to nsenter /proc/1/ns/mnt
+          resources:
+            null
+          command:
+            - /usr/bin/kured
+          args:
+            - --ds-name=release-name-kured
+            - --ds-namespace=default
+          env:
+            # Pass in the name of the node on which this pod is scheduled
+            # for use with drain/uncordon operations and lock acquisition
+            - name: KURED_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+      restartPolicy: Always
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master

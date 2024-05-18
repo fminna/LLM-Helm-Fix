@@ -1,0 +1,173 @@
+---
+# Source: druid-http-gateway/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: druid-http-gateway-release-name
+  labels:
+    app: druid-http-gateway
+    chart: druid-http-gateway-0.1.3
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: druid-http-gateway
+      release: release-name
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    - ports:
+      - port: 8080
+        protocol: TCP      
+  egress:
+---
+# Source: druid-http-gateway/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: druid-http-gateway-release-name-secret-config
+  labels:
+    app: druid-http-gateway
+    chart: druid-http-gateway-0.1.3
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  druid_pass: "YmFy"
+---
+# Source: druid-http-gateway/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: druid-http-gateway-base-config
+  labels:
+    app: druid-http-gateway
+    chart: druid-http-gateway-0.1.3
+    release: release-name
+    heritage: Helm
+data:
+  config.yaml: |-     
+    service_name: 
+    
+    listen_address: 0.0.0.0
+    listen_port: 8080
+    
+    # Log level, one of (in increasing severity): debug, info, warning, error and fatal
+    log_level: info
+    
+    druid:
+      host: http://localhost
+      port: 8082
+      datasource: my_datasource
+      tls:
+        ca: /etc/ssl/certs/wmf-ca-certificates.crt
+---
+# Source: druid-http-gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: druid-http-gateway-release-name
+  labels:
+    app: druid-http-gateway
+    chart: druid-http-gateway-0.1.3
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  selector:
+    app: druid-http-gateway
+    routed_via: release-name
+  ports:
+    - name: http
+      targetPort: 8080
+      port: 8080
+---
+# Source: druid-http-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: druid-http-gateway-release-name
+  labels:
+    app: druid-http-gateway
+    chart: druid-http-gateway-0.1.3
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: druid-http-gateway
+      release: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: druid-http-gateway
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/secrets: 831c65b4b26b04404b24ac2536a8d96123579f4d6082edd53675579f5b1d4b07
+        checksum/config: 41f0ebb24581110f91ced7b3f4351d0e88ce55d32a32230c7ecd35e92d72d5ac        
+    spec:
+      containers:        
+        # The main application container
+        - name: druid-http-gateway-release-name
+          image: "docker-registry.wikimedia.org/:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: druid-http-gateway-release-name
+            - name: DRUID_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: druid-http-gateway-release-name-secret-config
+                  key: druid_pass
+          
+          resources:
+            requests:
+              cpu: 1m
+              memory: 200Mi
+            limits:
+              cpu: 1
+              memory: 400Mi
+          
+          volumeMounts:
+            - mountPath: /etc/druid-http-gateway/
+              name: config-volume        
+      volumes:        
+        
+        # TLS configurations
+        # Additional app-specific volumes.
+        - configMap:
+            name: druid-http-gateway-base-config
+          name: config-volume
+---
+# Source: druid-http-gateway/templates/ingress.yaml
+---
+---
+# Source: druid-http-gateway/templates/tests/test-service-checker.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'druid-http-gateway-release-name-service-checker'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'druid-http-gateway-release-name-service-checker'
+    image: "docker-registry.wikimedia.org/service-checker"
+    imagePullPolicy: IfNotPresent
+    args: ["-t", "5", '$(DRUID_HTTP_GATEWAY_RELEASE_NAME_SERVICE_HOST)', 'http://druid-http-gateway-release-name:8080']
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

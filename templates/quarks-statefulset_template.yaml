@@ -1,0 +1,274 @@
+---
+# Source: quarks-statefulset/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quarks-statefulset
+  namespace: default
+---
+# Source: quarks-statefulset/templates/cluster-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: release-name-quarks-statefulset
+rules:
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests
+  verbs:
+  - approve
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - signers
+  resourceNames:
+  - kubernetes.io/legacy-unknown
+  verbs:
+  - approve
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests/approval
+  verbs:
+  - create
+  - update
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - update
+
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  verbs:
+  - create
+  - delete
+  - update
+
+# for monitored namespaces
+
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+
+# for active passive probe
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - create
+
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - delete
+  - get
+  - list
+  - update
+  - watch
+
+- apiGroups:
+  - quarks.cloudfoundry.org
+  resources:
+  - quarksstatefulsets
+  verbs:
+  - delete
+  - get
+  - list
+  - update
+  - watch
+
+- apiGroups:
+  - quarks.cloudfoundry.org
+  resources:
+  - quarksstatefulsets/status
+  verbs:
+  - update
+---
+# Source: quarks-statefulset/templates/role-webhook.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: quarks-statefulset-webhook
+  namespace: default
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+  - update
+---
+# Source: quarks-statefulset/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: qsts-webhook
+  namespace: default
+spec:
+  selector:
+    name: quarks-statefulset
+  ports:
+  - port: 443
+    targetPort: 2999
+---
+# Source: quarks-statefulset/templates/operator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quarks-statefulset
+  namespace: "default"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: quarks-statefulset
+  template:
+    metadata:
+      labels:
+        name: quarks-statefulset
+    spec:
+      serviceAccountName: quarks-statefulset
+      containers:
+        - name: quarks-statefulset
+          image: "ghcr.io/cloudfoundry-incubator/quarks-statefulset:v1.0.1320"
+          ports:
+          - containerPort: 60000
+            name: metrics
+          - containerPort: 2999
+            name: webhook
+          command:
+          - quarks-statefulset
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: APPLY_CRD
+              value: "true"
+            - name: LOG_LEVEL
+              value: "debug"
+            - name: MAX_WORKERS
+              value: "1"
+            - name: CTX_TIMEOUT
+              value: "30"
+            - name: MELTDOWN_DURATION
+              value: "60"
+            - name: MELTDOWN_REQUEUE_AFTER
+              value: "30"
+            - name: MONITORED_ID
+              value: release-name-quarks-statefulset
+            - name: QUARKS_STATEFULSET_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "quarks-statefulset"
+            - name: QUARKS_STS_WEBHOOK_SERVICE_PORT
+              value: "2999"
+            - name: QUARKS_STS_WEBHOOK_USE_SERVICE_REFERENCE
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 2999
+              scheme: "HTTPS"
+            initialDelaySeconds: 2
+---
+# Source: quarks-statefulset/templates/service-account.yaml
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: release-name-quarks-statefulset
+    roleRef:
+      kind: ClusterRole
+      name: release-name-quarks-statefulset
+      apiGroup: rbac.authorization.k8s.io
+    subjects:
+    - kind: ServiceAccount
+      name: quarks-statefulset
+      namespace: "default"
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: quarks-statefulset-webhook
+      namespace: default
+    subjects:
+    - kind: ServiceAccount
+      name: quarks-statefulset
+      namespace: default
+    roleRef:
+      kind: Role
+      name: quarks-statefulset-webhook
+      apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,145 @@
+---
+# Source: horizon-issuer/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-horizon-issuer
+  namespace: default
+  labels:
+    helm.sh/chart: horizon-issuer-0.2.0
+    app.kubernetes.io/name: horizon-issuer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: horizon-issuer/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-horizon-issuer
+rules:
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["*"]
+
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests", "certificates"]
+    verbs: ["get", "list", "update", "watch"]
+
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests/finalizers"]
+    verbs: ["update"]
+
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests/status"]
+    verbs: ["get", "patch", "update"]
+
+  - apiGroups: ["horizon.evertrust.io"]
+    resources: ["clusterissuers", "issuers"]
+    verbs: ["*"]
+
+  # Issuers and ClusterIssuers
+  - apiGroups: ["horizon.evertrust.io"]
+    resources: ["clusterissuers/finalizers", "issuers/finalizers"]
+    verbs: ["update"]
+
+  - apiGroups: ["horizon.evertrust.io"]
+    resources: ["clusterissuers/status", "issuers/status"]
+    verbs: ["get", "patch", "update"]
+
+  # Cert-maanger approver
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+
+  # Ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: horizon-issuer/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: -release-name-horizon-issuer
+  labels:
+    helm.sh/chart: horizon-issuer-0.2.0
+    app.kubernetes.io/name: horizon-issuer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-horizon-issuer
+subjects:
+  - kind: ServiceAccount
+    name: release-name-horizon-issuer
+    namespace: default
+---
+# Source: horizon-issuer/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-horizon-issuer
+  namespace: default
+  labels:
+    helm.sh/chart: horizon-issuer-0.2.0
+    app.kubernetes.io/name: horizon-issuer
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: horizon-issuer
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: horizon-issuer
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-horizon-issuer
+      securityContext:
+        runAsUser: 65532
+      containers:
+        - name: horizon-issuer
+          securityContext:
+            allowPrivilegeEscalation: false
+          image: "registry.evertrust.io/horizon-issuer:0.3.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /manager
+          args:
+            - --leader-elect
+            - --health-check-interval=120
+          ports:
+            - containerPort: 8080
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          env:
+          resources:
+            {}
+      terminationGracePeriodSeconds: 10

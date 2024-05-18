@@ -1,0 +1,146 @@
+---
+# Source: cerebro/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-cerebro
+  labels:
+    app: cerebro
+    chart: cerebro-1.0.3
+    release: release-name
+    heritage: Helm
+data:
+  application.conf: |-
+    secret = "UEDyjUilllzfKobK8juGJSCTimQxrOFRYeO0rR3FGmocMCnyZVSZWKq5IdhqJzCa"
+    play.ws.ssl.loose.acceptAnyCertificate = false
+
+    basePath = "/"
+
+    pidfile.path = /dev/null
+
+    rest.history.size = 50
+
+    data.path = "/var/db/cerebro/cerebro.db"
+
+    es = {
+      gzip = true
+    }
+
+    auth = {
+      # either basic or ldap
+      type: ${?AUTH_TYPE}
+      settings {
+        # LDAP
+        url = ${?LDAP_URL}
+        base-dn = ${?LDAP_BASE_DN}
+        method = ${?LDAP_METHOD}
+        user-template = ${?LDAP_USER_TEMPLATE}
+        bind-dn = ${?LDAP_BIND_DN}
+        bind-pw = ${?LDAP_BIND_PWD}
+        group-search {
+          base-dn = ${?LDAP_GROUP_BASE_DN}
+          user-attr = ${?LDAP_USER_ATTR}
+          user-attr-template = ${?LDAP_USER_ATTR_TEMPLATE}
+          group = ${?LDAP_GROUP}
+        }
+
+        # Basic auth
+        username = ${?BASIC_AUTH_USER}
+        password = ${?BASIC_AUTH_PWD}
+      }
+    }
+
+    hosts = [
+    ]
+---
+# Source: cerebro/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cerebro
+  labels:
+    app: cerebro
+    chart: cerebro-1.0.3
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: cerebro
+    release: release-name
+---
+# Source: cerebro/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-cerebro
+  labels:
+    app: cerebro
+    chart: cerebro-1.0.3
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: cerebro
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: cerebro
+        release: release-name
+      annotations:
+        checksum/config: 801bd2c06428c29ccb2621689fcbdc835b8388564bd0e7e71edab700aeb040d7
+    spec:
+      serviceAccountName: default
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: cerebro
+          image: "quay.io/labmonkeys/cerebro:0.9.4.b417"
+          imagePullPolicy: IfNotPresent
+          args: ["-Dconfig.file=/etc/cerebro/application.conf"]
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          volumeMounts:
+            - name: db
+              mountPath: /var/db/cerebro
+            - name: config
+              mountPath: /etc/cerebro
+            - name: logs
+              mountPath: /opt/cerebro/logs/
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+          resources:
+            {}
+      volumes:
+        - name: db
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: release-name-cerebro

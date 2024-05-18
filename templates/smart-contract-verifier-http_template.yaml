@@ -1,0 +1,236 @@
+---
+# Source: smart-contract-verifier-http/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-smart-contract-verifier-http
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+---
+# Source: smart-contract-verifier-http/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-smart-contract-verifier-http-env
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+---
+# Source: smart-contract-verifier-http/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-smart-contract-verifier-http
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.toml: |
+    [server.http]
+    enabled = true
+    addr = "0.0.0.0:8050"
+    
+    [compilers]
+    # if omitted, number of CPU cores would be used
+    # max_threads = 8
+    
+    [solidity]
+    enabled = true
+    compilers_dir = "/data/solidity-compilers"
+    refresh_versions_schedule = "0 0 * * * * *"
+    [solidity.fetcher.list]
+    list_url = "https://solc-bin.ethereum.org/linux-amd64/list.json"
+    
+    #[solidity.fetcher.s3]
+    #access_key = "access_key"
+    #secret_key = "secret_key"
+    #region = "region"
+    #endpoint = "endpoint"
+    ## The only required field for the s3 fetcher
+    #bucket = "bucket"
+    
+    [vyper]
+    enabled = true
+    compilers_dir = "/data/vyper-compilers"
+    refresh_versions_schedule = "0 0 * * * * *"
+    [vyper.fetcher.list]
+    list_url = "https://raw.githubusercontent.com/blockscout/solc-bin/main/vyper.list.json"
+    
+    [sourcify]
+    enabled = true
+    api_url = "https://sourcify.dev/server/"
+    verification_attempts = 3
+    request_timeout = 10
+    
+    [metrics]
+    enabled = false
+    addr = "0.0.0.0:6060"
+    route = "/metrics"
+    
+    [jaeger]
+    enabled = false
+    agent_endpoint = "localhost:6831"
+---
+# Source: smart-contract-verifier-http/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-smart-contract-verifier-http-headless
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - port: 8050
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+---
+# Source: smart-contract-verifier-http/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-smart-contract-verifier-http
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8050
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+---
+# Source: smart-contract-verifier-http/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-smart-contract-verifier-http
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: smart-contract-verifier-http
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-smart-contract-verifier-http-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: smart-contract-verifier-http
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: 0496e78ddee0a52de13d864f7a406508de049c11d0833d8ef4f032f52c3e954c
+        checksum/secrets: 69a8761ce99c00200a2b19629674523b042460530fc272f6c9aa30e923c354c1
+    spec:
+      serviceAccountName: release-name-smart-contract-verifier-http
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+      initContainers:
+      containers:
+        - name: smart-contract-verifier-http
+          image: "ghcr.io/blockscout/smart-contract-verifier:main"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {}
+          volumeMounts:
+            - name: config
+              mountPath: "/app/config.toml"
+              subPath: config.toml
+              readOnly: true
+            - name: storage
+              mountPath: "/data"
+          ports:
+            - name: http
+              containerPort: 8050
+              protocol: TCP
+            - name: metrics
+              containerPort: 6060
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 60
+            periodSeconds: 120
+            tcpSocket:
+              port: http
+          readinessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            tcpSocket:
+              port: http
+          resources:
+            {}
+          env:
+            - name: SMART_CONTRACT_VERIFIER__CONFIG
+              value: /app/config.toml
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      tolerations:
+        []
+      topologySpreadConstraints:
+        []
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-smart-contract-verifier-http
+        - name: storage
+          emptyDir: {}
+---
+# Source: smart-contract-verifier-http/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-smart-contract-verifier-http-test-connection"
+  labels:
+    helm.sh/chart: smart-contract-verifier-http-0.1.3
+    app.kubernetes.io/name: smart-contract-verifier-http
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ['curl']
+      args:
+       - --location
+       - --request
+       - GET
+       - 'release-name-smart-contract-verifier-http:8050/'
+  restartPolicy: Never

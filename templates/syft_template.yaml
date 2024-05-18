@@ -1,0 +1,1003 @@
+---
+# Source: syft/templates/backend/backend-service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-service-account
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+---
+# Source: syft/templates/backend/backend-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+type: Opaque
+data:
+  defaultRootPassword: cHhEaFE3ZmxPc3Y5TWZyQ3h4QTNhOFJvQ0FlOWpTWG8=
+---
+# Source: syft/templates/backend/backend-service-account.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-service-secret
+  annotations:
+    kubernetes.io/service-account.name: "backend-service-account"
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+type: kubernetes.io/service-account-token
+---
+# Source: syft/templates/mongo/mongo-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongo-secret
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: mongo
+type: Opaque
+data:
+  rootPassword: YkxBaTRtS0todHZUUUJQMHdQMm1oTmpkRFk5VUZteGI=
+---
+# Source: syft/templates/seaweedfs/seaweedfs-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: seaweedfs-secret
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: seaweedfs
+type: Opaque
+data:
+  s3RootPassword: Tk5YRTVvODRLNmdhWUo3ekQ4QWpHcDFNMmNBc3JOVkE=
+---
+# Source: syft/templates/proxy/proxy-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-config
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: proxy
+data:
+  dynamic.yml: |
+    http:
+      services:
+        frontend:
+          loadBalancer:
+            servers:
+              - url: "http://frontend"
+        backend:
+          loadBalancer:
+            servers:
+              - url: "http://backend"
+        seaweedfs:
+          loadBalancer:
+            servers:
+              - url: "http://seaweedfs:8333"
+      routers:
+        frontend:
+          rule: "PathPrefix(`/`)"
+          entryPoints:
+            - "web"
+          service: "frontend"
+        backend:
+          rule: "PathPrefix(`/api`) || PathPrefix(`/docs`) || PathPrefix(`/redoc`)"
+          entryPoints:
+            - "web"
+          service: "backend"
+        blob-storage:
+          rule: "PathPrefix(`/blob`)"
+          entryPoints:
+            - "web"
+          service: "seaweedfs"
+          middlewares:
+            - "blob-storage-url"
+            - "blob-storage-host"
+      middlewares:
+        blob-storage-host:
+          headers:
+            customrequestheaders:
+              Host: seaweedfs:8333
+        blob-storage-url:
+          stripprefix:
+            prefixes: /blob
+            forceslash: true
+  traefik.yml: |
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+
+    log:
+      level: INFO
+
+    entryPoints:
+      web:
+        address: :80
+      ping:
+        address: :8082
+
+    ping:
+      entryPoint: "ping"
+
+    providers:
+      file:
+        filename: /etc/traefik/dynamic.yml
+---
+# Source: syft/templates/seaweedfs/seaweedfs-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seaweedfs-config
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: seaweedfs
+data:
+  filer.toml: |
+    [leveldb2]
+    enabled = true
+    dir = "./filerldb2"
+  start.sh: |
+    #! /usr/bin/env bash
+
+    sleep 30 &&
+    echo "s3.configure -access_key ${S3_ROOT_USER} -secret_key ${S3_ROOT_PWD} -user iam -actions Read,Write,List,Tagging,Admin -apply" \
+    | weed shell > /dev/null 2>&1 \
+    & weed server -s3 -s3.port=${S3_PORT} -master.volumeSizeLimitMB=${S3_VOLUME_SIZE_MB}
+---
+# Source: syft/templates/backend/backend-service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backend-service-role
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "secrets"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+# Source: syft/templates/backend/backend-service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backend-service-role-binding
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+subjects:
+  - kind: ServiceAccount
+    name: backend-service-account
+roleRef:
+  kind: Role
+  name: backend-service-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: syft/templates/backend/backend-headless-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-headless
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+spec:
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: backend
+  clusterIP: None
+  ports:
+    - name: api
+      port: 80
+---
+# Source: syft/templates/backend/backend-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: backend
+  ports:
+    - name: api
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: queue
+      protocol: TCP
+      port: 5556
+      targetPort: 5556
+---
+# Source: syft/templates/frontend/frontend-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: ui
+      protocol: TCP
+      port: 80
+      targetPort: 80
+---
+# Source: syft/templates/mongo/mongo-headless-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-headless
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: mongo
+spec:
+  clusterIP: None
+  ports:
+    - name: mongo
+      port: 27017
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: mongo
+---
+# Source: syft/templates/mongo/mongo-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: mongo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: mongo
+  ports:
+    - name: mongo
+      port: 27017
+      protocol: TCP
+      targetPort: 27017
+---
+# Source: syft/templates/proxy/proxy-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: proxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: proxy
+      protocol: TCP
+      port: 80
+      targetPort: 80
+---
+# Source: syft/templates/registry/registry-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: registry
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: registry
+  ports:
+  - name: registry
+    protocol: TCP
+    port: 80
+    targetPort: 5000
+---
+# Source: syft/templates/seaweedfs/seaweedfs-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: seaweedfs
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: seaweedfs
+  ports:
+    - name: filer
+      protocol: TCP
+      port: 8888
+      targetPort: 8888
+    - name: s3
+      protocol: TCP
+      port: 8333
+      targetPort: 8333
+    - name: mount-api
+      protocol: TCP
+      port: 4001
+      targetPort: 4001
+---
+# Source: syft/templates/frontend/frontend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: frontend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+        - name: frontend-container
+          image: docker.io/openmined/grid-frontend:0.8.6
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: 500m
+              ephemeral-storage: 1Gi
+              memory: 512Mi
+            requests:
+              cpu: 250m
+              ephemeral-storage: 50Mi
+              memory: 256Mi
+          ports:
+            - name: ui-port
+              containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: /health?probe=startupProbe
+              port: ui-port
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+      terminationGracePeriodSeconds: 5
+---
+# Source: syft/templates/proxy/proxy-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: proxy
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: proxy-container
+          image: traefik:v2.11
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: 200m
+              ephemeral-storage: 1Gi
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          ports:
+            - name: proxy-port
+              containerPort: 80
+            - name: ping-port
+              containerPort: 8082
+          volumeMounts:
+            - mountPath: /etc/traefik
+              name: traefik-conf
+              readOnly: false
+          startupProbe: null
+          livenessProbe:
+            httpGet:
+              path: /ping?probe=livenessProbe
+              port: ping-port
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe: null
+      terminationGracePeriodSeconds: 5
+      volumes:
+      - configMap:
+          name: proxy-config
+        name: traefik-conf
+---
+# Source: syft/templates/backend/backend-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: backend
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: backend
+  serviceName: backend-headless
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: backend-container
+          image: docker.io/openmined/grid-backend:0.8.6
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: "1.0"
+              ephemeral-storage: 1Gi
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              ephemeral-storage: 50Mi
+              memory: 512Mi
+          env:
+            # kubernetes runtime
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CONTAINER_HOST
+              value: "k8s"
+            # syft
+            - name: NODE_TYPE
+              value: "domain"
+            - name: NODE_NAME
+              value: "release-name"
+            - name: NODE_SIDE_TYPE
+              value: "high"
+            - name: DEFAULT_ROOT_EMAIL
+              value: "info@openmined.org"
+            - name: DEFAULT_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: defaultRootPassword
+            - name: LOG_LEVEL
+              value: "info"
+            - name: QUEUE_PORT
+              value: "5556"
+            - name: CREATE_PRODUCER
+              value: "true"
+            - name: INMEMORY_WORKERS
+              value: "false"
+            - name: DEFAULT_WORKER_POOL_IMAGE
+              value: "docker.io/openmined/grid-backend:0.8.6"
+            - name: DEFAULT_WORKER_POOL_COUNT
+              value: "1"
+            # MongoDB
+            - name: MONGO_PORT
+              value: "27017"
+            - name: MONGO_HOST
+              value: "mongo"
+            - name: MONGO_USERNAME
+              value: "root"
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secret
+                  key: rootPassword
+            # SMTP
+            - name: SMTP_HOST
+              value: "smtp.sendgrid.net"
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_USERNAME
+              value: "apikey"
+            - name: SMTP_PASSWORD
+              value: "password"
+            - name: EMAIL_SENDER
+              value: "noreply@openmined.org"
+            # SeaweedFS
+            - name: S3_ROOT_USER
+              value: "admin"
+            - name: S3_ROOT_PWD
+              valueFrom:
+                secretKeyRef:
+                    name: seaweedfs-secret
+                    key: s3RootPassword
+            - name: S3_PORT
+              value: "8333"
+            - name: SEAWEED_MOUNT_PORT
+              value: "4001"
+            # Tracing
+            - name: TRACE
+              value: "false"
+            - name: SERVICE_NAME
+              value: "backend"
+            - name: JAEGER_HOST
+              value: "localhost"
+            - name: JAEGER_PORT
+              value: "14268"
+            # Oblivious
+            # Veilid
+          ports:
+            - name: api-port
+              containerPort: 80
+          volumeMounts:
+            - mountPath: /root/data/creds/
+              name: credentials-data
+              readOnly: false
+              subPath: credentials-data
+          startupProbe:
+            httpGet:
+              path: /api/v2/metadata?probe=startupProbe
+              port: api-port
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v2/?probe=livenessProbe
+              port: api-port
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe: null
+      serviceAccountName: backend-service-account
+      terminationGracePeriodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: credentials-data
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: backend
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Mi
+---
+# Source: syft/templates/mongo/mongo-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: mongo
+spec:
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: mongo
+  serviceName: mongo-headless
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: mongo
+    spec:
+      containers:
+        - name: mongo-container
+          image: mongo:7
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: 200m
+              ephemeral-storage: 1Gi
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: "root"
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-secret
+                  key: rootPassword
+          volumeMounts:
+            - mountPath: /data/db
+              name: mongo-data
+              readOnly: false
+              subPath: ''
+          ports:
+            - name: mongo-port
+              containerPort: 27017
+      terminationGracePeriodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: mongo-data
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: mongo
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: "5Gi"
+---
+# Source: syft/templates/registry/registry-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: registry
+spec:
+  replicas: 1
+  serviceName: registry
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: registry
+    spec:
+      containers:
+        - name: registry-container
+          image: registry:2
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: 200m
+              ephemeral-storage: 1Gi
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          env:
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          ports:
+            - name: registry-port
+              containerPort: 5000
+          volumeMounts:
+            - mountPath: /var/lib/registry
+              name: registry-data
+          startupProbe:
+            httpGet:
+              path: /v2/?probe=startupProbe
+              port: registry-port
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v2/?probe=livenessProbe
+              port: registry-port
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+      terminationGracePeriodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: registry-data
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: registry
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: "5Gi"
+---
+# Source: syft/templates/seaweedfs/seaweedfs-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seaweedfs
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: seaweedfs
+spec:
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: syft
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: seaweedfs
+  serviceName: seaweedfs
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/version: 0.8.6
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        helm.sh/chart: syft-0.8.6
+        app.kubernetes.io/component: seaweedfs
+    spec:
+      containers:
+        - name: seaweedfs-container
+          image: docker.io/openmined/grid-seaweedfs:0.8.6
+          imagePullPolicy: Always
+          resources: 
+            limits:
+              cpu: 200m
+              ephemeral-storage: 1Gi
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 50Mi
+              memory: 128Mi
+          env:
+            - name: S3_VOLUME_SIZE_MB
+              value: "1024"
+            - name: S3_ROOT_USER
+              value: "admin"
+            - name: S3_ROOT_PWD
+              valueFrom:
+                secretKeyRef:
+                    name: seaweedfs-secret
+                    key: s3RootPassword
+            - name: S3_PORT
+              value: "8333"
+            - name: SEAWEED_MOUNT_PORT
+              value: "4001"
+          volumeMounts:
+            - mountPath: /etc/seaweedfs/filer.toml
+              name: seaweedfs-config
+              readOnly: false
+              subPath: filer.toml
+            - mountPath: /etc/seaweedfs/start.sh
+              name: seaweedfs-config
+              readOnly: false
+              subPath: start.sh
+            - mountPath: /data/blob
+              name: seaweedfs-data
+              readOnly: false
+              subPath: ''
+      terminationGracePeriodSeconds: 5
+      volumes:
+        - configMap:
+            name: seaweedfs-config
+          name: seaweedfs-config
+  volumeClaimTemplates:
+  - metadata:
+      name: seaweedfs-data
+      labels:
+        app.kubernetes.io/name: syft
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: seaweedfs
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: "5Gi"
+---
+# Source: syft/templates/global/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress
+  labels:
+    app.kubernetes.io/name: syft
+    app.kubernetes.io/version: 0.8.6
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: syft-0.8.6
+    app.kubernetes.io/component: ingress
+spec:
+  defaultBackend:
+    service:
+      name: proxy
+      port:
+        number: 80
+  rules:
+  - host: 
+    http:
+      paths:
+      - backend:
+          service:
+            name: proxy
+            port:
+              number: 80
+        path: /
+        pathType: Prefix

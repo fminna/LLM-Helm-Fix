@@ -1,0 +1,859 @@
+---
+# Source: turbinia/charts/redis/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+---
+# Source: turbinia/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: turbinia
+  namespace: "default"
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+---
+# Source: turbinia/charts/redis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: turbinia/charts/redis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: turbinia/charts/redis/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--protected-mode" "no")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: turbinia/templates/init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-turbinia-init-configmap
+  namespace: "default"
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+data:
+  init-turbinia.sh: |
+    #!/bin/sh
+    set -e
+    apk add jq
+
+    # Fix Filestore permissions
+    chmod go+w /mnt/turbiniavolume
+
+    # Create turbinia config directory
+    mkdir -p /etc/turbinia
+    cd /etc/turbinia
+
+    if [  $(ls /tmp/turbinia/ | wc -l) -gt 0 ]; then
+      echo "Using exisiting configuration file provided."
+      cp /tmp/turbinia/* /etc/turbinia/
+    else
+      # Pull default config if one is not already provided
+      echo -n "* Fetching the release Turbinia configuration file..." 
+      RELEASE_TAG=$(wget -O- https://api.github.com/repos/google/turbinia/releases | jq -r '.[0] | .tag_name')
+      wget "https://raw.githubusercontent.com/google/turbinia/$RELEASE_TAG/turbinia/config/turbinia_config_tmpl.py" -O turbinia.conf
+    fi
+
+    # Set up the Redis connection
+    sed -i -e "s/^TASK_MANAGER = .*$/TASK_MANAGER = 'Celery'/g" turbinia.conf
+    sed -i -e "s/^STATE_MANAGER = .*$/STATE_MANAGER = 'Redis'/g" turbinia.conf
+    sed -i -e 's#^REDIS_HOST =.*#REDIS_HOST = "release-name-redis-master"#' turbinia.conf 
+    sed -i -e 's#^CELERY_BROKER =.*#CELERY_BROKER = "redis://release-name-redis-master:6379"#' turbinia.conf
+    sed -i -e 's#^CELERY_BACKEND =.*#CELERY_BACKEND = "redis://release-name-redis-master:6379"#' turbinia.conf
+    sed -i -e "s/^DEBUG_TASKS = .*$/DEBUG_TASKS = True/g" turbinia.conf
+    
+    # Setup logging, mount, and output paths
+    sed -i -e "s/^SHARED_FILESYSTEM = .*$/SHARED_FILESYSTEM = True/g" turbinia.conf
+    sed -i -e "s/^LOG_DIR = .*$/LOG_DIR = '\/mnt\/turbiniavolume\/logs'/g" turbinia.conf
+    sed -i -e "s/^MOUNT_DIR_PREFIX = .*$/MOUNT_DIR_PREFIX = '\/mnt\/turbinia'/g" turbinia.conf
+    sed -i -e "s/^OUTPUT_DIR = .*$/OUTPUT_DIR = '\/mnt\/turbiniavolume\/output'/g" turbinia.conf
+    sed -i -e "s/^API_EVIDENCE_UPLOAD_DIR = .*$/API_EVIDENCE_UPLOAD_DIR = '\/mnt\/turbiniavolume\/upload'/g" turbinia.conf
+    
+    # Disable Turbinia Jobs
+    sed -i -e "s/^DISABLED_JOBS = .*$/DISABLED_JOBS = ['BinaryExtractorJob', 'BulkExtractorJob', 'HindsightJob', 'PhotorecJob', 'VolatilityJob']/g" turbinia.conf
+    # Set up Prometheus metrics
+    sed -i -e "s/^PROMETHEUS_ENABLED = .*$/PROMETHEUS_ENABLED = True/g" turbinia.conf
+---
+# Source: turbinia/templates/pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations: 
+    helm.sh/resource-policy: keep
+  name: turbiniavolume-claim
+  namespace: "default"
+spec:
+  
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "2Gi"
+---
+# Source: turbinia/charts/redis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+  annotations:
+    
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+---
+# Source: turbinia/charts/redis/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master
+---
+# Source: turbinia/templates/metrics/api-metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-turbinia-api-metrics
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  ports:
+    - port: 9200
+      targetPort: 9200
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+---
+# Source: turbinia/templates/metrics/server-metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-turbinia-server-metrics
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  ports:
+    - port: 9200
+      targetPort: 9200
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+---
+# Source: turbinia/templates/metrics/worker-metrics-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-turbinia-worker-metrics
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  ports:
+    - port: 9200
+      targetPort: 9200
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+---
+# Source: turbinia/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-turbinia
+  labels:
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+---
+# Source: turbinia/templates/api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:  release-name-turbinia-api
+  namespace: "default"
+  labels:
+    app.kubernetes.io/component: api
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: api
+      app.kubernetes.io/name: turbinia
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        # Have Deployment restart after each upgrade
+        roll: "VR2Oy"
+        prometheus.io/port: "9200"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/component: api
+        app.kubernetes.io/name: turbinia
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: turbinia
+      securityContext:
+        {}
+      initContainers:
+        - name: init-turbinia
+          image: alpine
+          command: ['sh', '-c', '/init/init-turbinia.sh']
+          env:
+          volumeMounts:
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /init
+              name: init-turbinia
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+            - mountPath: /tmp/turbinia
+              name: user-configs 
+      containers:
+        - name: api
+          securityContext:
+            {}
+          image: "us-docker.pkg.dev/osdfir-registry/turbinia/release/turbinia-api-server:latest"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            exec:
+              command: ['sh', '-c', "ps aux | grep api_server | grep -v grep"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          env:
+            - name: TURBINIA_EXTRA_ARGS
+              value: "-d"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - mountPath: /var/log
+              name: logs
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+          ports:
+            - containerPort: 9200
+            - containerPort: 8000
+          resources:
+            limits: {}
+            requests: {}
+      volumes:
+        - name: turbiniavolume
+          persistentVolumeClaim:
+            claimName: turbiniavolume-claim
+            readOnly: false
+        - name: logs
+          emptyDir: {}
+        - name: init-turbinia
+          configMap:
+            name: release-name-turbinia-init-configmap
+            defaultMode: 0777
+        - name: turbinia-configs
+          emptyDir: {}
+        - name: user-configs
+          configMap:
+            name: release-name-turbinia-configmap
+            optional: true
+---
+# Source: turbinia/templates/server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:  release-name-turbinia-server
+  namespace: "default"
+  labels:
+    app.kubernetes.io/component: server
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: server
+      app.kubernetes.io/name: turbinia
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        # Have Deployment restart after each upgrade
+        roll: "NOEAM"
+        prometheus.io/port: "9200"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/component: server
+        app.kubernetes.io/name: turbinia
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: turbinia
+      securityContext:
+        {}
+      initContainers:
+        - name: init-turbinia
+          image: alpine
+          command: ['sh', '-c', '/init/init-turbinia.sh']
+          env:
+          volumeMounts:
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /init
+              name: init-turbinia
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+            - mountPath: /tmp/turbinia
+              name: user-configs 
+      containers:
+        - name: server
+          securityContext:
+            {}
+          image: "us-docker.pkg.dev/osdfir-registry/turbinia/release/turbinia-server:latest"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TURBINIA_EXTRA_ARGS
+              value: "-d"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+          ports:
+            - containerPort: 9200
+          resources:
+            limits: {}
+            requests: {}
+      volumes:
+        - name: turbiniavolume
+          persistentVolumeClaim:
+            claimName: turbiniavolume-claim
+            readOnly: false
+        - name: init-turbinia
+          configMap:
+            name: release-name-turbinia-init-configmap
+            defaultMode: 0744
+        - name: turbinia-configs
+          emptyDir: {}
+        - name: user-configs
+          configMap:
+            name: release-name-turbinia-configmap
+            optional: true
+---
+# Source: turbinia/templates/worker-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name:  release-name-turbinia-worker
+  namespace: "default"
+  labels:
+    app.kubernetes.io/component: worker
+    helm.sh/chart: turbinia-1.0.5
+    app.kubernetes.io/name: turbinia
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    date: "2024-05-15"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/name: turbinia
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        # Have Deployment restart after each upgrade
+        roll: "tRJko"
+        prometheus.io/port: "9200"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/name: turbinia
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: turbinia
+      securityContext:
+        {}
+      initContainers:
+        - name: init-turbinia
+          image: alpine
+          command: ['sh', '-c', '/init/init-turbinia.sh']
+          env:
+          volumeMounts:
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /init
+              name: init-turbinia
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+            - mountPath: /tmp/turbinia
+              name: user-configs 
+      # The grace period needs to be set to the largest task timeout as
+      # set in the turbinia configuration file.
+      terminationGracePeriodSeconds: 86400
+      containers:
+        - name: worker
+          securityContext:
+            privileged: true
+          image: "us-docker.pkg.dev/osdfir-registry/turbinia/release/turbinia-worker:latest"
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - "touch /tmp/turbinia-to-scaledown.lock && sleep 5 && /usr/bin/python3 /home/turbinia/check-lockfile.py"
+          env:
+            - name: TURBINIA_EXTRA_ARGS
+              value: "-d"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - mountPath: /mnt/turbiniavolume
+              name: turbiniavolume
+            - mountPath: /etc/turbinia
+              name: turbinia-configs
+          ports:
+            - containerPort: 9200
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: turbiniavolume
+          persistentVolumeClaim:
+            claimName: turbiniavolume-claim
+            readOnly: false
+        - name: init-turbinia
+          configMap:
+            name: release-name-turbinia-init-configmap
+            defaultMode: 0744
+        - name: turbinia-configs
+          emptyDir: {}
+        - name: user-configs
+          configMap:
+            name: release-name-turbinia-configmap
+            optional: true
+---
+# Source: turbinia/charts/redis/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    helm.sh/chart: redis-18.0.4
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: master
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis
+        helm.sh/chart: redis-18.0.4
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 86bcc953bb473748a3d3dc60b7c11f34e60c93519234d4c37f42e22ada559d47
+        checksum/health: aff24913d801436ea469d8d374b2ddb3ec4c43ee7ab24663d5f8ff1a1b6991a9
+        checksum/scripts: 43cdf68c28f3abe25ce017a82f74dbf2437d1900fd69df51a55a3edf6193d141
+        checksum/secret: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-redis
+      automountServiceAccountToken: true
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.2.1-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: redis-tmp-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "2Gi"

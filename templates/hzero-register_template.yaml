@@ -1,0 +1,120 @@
+---
+# Source: hzero-register/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hzero-register
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 8001
+      targetPort: actuator
+      protocol: TCP
+      name: actuator
+  selector:
+    choerodon.io/release: "release-name"
+---
+# Source: hzero-register/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/actuator/prometheus"
+      labels:
+        choerodon.io/version: 0.23.0
+        choerodon.io/service: "hzero-register"
+        choerodon.io/metrics-port: "8001"
+        choerodon.io/release: "release-name"
+    spec:
+      initContainers:
+      - name: skywalking-agent
+        image: registry.cn-shanghai.aliyuncs.com/c7n/skywalking-agent:6.6.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - cp -rfp /skywalking/agent/* /agent
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+      containers:
+      - name: release-name
+        image: registry.cn-shanghai.aliyuncs.com/c7n/hzero-register:0.23.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: "EUREKA_CLIENT_FETCH_REGISTRY"
+          value: "false"
+        - name: "EUREKA_CLIENT_REGISTER_WITH_EUREKA"
+          value: "false"
+        - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+          value: "http://hzero-register:8000/eureka/"
+        - name: "MANAGEMENT_SERVER_PORT"
+          value: "8001"
+        - name: "SERVER_PORT"
+          value: "8000"
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: actuator
+          containerPort: 8001
+          protocol: TCP
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            memory: 2Gi
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+        livenessProbe:
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 8000
+              && curl -s --fail localhost:8001/actuator/health
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 8000
+              && curl -s --fail localhost:8001/actuator/health
+      volumes:
+      - name: skywalking-agent
+        emptyDir: {}

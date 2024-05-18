@@ -1,0 +1,102 @@
+---
+# Source: vault-monitoring/templates/configmap.yaml
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: release-name-vault-monitoring-config
+  labels:
+    helm.sh/chart: vault-monitoring-0.3.1
+    app.kubernetes.io/name: vault-monitoring
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  vault-agent.hcl: |
+    pid_file = "/home/vault/pidfile"
+
+    vault = {
+      address = "https://vault.example.com"
+    }
+
+    auto_auth {
+        method "kubernetes" {
+            mount_path = "auth/kubernetes"
+            config = {
+                role = "metrics"
+            }
+        }
+
+        sink "file" {
+            config = {
+                path = "/home/vault/config-out/.vault-token"
+            }
+        }
+    }
+---
+# Source: vault-monitoring/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-monitoring
+  labels:
+    helm.sh/chart: vault-monitoring-0.3.1
+    app.kubernetes.io/name: vault-monitoring
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  externalName: vault.example.com
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: 443
+  sessionAffinity: None
+  type: ExternalName
+---
+# Source: vault-monitoring/templates/endpoint.yaml
+apiVersion: v1
+kind: Endpoints
+metadata:
+  labels:
+    helm.sh/chart: vault-monitoring-0.3.1
+    app.kubernetes.io/name: vault-monitoring
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  name: vault-monitoring
+subsets:
+- addresses:
+  - ip: 10.1.2.3
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+---
+# Source: vault-monitoring/templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault-monitoring
+  labels:
+    helm.sh/chart: vault-monitoring-0.3.1
+    app.kubernetes.io/name: vault-monitoring
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault-monitoring
+      app.kubernetes.io/instance: release-name
+  namespaceSelector:
+    matchNames:
+      - default
+  endpoints:
+    - interval: 30s
+      path: /v1/sys/metrics
+      params:
+        format:
+          - prometheus
+      port: https
+      scheme: https
+      scrapeTimeout: 30s
+      bearerTokenFile: "/etc/prometheus/config_out/.vault-token"
+      tlsConfig:
+        serverName: vault.example.com

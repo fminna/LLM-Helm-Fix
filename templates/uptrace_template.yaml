@@ -1,0 +1,700 @@
+---
+# Source: uptrace/templates/otelcol-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: otelcontribcol
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+  name: otelcontribcol
+---
+# Source: uptrace/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-uptrace
+  labels:
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: uptrace/templates/postgresql-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: uptrace-postgresql-secret
+type: Opaque
+data:
+  POSTGRES_USER: "dXB0cmFjZQ=="
+  POSTGRES_PASSWORD: "dXB0cmFjZQ=="
+---
+# Source: uptrace/templates/otelcol-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+      k8s_cluster:
+        auth_type: serviceAccount
+        collection_interval: 15s
+      kubeletstats:
+        collection_interval: 15s
+        auth_type: "serviceAccount"
+        endpoint: "https://${env:K8S_NODE_NAME}:10250"
+        insecure_skip_verify: true
+    processors:
+      resourcedetection:
+        detectors: ['system']
+      cumulativetodelta:
+      batch:
+        send_batch_size: 10000
+        timeout: 15s
+    exporters:
+      debug:
+      otlp/local:
+        endpoint: http://my-uptrace:14317
+        tls: { insecure: true }
+        headers: { 'uptrace-dsn': 'http://project1_secret_token@localhost:14317/1' }
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/local]
+        metrics:
+          receivers: [otlp, k8s_cluster, kubeletstats]
+          processors: [cumulativetodelta, batch]
+          exporters: [debug, otlp/local]
+        logs:
+          receivers: [otlp, k8s_cluster]
+          processors: [batch]
+          exporters: [debug, otlp/local]
+---
+# Source: uptrace/templates/uptrace-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-uptrace
+  labels:
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+data:
+  uptrace.yml: |
+    auth:
+      users:
+      - email: uptrace@localhost
+        name: Anonymous
+        notify_by_email: true
+        password: uptrace
+    ch:
+      addr: uptrace-clickhouse:9000
+      database: uptrace
+      max_execution_time: 30s
+      password: null
+      user: default
+    ch_schema:
+      compression: ZSTD(3)
+      metrics:
+        storage_policy: default
+        ttl_delete: 30 DAY
+      replicated: false
+      spans:
+        storage_policy: default
+        ttl_delete: 7 DAY
+    debug: false
+    listen:
+      grpc:
+        addr: :14317
+      http:
+        addr: :14318
+    logging:
+      level: INFO
+    metrics:
+      drop_attrs:
+      - telemetry_sdk_language
+      - telemetry_sdk_name
+      - telemetry_sdk_version
+    pg:
+      addr: uptrace-postgresql:5432
+      database: uptrace
+      password: uptrace
+      user: uptrace
+    projects:
+    - group_by_env: false
+      group_funcs_by_service: false
+      id: 1
+      name: Uptrace
+      pinned_attrs:
+      - service_name
+      - host_name
+      - deployment_environment
+      prom_compat: true
+      token: project1_secret_token
+    - id: 2
+      name: My project
+      pinned_attrs:
+      - service_name
+      - host_name
+      - deployment_environment
+      prom_compat: true
+      token: project2_secret_token
+    secret_key: 102c1a557c314fc28198acd017960843
+    site:
+      addr: http://localhost:14318/
+    smtp_mailer:
+      enabled: false
+      from: uptrace@localhost
+      host: localhost
+      password: mailhog
+      port: 1025
+      username: mailhog
+    spans: null
+    uptrace_go: null
+---
+# Source: uptrace/templates/otelcol-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - events
+      - namespaces
+      - namespaces/status
+      - nodes
+      - nodes/spec
+      - pods
+      - pods/status
+      - replicationcontrollers
+      - replicationcontrollers/status
+      - resourcequotas
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+      - cronjobs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+
+  # kubeletstatsreceiver
+  - apiGroups: [""]
+    resources: ["nodes/stats"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+# Source: uptrace/templates/otelcol-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otelcontribcol
+subjects:
+  - kind: ServiceAccount
+    name: otelcontribcol
+    namespace: default
+---
+# Source: uptrace/templates/clickhouse-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: uptrace-clickhouse
+  labels:
+    app: clickhouse
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8123
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9000
+      targetPort: tcp
+      protocol: TCP
+      name: tcp
+  selector:
+    app: clickhouse
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+---
+# Source: uptrace/templates/postgresql-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: uptrace-postgresql
+  labels:
+    app: postgresql
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: tcp
+      protocol: TCP
+      name: tcp
+  selector:
+    app: postgresql
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+---
+# Source: uptrace/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-uptrace
+  labels:
+    app: uptrace
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+
+spec:
+  type: ClusterIP
+  ports:
+    - port: 14318
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 14317
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    app: uptrace
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+---
+# Source: uptrace/templates/otelcol-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otelcontribcol
+      app.kubernetes.io/name: uptrace
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: otelcontribcol
+        app.kubernetes.io/name: uptrace
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: otelcontribcol
+      containers:
+        - name: otelcontribcol
+          image: otel/opentelemetry-collector-contrib
+          args: ['--config', '/etc/config/config.yaml']
+          volumeMounts:
+            - name: config
+              mountPath: /etc/config
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+      volumes:
+        - name: config
+          configMap:
+            name: otelcontribcol
+---
+# Source: uptrace/templates/clickhouse-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: uptrace-clickhouse
+  labels:
+    app: clickhouse
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: uptrace-clickhouse
+  selector:
+    matchLabels:
+      app: clickhouse
+      app.kubernetes.io/name: uptrace
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+        app.kubernetes.io/name: uptrace
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-uptrace
+      securityContext:
+        {}
+      containers:
+        - name: uptrace
+          securityContext:
+            {}
+          image: "clickhouse/clickhouse-server:23.11"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLICKHOUSE_DB
+              value: uptrace
+          volumeMounts:
+          - name: uptrace-clickhouse-data
+            mountPath: /var/lib/clickhouse
+          ports:
+            - name: http
+              containerPort: 8123
+              protocol: TCP
+            - name: tcp
+              containerPort: 9000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+      volumes: []
+
+  volumeClaimTemplates:
+  - metadata:
+      name: uptrace-clickhouse-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 8Gi
+---
+# Source: uptrace/templates/postgresql-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: uptrace-postgresql
+  labels:
+    app: postgresql
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: uptrace-postgresql
+  selector:
+    matchLabels:
+      app: postgresql
+      app.kubernetes.io/name: uptrace
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        app.kubernetes.io/name: uptrace
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-uptrace
+      securityContext:
+        {}
+      containers:
+        - name: uptrace
+          securityContext:
+            {}
+          image: "postgres:15-alpine"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: uptrace-postgresql-secret # Secret name
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: uptrace-postgresql-secret # Secret name
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+          - name: uptrace-postgresql-data
+            mountPath: /var/lib/postgresql/data
+          ports:
+            - name: tcp
+              containerPort: 5432
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "postgres" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          resources:
+            {}
+      volumes: []
+
+  volumeClaimTemplates:
+  - metadata:
+      name: uptrace-postgresql-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 8Gi
+---
+# Source: uptrace/templates/uptrace-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-uptrace
+  labels:
+    app: uptrace
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  serviceName: release-name-uptrace
+  selector:
+    matchLabels:
+      app: uptrace
+      app.kubernetes.io/name: uptrace
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: f47b1ddf33389bb1fd83a05d175dde19438e2a5fbbc518e63eff483464c9ee6d
+        sidecar.opentelemetry.io/inject: 'true'
+      labels:
+        app: uptrace
+        app.kubernetes.io/name: uptrace
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-uptrace
+      securityContext:
+        {}
+      containers:
+        - name: uptrace
+          securityContext:
+            {}
+          image: "uptrace/uptrace:1.7.0"
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: config
+              mountPath: /etc/uptrace/uptrace.yml
+              subPath: uptrace.yml
+          ports:
+            - name: http
+              containerPort: 14318
+              protocol: TCP
+            - name: grpc
+              containerPort: 14317
+              protocol: TCP
+          
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            {}
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-uptrace
+---
+# Source: uptrace/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-uptrace
+  labels:
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: "uptrace.local"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: release-name-uptrace
+                port:
+                  number: 14318
+---
+# Source: uptrace/templates/otelcol-sidecar.yaml
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: sidecar-for-my-app
+  labels:
+    helm.sh/chart: uptrace-1.7.4
+    app.kubernetes.io/name: uptrace
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  mode: sidecar
+  config: |
+    receivers:
+      kubeletstats:
+        collection_interval: 15s
+        auth_type: "serviceAccount"
+        endpoint: "https://${env:K8S_NODE_NAME}:10250"
+        insecure_skip_verify: true
+
+    processors:
+      batch:
+        send_batch_size: 10000
+        timeout: 10s
+
+    exporters:
+      debug:
+      otlp/local:
+        endpoint: http://my-uptrace:14317
+        headers:
+          uptrace-dsn: http://project1_secret_token@localhost:14317/1
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [kubeletstats]
+          processors: [batch]
+          exporters: [debug, otlp/local]

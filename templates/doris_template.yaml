@@ -1,0 +1,3367 @@
+---
+# Source: doris/templates/be-entrypoint.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-entrypoint
+  namespace: "default"
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+data:
+  entry_point.sh: |
+    #!/bin/bash
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #   http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    
+    set -eo pipefail
+    shopt -s nullglob
+    
+    # Obtain necessary and basic information to complete initialization
+    
+    # logging functions
+    # usage: doris_[note|warn|error] $log_meg
+    #    ie: doris_warn "task may be risky!"
+    #   out: 2023-01-08T19:08:16+08:00 [Warn] [Entrypoint]: task may be risky!
+    doris_log() {
+        local type="$1"
+        shift
+        # accept argument string or stdin
+        local text="$*"
+        if [ "$#" -eq 0 ]; then text="$(cat)"; fi
+        local dt="$(date -Iseconds)"
+        printf '%s [%s] [Entrypoint]: %s\n' "$dt" "$type" "$text"
+    }
+    doris_note() {
+        doris_log Note "$@"
+    }
+    doris_warn() {
+        doris_log Warn "$@" >&2
+    }
+    doris_error() {
+        doris_log ERROR "$@" >&2
+        exit 1
+    }
+    
+    # check to see if this file is being run or sourced from another script
+    _is_sourced() {
+        [ "${#FUNCNAME[@]}" -ge 2 ] &&
+            [ "${FUNCNAME[0]}" = '_is_sourced' ] &&
+            [ "${FUNCNAME[1]}" = 'source' ]
+    }
+    
+    docker_setup_env() {
+        declare -g DATABASE_ALREADY_EXISTS
+        if [ -d "${DORIS_HOME}/be/storage/data" ]; then
+            DATABASE_ALREADY_EXISTS='true'
+        fi
+    }
+    
+    # Check the variables required for startup
+    docker_required_variables_env() {
+      declare -g RUN_TYPE
+      if [ -n "$BUILD_TYPE" ]; then
+          RUN_TYPE="K8S"
+          if [[ $BUILD_TYPE =~ ^([kK]8[sS])$ ]]; then
+              doris_warn "BUILD_TYPE" $BUILD_TYPE
+          else
+              doris_error "BUILD_TYPE rule error！example: [k8s], Default Value: docker"
+          fi
+          export RUN_TYPE=${RUN_TYPE}
+          return
+      fi
+    
+      if [[ -n "$FE_SERVERS" && -n "$BE_ADDR" ]]; then
+          RUN_TYPE="ELECTION"
+          if [[ $FE_SERVERS =~ ^.+:[1-2]{0,1}[0-9]{0,1}[0-9]{1}(\.[1-2]{0,1}[0-9]{0,1}[0-9]{1}){3}:[1-6]{0,1}[0-9]{1,4}(,.+:[1-2]{0,1}[0-9]{0,1}[0-9]{1}(\.[1-2]{0,1}[0-9]{0,1}[0-9]{1}){3}:[1-6]{0,1}[0-9]{1,4})*$ || $FE_SERVERS =~ ^.+:([0-9a-fA-F]{1,4}:){7,7}([0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,6}(:[0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,5}((:[0-9a-fA-F]{1,4}){1,2}|:)|([0-9a-fA-F]{1,4}:){1,4}((:[0-9a-fA-F]{1,4}){1,3}|:)|([0-9a-fA-F]{1,4}:){1,3}((:[0-9a-fA-F]{1,4}){1,4}|:)|([0-9a-fA-F]{1,4}:){1,2}((:[0-9a-fA-F]{1,4}){1,5}|:)|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6}|:)|:((:[0-9a-fA-F]{1,4}){1,7}|:)$ ]]; then
+              doris_warn "FE_SERVERS" $FE_SERVERS
+          else
+              doris_error "FE_SERVERS rule error！example: \$FE_NAME:\$FE_HOST_IP:\$FE_EDIT_LOG_PORT[,\$FE_NAME:\$FE_HOST_IP:\$FE_EDIT_LOG_PORT]..."
+          fi
+          if [[ $BE_ADDR =~ ^[1-2]{0,1}[0-9]{0,1}[0-9]{1}(\.[1-2]{0,1}[0-9]{0,1}[0-9]{1}){3}:[1-6]{0,1}[0-9]{1,4}$ || $BE_ADDR =~ ^([0-9a-fA-F]{1,4}:){7,7}([0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,6}(:[0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,5}((:[0-9a-fA-F]{1,4}){1,2}|:)|([0-9a-fA-F]{1,4}:){1,4}((:[0-9a-fA-F]{1,4}){1,3}|:)|([0-9a-fA-F]{1,4}:){1,3}((:[0-9a-fA-F]{1,4}){1,4}|:)|([0-9a-fA-F]{1,4}:){1,2}((:[0-9a-fA-F]{1,4}){1,5}|:)|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6}|:)|:((:[0-9a-fA-F]{1,4}){1,7}|:):[1-6]{0,1}[0-9]{1,4}$ ]]; then
+            doris_warn "BE_ADDR" $BE_ADDR
+          else
+            doris_error "BE_ADDR rule error！example: \$BE_IP:\$HEARTBEAT_SERVICE_PORT"
+          fi
+          export RUN_TYPE=${RUN_TYPE}
+          return
+      fi
+    
+      if [[ -n "$FE_MASTER_IP"  && -n "$BE_IP" && -n "$BE_PORT" ]]; then
+          RUN_TYPE="ASSIGN"
+          if [[ $FE_MASTER_IP =~ ^[1-2]{0,1}[0-9]{0,1}[0-9]{1}(\.[1-2]{0,1}[0-9]{0,1}[0-9]{1}){3}$ || $FE_MASTER_IP =~ ^([0-9a-fA-F]{1,4}:){7,7}([0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,6}(:[0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,5}((:[0-9a-fA-F]{1,4}){1,2}|:)|([0-9a-fA-F]{1,4}:){1,4}((:[0-9a-fA-F]{1,4}){1,3}|:)|([0-9a-fA-F]{1,4}:){1,3}((:[0-9a-fA-F]{1,4}){1,4}|:)|([0-9a-fA-F]{1,4}:){1,2}((:[0-9a-fA-F]{1,4}){1,5}|:)|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6}|:)|:((:[0-9a-fA-F]{1,4}){1,7}|:)$ ]]; then
+              doris_warn "FE_MASTER_IP" $FE_MASTER_IP
+          else
+              doris_error "FE_MASTER_IP rule error！example: \$FE_MASTER_IP"
+          fi
+          if [[ $BE_IP =~ ^[1-2]{0,1}[0-9]{0,1}[0-9]{1}(\.[1-2]{0,1}[0-9]{0,1}[0-9]{1}){3}$ || $BE_IP =~ ^([0-9a-fA-F]{1,4}:){7,7}([0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,6}(:[0-9a-fA-F]{1,4}|:)|([0-9a-fA-F]{1,4}:){1,5}((:[0-9a-fA-F]{1,4}){1,2}|:)|([0-9a-fA-F]{1,4}:){1,4}((:[0-9a-fA-F]{1,4}){1,3}|:)|([0-9a-fA-F]{1,4}:){1,3}((:[0-9a-fA-F]{1,4}){1,4}|:)|([0-9a-fA-F]{1,4}:){1,2}((:[0-9a-fA-F]{1,4}){1,5}|:)|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6}|:)|:((:[0-9a-fA-F]{1,4}){1,7}|:)$ ]]; then
+              doris_warn "BE_IP" $BE_IP
+          else
+              doris_error "BE_IP rule error！example: \$BE_IP"
+          fi
+          if [[ $BE_PORT =~ ^[1-6]{0,1}[0-9]{1,4}$ ]]; then
+              doris_warn "BE_PORT" $BE_PORT
+          else
+              doris_error "BE_PORT rule error！example: \$BE_PORT."
+          fi
+          export RUN_TYPE=${RUN_TYPE}
+          return
+      fi
+    
+    
+      doris_error EOF "
+                   Note that you did not configure the required parameters!
+                   plan 1:
+                   BUILD_TYPE
+                   plan 2:
+                   FE_SERVERS & BE_ADDR
+                   plan 3:
+                   FE_MASTER_IP & FE_MASTER_PORT & BE_IP & BE_PORT"
+                  EOF
+    }
+    
+    get_doris_args() {
+      declare -g MASTER_FE_IP CURRENT_BE_IP CURRENT_BE_PORT PRIORITY_NETWORKS
+      if [ $RUN_TYPE == "ELECTION" ]; then
+          local feServerArray=($(echo "${FE_SERVERS}" | awk '{gsub (/,/," "); print $0}'))
+          for i in "${feServerArray[@]}"; do
+            val=${i}
+            val=${val// /}
+            tmpFeName=$(echo "${val}" | awk -F ':' '{ sub(/fe/, ""); sub(/ /, ""); print$1}')
+            tmpFeIp=$(echo "${val}" | awk -F ':' '{ sub(/ /, ""); print$2}')
+            tmpFeEditLogPort=$(echo "${val}" | awk -F ':' '{ sub(/ /, ""); print$3}')
+            check_arg "TMP_FE_NAME" $tmpFeName
+            feIpArray[$tmpFeName]=${tmpFeIp}
+          done
+    
+          FE_MASTER_IP=${feIpArray[1]}
+          check_arg "FE_MASTER_IP" $FE_MASTER_IP
+          BE_IP=$(echo "${BE_ADDR}" | awk -F ':' '{ sub(/ /, ""); print$1}')
+          check_arg "BE_IP" $BE_IP
+          BE_PORT=$(echo "${BE_ADDR}" | awk -F ':' '{ sub(/ /, ""); print$2}')
+          check_arg "BE_PORT" $BE_PORT
+    
+      elif [ $RUN_TYPE == "ASSIGN" ]; then
+          check_arg "FE_MASTER_IP" $FE_MASTER_IP
+          check_arg "BE_IP" $BE_IP
+          check_arg "BE_PORT" $BE_PORT
+      fi
+    
+      PRIORITY_NETWORKS=$(echo "${BE_IP}" | awk -F '.' '{print$1"."$2"."$3".0/24"}')
+      check_arg "PRIORITY_NETWORKS" $PRIORITY_NETWORKS
+    
+      # export be args
+      export MASTER_FE_IP=${FE_MASTER_IP}
+      export CURRENT_BE_IP=${BE_IP}
+      export CURRENT_BE_PORT=${BE_PORT}
+      export PRIORITY_NETWORKS=${PRIORITY_NETWORKS}
+    
+      doris_note "MASTER_FE_IP ${MASTER_FE_IP}"
+      doris_note "CURRENT_BE_IP ${CURRENT_BE_IP}"
+      doris_note "CURRENT_BE_PORT ${CURRENT_BE_PORT}"
+      doris_note "PRIORITY_NETWORKS ${PRIORITY_NETWORKS}"
+    
+      #check_be_status true
+    }
+    
+    # Execute sql script, passed via stdin
+    # usage: docker_process_sql [mysql-cli-args]
+    #    ie: docker_process_sql --database=mydb <<<'INSERT ...'
+    #    ie: docker_process_sql --database=mydb <my-file.sql
+    docker_process_sql() {
+        set +e
+        mysql -uroot -P9030 -h${MASTER_FE_IP} --comments "$@" 2>&1
+    }
+    
+    check_be_status() {
+      set +e
+      for i in {1..300}; do
+        if [[ $1 == true ]]; then
+          docker_process_sql <<<"show frontends" | grep "[[:space:]]${MASTER_FE_IP}[[:space:]]"
+        else
+          docker_process_sql <<<"show backends" | grep "[[:space:]]${CURRENT_BE_IP}[[:space:]]" | grep "[[:space:]]${CURRENT_BE_PORT}[[:space:]]" | grep "[[:space:]]true[[:space:]]"
+        fi
+        be_join_status=$?
+        if [[ "${be_join_status}" == 0 ]]; then
+          if [[ $1 == true ]]; then
+            doris_note "MASTER FE is started!"
+          else
+            doris_note "EntryPoint Check - Verify that BE is registered to FE successfully"
+            BE_ALREADY_EXISTS=true
+          fi
+          return
+        fi
+        if [[ $(( $i % 20 )) == 1 ]]; then
+          if [[ $1 == true ]]; then
+            doris_note "MASTER FE is not started. retry."
+          else
+            doris_note "BE is not register. retry."
+          fi
+        fi
+        sleep 1
+      done
+    }
+    
+    # usage: docker_process_init_files [file [file [...]]]
+    #    ie: docker_process_init_files /always-initdb.d/*
+    # process initializer files, based on file extensions
+    docker_process_init_files() {
+        local f
+        for f; do
+            case "$f" in
+            *.sh)
+                if [ -x "$f" ]; then
+                    doris_note "$0: running $f"
+                    "$f"
+                else
+                    doris_note "$0: sourcing $f"
+                    . "$f"
+                fi
+                ;;
+            *.sql)
+                doris_note "$0: running $f"
+                docker_process_sql <"$f"
+                echo
+                ;;
+            *.sql.bz2)
+                doris_note "$0: running $f"
+                bunzip2 -c "$f" | docker_process_sql
+                echo
+                ;;
+            *.sql.gz)
+                doris_note "$0: running $f"
+                gunzip -c "$f" | docker_process_sql
+                echo
+                ;;
+            *.sql.xz)
+                doris_note "$0: running $f"
+                xzcat "$f" | docker_process_sql
+                echo
+                ;;
+            *.sql.zst)
+                doris_note "$0: running $f"
+                zstd -dc "$f" | docker_process_sql
+                echo
+                ;;
+            *) doris_warn "$0: ignoring $f" ;;
+            esac
+            echo
+        done
+    }
+    
+    # Check whether the passed parameters are empty to avoid subsequent task execution failures. At the same time,
+    # enumeration checks can be added, such as checking whether a certain parameter appears repeatedly, etc.
+    check_arg() {
+      if [ -z $2 ]; then
+        doris_error "$1 is null!"
+      fi
+    }
+    
+    _main() {
+        docker_required_variables_env
+        # get init args
+        get_doris_args
+        docker_setup_env
+        # Start Doris BE
+        {
+            set +e
+            bash init_be.sh 2>/dev/null
+        } &
+        # check BE started status
+        check_be_status
+        if [ -z ${DATABASE_ALREADY_EXISTS} ]; then
+            # run script
+            sleep 15
+            docker_process_init_files /docker-entrypoint-initdb.d/*
+        fi
+    
+        # keep BE started status
+        wait
+        exec "$@"
+    }
+    
+    if ! _is_sourced; then
+        _main "$@"
+    fi
+---
+# Source: doris/templates/configmap-be.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-be-conf
+  namespace: "default"
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+data:
+  be.conf: |
+    PPROF_TMPDIR="$DORIS_HOME/log/"
+    sys_log_level = INFO
+    be_port = 9060
+    webserver_port = 8040
+    heartbeat_service_port = 9050
+    brpc_port = 8060
+    priority_networks = 10.96.0.0/12
+---
+# Source: doris/templates/configmap-cn.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-cn-conf
+  namespace: "default"
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+data:
+  be.conf: |
+    PPROF_TMPDIR="$DORIS_HOME/log/"
+    sys_log_level = INFO
+    be_port = 9060
+    webserver_port = 8040
+    heartbeat_service_port = 9050
+    brpc_port = 8060
+    be_node_role = computation
+    priority_networks = 10.96.0.0/12
+---
+# Source: doris/templates/configmap-fe.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-fe-conf
+  namespace: "default"
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+data:
+  fe.conf: |
+    priority_networks = 10.96.0.0/12
+    enable_deploy_manager = k8s
+    enable_fqdn_mode = true
+    LOG_DIR = ${DORIS_HOME}/log
+    sys_log_level = INFO
+    http_port = 8030
+    rpc_port = 9020
+    query_port = 9030
+    edit_log_port = 9010
+    custom_config_dir = /opt/apache-doris/
+    drop_backend_after_decommission = false
+---
+# Source: doris/templates/doris-tools-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-tools-script
+data:
+  update-dynamic-config.sh: |
+    #!/bin/sh
+    set -ex
+    key="${1:?missing parameterkey}"
+    value="${2:?missing parametervalue}"
+    echo "key: $key === value: $value"
+    # get password
+    password=$(kubectl get secrets -n $KB_NAMESPACE $KB_CLUSTER_NAME-conn-credential -o jsonpath='{.data.\password}' |base64 -d)
+    echo $password
+    # Send the curl request and get the JSON data
+    json=$(curl -s -X GET -u root:$password http://localhost:8030/rest/v2/manager/node/frontends)
+    # Check if JSON is empty
+    if [ -z "$json" ]; then
+    echo "JSON is empty, the current FE node is not a master node, so modify parameters is forbidded"
+    continue
+    fi
+    hostname=$(hostname)
+    echo $hostname
+    # Execute a curl request
+    result=$(curl -s -X GET -u root:$password "http://localhost:8030/api/_set_config?$key=$value")
+    echo $result
+    echo "FE parameters are dynamically modified! Please check it for yourself"
+---
+# Source: doris/templates/fe-script.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-fe-root-script
+  namespace: "default"
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+data:
+  mysql_root.sh: |
+    #!/bin/bash
+    for i in {1..300}; do
+        if [[ $(mysql -uroot -P9030 -h$KB_POD_IP --comments -e "select VERSION()") ]]; then
+            fetrueNum=$(mysql -uroot -P9030 -h$KB_POD_IP --comments -e "show frontends\G" | grep Alive | grep true | wc -l)
+            feNum=$(mysql -uroot -P9030 -h$KB_POD_IP --comments -e "show frontends\G" |grep Name| wc -l)
+            betrueNum=$(mysql -uroot -P9030 -h$KB_POD_IP --comments -e "show backends\G" | grep Alive | grep true | wc -l)
+            beNum=$(mysql -uroot -P9030 -h$KB_POD_IP --comments -e "show backends\G" |grep Alive | wc -l)
+            echo -e "fetrueNum: $fetrueNum --- feNum: $feNum --- betrueNum: $betrueNum --- beNum: $beNum \n"
+            if [ $feNum -eq $fetrueNum ]&&[ $beNum -eq $betrueNum ]; then
+                mysql -uroot -P9030 -h$KB_POD_IP --comments -e "SET PASSWORD FOR 'root' = PASSWORD('$MYSQL_ROOT_PASSWORD');"
+                printf 'doris fe startup succeeds, is changing the password!'
+                break
+            fi
+        else
+            if [[ $(mysql -uroot -P9030 -h$KB_POD_IP -p$MYSQL_ROOT_PASSWORD --comments -e "select VERSION()") ]]; then
+                printf 'doris fe password has been changed!'
+                break
+            fi
+        fi
+        sleep 5
+    done
+    printf 'doris update root password finished!'
+---
+# Source: doris/templates/backupactionset.yaml
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: doris-doris-backup
+  labels:
+    clusterdefinition.kubeblocks.io/name: doris
+spec:
+  backupType: Full
+  env:
+    - name: DATA_DIR
+      value: /opt/apache-doris/fe/backup
+    - name: minio_address
+      value: "s3://doris/test"
+    - name: backup_repository
+      value: minio
+    - name: snapshot_label
+      value: snapshot_label1
+  backup:
+    preBackup: []
+    postBackup: []
+    backupData:
+      image: apache-doris:2.0.3-fe
+      syncProgress:
+        enabled: true
+        intervalSeconds: 5
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          connect_url="mysql -uroot -P9030 -h${DP_DB_HOST} -p${DP_DB_PASSWORD}"
+          repositories=$(${connect_url} -e "show repositories;") # Query whether a backup repository already exists
+          found_repostiory=false;
+          if [ -z "$repositories" ];then
+            echo "INFO: The remote repository is created for the first time!"
+          else
+            for repo in ${repositories};do
+              if [ $repo =  ${backup_repository} ]; then
+                found_repostiory=true;
+                echo "INFO: This remote repository already exists!"
+                break
+              fi
+            done
+          fi
+          if [ ${found_repostiory} = "false" ]; then
+              echo "INFO: Create a remote repository named ${backup_repository} for backup purposes"
+              sql_command="CREATE REPOSITORY ${backup_repository} WITH S3 ON LOCATION \"${minio_address}\" PROPERTIES ('AWS_ENDPOINT' = 'http://172.16.58.104:30000','AWS_ACCESS_KEY' = 'minioadmin','AWS_SECRET_KEY' = 'minioadmin','AWS_REGION' = 'us-east-1','use_path_style' = 'true');"
+              ${connect_url} -e "${sql_command}"
+          fi
+          echo "INFO: Start backup"
+          echo "INFO: Find the database created by all users in the doris cluster"
+          databases=$(${connect_url} -e "show databases;")
+          for db in ${databases};do
+            echo "TEST: $db"
+            if [ $db != '__internal_schema' ] && [ $db != 'Database' ]  && [ $db != 'information_schema' ];then
+               echo "INFO: Start backup database ${db}"
+               backup_command="BACKUP SNAPSHOT ${db}.${snapshot_label} TO ${backup_repository}  PROPERTIES ('type' = 'full');"
+               ${connect_url} -e "${backup_command}"
+            fi
+          done
+          echo "INFO: finish doris cluster all databases backup"
+          echo "INFO: The loop runs permanently!"
+          while true; do sleep 1; done
+          
+  restore:
+    prepareData:
+      image: apache-doris:2.0.3-fe
+      command:
+        - sh
+        - -c
+        - echo "1"
+    postReady:
+    - exec:
+        container: doris-fe
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          connect_url="mysql -uroot -P9030 -h${DP_DB_HOST} -p${DP_DB_PASSWORD}"
+          echo "INFO: Specify a backup repository ${backup_repository}"
+          echo "INFO: Start restore"
+          echo "INFO: Find the database created by all users in the doris cluster"
+          databases=$(${connect_url} -e "show databases;")
+          for db in ${databases};do
+            if [ $db != '__internal_schema' ] && [ $db != 'Database' ]  && [ $db != 'information_schema' ];then
+              echo "INFO: Start backup database ${db}"
+              restore_command="RESTORE SNAPSHOT ${db}.${snapshot_label} FROM ${backup_repository} PROPERTIES ("backup_timestamp"="${backup_timestamp}","replication_num"="${replication_num}");"
+              ${connect_url} -e "${restore_command}"
+            fi
+          done
+          echo "INFO: finish doris cluster all databases restore"
+          echo "INFO: The loop runs permanently!"
+          while true; do sleep 1; done
+---
+# Source: doris/templates/backuppolicytemplate.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: doris-backup-policy-template
+  labels:
+    clusterdefinition.kubeblocks.io/name: doris # Specifies the scope by label.
+spec:
+  clusterDefinitionRef: doris  # Specify the scope of which ClusterDef will generate the cluster
+  backupPolicies:
+  - componentDefRef: doris-fe   # Specifies the scope to which component is related
+    retentionPeriod: 7d
+    backupMethods:
+    - name: dorisbackup
+      snapshotVolumes: false
+      actionSetName: doris-doris-backup
+      targetVolumes:
+        volumeMounts:
+          - name: data
+            mountPath: /opt/apache-doris/fe/doris-meta
+    schedules:                         # schedule Indicates the schedule backup time and startup status
+    - backupMethod: dorisbackup
+      enabled: false
+      cronExpression: "0 3 * * *"
+---
+# Source: doris/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: doris
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/version: "2.0.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+spec:
+  type: doris
+  connectionCredential:
+    username: root
+    password: "$(RANDOM_PASSWD)"
+    endpoint: "$(SVC_FQDN):$(SVC_PORT_query-port)"
+    host: "$(SVC_FQDN)"
+    port: "$(SVC_PORT_query-port)"
+  componentDefs:
+    - name: doris-fe
+      characterType: doris-fe
+      description: |-
+        Apache Doris is a high-performance, real-time analytical database based on MPP architecture. It is known for its speed and ease of use. It only needs sub-second
+        response time to return query results under massive data, which can not only support high-concurrency point query scenarios, but also support high-throughput complex
+        analysis scenarios. Based on this, Apache Doris can better meet the report analysis, AD hoc query, unified warehouse construction, data lake federated query
+        acceleration and other use scenarios, users can build user behavior analysis, AB experiment platform, log retrieval analysis, user portrait analysis, order analysis and
+        other applications on this.
+      workloadType: Stateful
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 8030
+          scrapePath: "/metrics"
+      configSpecs:
+        - name: doris-fe-conf-configuration
+          templateRef: doris-fe-conf
+          constraintRef: doris-fe-config-constraints
+          volumeName: conf
+          namespace: default
+        - name: doris-fe-root-script
+          templateRef: doris-fe-root-script
+          volumeName: update-root
+          namespace: default
+          defaultMode: 0755
+      service:
+        ports:
+          - name: http-port
+            targetPort: http-port
+            port: 8030
+          - name: rpc-port
+            targetPort: rpc-port
+            port: 9020
+          - name: query-port
+            targetPort: query-port
+            port: 9030
+          - name: edit-log-port
+            targetPort: edit-log-port
+            port: 9010
+      volumeTypes:
+        - name: data
+          type: data
+      podSpec:
+        securityContext:
+          fsGroup: 0
+        volumes:
+          - name: kube
+            hostPath:
+              path: /root/.kube/config
+        containers:
+          - name: doris-fe
+            env:
+              - name: APP_NAMESPACE
+                value: "$(KB_NAMESPACE)"
+              - name: BUILD_TYPE
+                value: "k8s"
+              - name: FE_INIT_NUMBER
+                value: "3"
+              - name: CN_SERVICE
+                value: "$(KB_CLUSTER_NAME)-doris-cn-headless"
+              - name: CN_STATEFULSET
+                value: "$(KB_CLUSTER_NAME)-doris-cn"
+              - name: BE_SERVICE
+                value: "$(KB_CLUSTER_NAME)-doris-be-headless"
+              - name: BE_STATEFULSET
+                value: "$(KB_CLUSTER_NAME)-doris-be"
+              - name: FE_SERVICE
+                value: "$(KB_CLUSTER_NAME)-doris-fe-headless"
+              - name: FE_STATEFULSET
+                value: "$(KB_CLUSTER_NAME)-doris-fe"
+              - name: MYSQL_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+            ports:
+              - name: http-port
+                containerPort: 8030
+              - name: rpc-port
+                containerPort: 9020
+              - name: query-port
+                containerPort: 9030
+              - name: edit-log-port
+                containerPort: 9010
+            volumeMounts:
+              - name: conf
+                mountPath: /opt/apache-doris/fe/conf
+              - name: kube
+                mountPath: /root/.kube/config
+                readOnly: true
+              - name: data
+                mountPath: /opt/apache-doris/fe/doris-meta
+              - name: update-root
+                mountPath: /opt/apache-doris/fe/bin/mysql_root.sh
+                subPath: mysql_root.sh
+          - name: mysql-root-script
+            env:
+              - name: MYSQL_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+            volumeMounts:
+              - name: update-root
+                mountPath: /opt/apache-doris/fe/bin/mysql_root.sh
+                subPath: mysql_root.sh
+            command:
+              - sh
+              - -c
+              - |
+                /opt/apache-doris/fe/bin/mysql_root.sh > /opt/apache-doris/fe/bin/update_root.log 2>&1 &
+                while true; do sleep 1; done
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1G
+              limits:
+                cpu: 1000m
+                memory: 2G
+    - name: doris-be
+      characterType: doris-be
+      description: |-
+        Mainly responsible for data storage, query plan execution.
+      workloadType: Stateful # Consensus
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 8040
+          scrapePath: "/metrics"
+      configSpecs:
+        - name: doris-be-conf-configuration
+          templateRef: doris-be-conf
+          constraintRef: doris-be-config-constraints
+          volumeName: conf
+          namespace: default
+        - name: doris-be-entrypoint-script
+          templateRef: doris-entrypoint
+          volumeName: be-entrypoint
+          namespace: default
+          defaultMode: 0755
+      volumeTypes:
+        - name: data
+          type: data
+      service:
+        ports:
+          - name: be-port
+            targetPort: be-port
+            port: 9060
+          - name: webserver-port
+            targetPort: webserver-port
+            port: 8040
+          - name: heartbeat-port
+            targetPort: heartbeat-port
+            port: 9050
+          - name: brpc-port
+            targetPort: brpc-port
+            port: 8060
+      podSpec:
+        initContainers:
+        - name: sysctl
+          imagePullPolicy: IfNotPresent
+          command:
+          - sh
+          - -c
+          - |
+            set -xe
+            DESIRED="2000000"
+            CURRENT=$(sysctl -n vm.max_map_count)
+            if [ "$DESIRED" -gt "$CURRENT" ]; then
+              sysctl -w vm.max_map_count=$DESIRED
+            fi
+          securityContext:
+            runAsUser: 0
+            privileged: true
+        securityContext:
+          fsGroup: 0
+        volumes:
+          - name: sys
+            hostPath:
+              path: /etc/pki
+        containers:
+          - name: doris-be
+            command:
+              - bash
+              - -c
+              - entry_point.sh
+            env:
+              - name: BUILD_TYPE
+                value: "k8s"
+              - name: MYSQL_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+            ports:
+              - name: be-port
+                containerPort: 9060
+              - name: webserver-port
+                containerPort: 8040
+              - name: heartbeat-port
+                containerPort: 9050
+              - name: brpc-port
+                containerPort: 8060
+            volumeMounts:
+              - name: conf
+                mountPath: /opt/apache-doris/be/conf
+              - name: sys
+                mountPath: /etc/pki
+                readOnly: true
+              - name: data
+                mountPath: /opt/apache-doris/be/storage
+              - name: be-entrypoint
+                mountPath: /usr/local/bin/entry_point.sh
+                subPath: entry_point.sh
+    - name: doris-cn
+      characterType: doris-cn
+      description: |-
+        CN is responsible for compute nodes in Backend
+      workloadType: Stateful
+      monitor:
+        builtIn: false
+        exporterConfig:
+          scrapePort: 8040
+          scrapePath: "/metrics"
+      configSpecs:
+        - name: doris-cn-conf-configuration
+          templateRef: doris-cn-conf
+          constraintRef: doris-cn-config-constraints
+          volumeName: conf
+          namespace: default
+        - name: doris-cn-entrypoint-script
+          templateRef: doris-entrypoint
+          volumeName: cn-entrypoint
+          namespace: default
+          defaultMode: 0755
+      service:
+        ports:
+          - name: be-port
+            targetPort: be-port
+            port: 9060
+          - name: webserver-port
+            targetPort: webserver-port
+            port: 8040
+          - name: heartbeat-port
+            targetPort: heartbeat-port
+            port: 9050
+          - name: brpc-port
+            targetPort: brpc-port
+            port: 8060
+      podSpec:
+        initContainers:
+        - name: sysctl
+          imagePullPolicy: IfNotPresent
+          command:
+          - sh
+          - -c
+          - |
+            set -xe
+            DESIRED="2000000"
+            CURRENT=$(sysctl -n vm.max_map_count)
+            if [ "$DESIRED" -gt "$CURRENT" ]; then
+              sysctl -w vm.max_map_count=$DESIRED
+            fi
+          securityContext:
+            runAsUser: 0
+            privileged: true
+        securityContext:
+          fsGroup: 0
+        volumes:
+          - name: sys
+            hostPath:
+              path: /etc/pki
+        containers:
+          - name: doris-cn
+            command:
+              - bash
+              - -c
+              - entry_point.sh
+            env:
+              - name: BUILD_TYPE
+                value: "k8s"
+              - name: MYSQL_ROOT_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: $(CONN_CREDENTIAL_SECRET_NAME)
+                    key: password
+                    optional: false
+            ports:
+              - name: be-port
+                containerPort: 9060
+              - name: webserver-port
+                containerPort: 8040
+              - name: heartbeat-port
+                containerPort: 9050
+              - name: brpc-port
+                containerPort: 8060
+            volumeMounts:
+              - name: conf
+                mountPath: /opt/apache-doris/be/conf
+              - name: sys
+                mountPath: /etc/pki
+                readOnly: true
+              - name: cn-entrypoint
+                mountPath: /usr/local/bin/entry_point.sh
+                subPath: entry_point.sh
+---
+# Source: doris/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: doris-2.0.3
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/version: "2.0.3"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+spec:
+  clusterDefinitionRef: doris
+  componentVersions:
+    - componentDefRef: doris-fe
+      versionsContext:
+        containers:
+          - name: doris-fe
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/apache-doris:2.0.3-fe
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+          - name: mysql-root-script
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/apache-doris:2.0.3-fe
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+    - componentDefRef: doris-cn
+      versionsContext:
+        initContainers:
+          - name: sysctl
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/busybox:latest
+            imagePullPolicy: IfNotPresent
+        containers:
+          - name: doris-cn
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/apache-doris:2.0.3-be
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+    - componentDefRef: doris-be
+      versionsContext:
+        initContainers:
+          - name: sysctl
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/busybox:latest
+            imagePullPolicy: IfNotPresent
+        containers:
+          - name: doris-be
+            image: registry.cn-hangzhou.aliyuncs.com/yq_doris/apache-doris:2.0.3-be
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsUser: 0
+---
+# Source: doris/templates/be-configconstraint.yaml
+apiVersion: apps.kubeblocks.io/v1beta1
+kind: ConfigConstraint
+metadata:
+  name: doris-be-config-constraints
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+spec:
+  # configmap reference
+  # tplRef: doris-be-3node-tpl-8.0
+
+  # ConfigurationSchema that impose restrictions on engine parameter's rule
+  parametersSchema:
+    # top level mysql configuration type
+    topLevelKey: DorisbeParameter
+
+    # schemaInJSON: auto generate from cue scripts
+    # example: ../../internal/configuration/testdata/mysql_openapi.json
+    cue: |-
+      #DorisbeParameter: {
+          // Declare a selection policy for servers that have a lot of ip. Note that at most one ip should match this list. This is a list in semicolon-separated format, using CIDR notation, such as 10.10.10.0/24. If no ip address matches this rule, a random IP address is selected. default ''
+          priority_networks: string
+          // set current date for java_opts
+          CUR_DATE: string
+          // log path
+          PPROF_TMPDIR: string
+          // java_opts
+          JAVA_OPTS: string
+          // java_opts_jdk_9
+          JAVA_OPTS_FOR_JDK_9: string
+          // JEMALLOC CONF
+          JEMALLOC_CONF: string
+          // JEMALLOC PROF PRFIX default ""
+          JEMALLOC_PROF_PRFIX: string
+          // system log level
+          sys_log_level: string
+          // Port number of the thrift server on BE, used to receive requests from FE default 9060
+          be_port: int
+          // Service port of the http server on BE default 8040
+          webserver_port: int
+          // The heartbeat service port (thrift) on the BE is used to receive heartbeats from the FE default 9050
+          heartbeat_service_port: int
+          // The port of the brpc on the BE, used for communication between the BE default 9060
+          brpc_port: int
+          // Whether https is supported. If yes, configure ssl_certificate_path and ssl_private_key_path in be.conf default false
+          enable_https: bool
+          // Whether https is supported. If yes, configure ssl_certificate_path in be.conf
+          ssl_certificate_path: string
+          // Whether https is supported. If yes, configure ssl_private_key_path in be.conf
+          ssl_private_key_path: string
+          // cdfm self-defined parameter default false
+          enable_auth: bool
+          //  RPC port for communication between the Master copy and Slave copy in the single copy data import function. default 9070
+          single_replica_load_brpc_port: int
+          // In the single copy data import function, the Slave copy downloads data files from the Master copy through HTTP. default 8050
+          single_replica_load_download_port: int
+          // BE data storage directory, multi-directory with English status semicolon; Separate. You can distinguish the storage medium, HDD or SSD, by the path. default ${DORIS_HOME}/storage
+          storage_root_path: string
+          // Number of threads executing the heartbeat service on the BE. The default value is 1. You are not recommended to change the value default 1
+          heartbeat_service_thread_count: int
+          // ignore_broken_disk=true If the path does not exist or files cannot be read or written in the path (bad disk), the path is ignored. If other paths are available, the startup is not interrupted.default false
+          ignore_broken_disk: bool
+          // Limit the maximum percentage of server memory used by the BE process. default auto
+          mem_limit: string
+          // The id of the cluster to which the BE belongs is specified.default -1
+          cluster_id: int
+          // Dynamic configuration Modifies the directory
+          custom_config_dir: string
+          // The interval for cleaning the recycle bin is 72 hours. If the disk space is insufficient, the file retention period in the trash does not comply with this parameter default 259200
+          trash_file_expire_time_sec: int
+          // The timeout time for connecting to ES over http,default 5000(ms)
+          es_http_timeout_ms: int
+          // es scroll Keeplive hold time, default 5(m)
+          es_scroll_keepalive: int
+          // Timeout period for establishing a connection with an external table. default 5(s)
+          external_table_connect_timeout_sec: int
+          // Interval between configuration file reports;default 5(s)
+          status_report_interval: int
+          // This configuration is used to modify the brpc parameter max_body_size.
+          brpc_max_body_size: int
+          // This configuration is used to modify the brpc parameter socket_max_unwritten_bytes.
+          brpc_socket_max_unwritten_bytes: int
+          // This parameter is used to control whether the Tuple/Block data length is greater than 1.8 GB. The protoBuf request is serialized and embedded into the controller attachment along with the Tuple/Block data and sent via http brpc.default true
+          transfer_large_data_by_brpc: bool
+          // This configuration is primarily used to modify the number of bthreads in the brpc. The default value for this configuration is set to -1, which means that the number of bthreads will be set to the number of cpu cores on the machine. default -1
+          brpc_num_threads: int
+          // Default timeout of thrift default 10000(ms)
+          thrift_rpc_timeout_ms: int
+          // This parameter is used to set the retry interval for the thrift client of be to prevent avalanches from occurring on the thrift server of fe default 1000(ms)
+          thrift_client_retry_interval_ms: int
+          // Default connection timeout of thrift client default 180 (3m)
+          thrift_connect_timeout_seconds: int
+          // Configure the service model used by the Thrift service of FE. optionals: 1.THREADED 2.THREAD_POOL
+          thrift_server_type_of_fe: string
+          // The txn rpc submission timed out default 60000(ms)
+          txn_commit_rpc_timeout_ms: int
+          // txn map lock Fragment size. The value is 2^n default 128
+          txn_map_shard_size: int
+          // txn lock fragment size, the value is 2^n, default 1024
+          txn_shard_size: int
+          // Interval for clearing an expired Rowset default 30(s)
+          unused_rowset_monitor_interval: int
+          // Maximum number of client caches per host, default 10
+          max_client_cache_size_per_host: int
+          // String Soft limit of the maximum length, in bytes default 1048576
+          string_type_length_soft_limit_bytes: int
+          // When using the odbc facade, if one of the columns in the odbc source table is of type HLL, CHAR, or VARCHAR, and the column value is longer than this value, the value is increaseddefault 65535
+          big_column_size_buffer: int
+          // When using the odbc facade, if the odbc source table has a column type other than HLL, CHAR, or VARCHAR, and the column value length exceeds this value, increase the value default 100
+          small_column_size_buffer: int
+          // Soft limit of the maximum length of the SONB type, in bytes default 1048576
+          jsonb_type_length_soft_limit_bytes: int
+          // Maximum number of query requests that can be processed on a single node default 4096
+          fragment_pool_queue_size: int
+          // Query the number of threads. By default, a minimum of 64 threads can be started. default 64
+          fragment_pool_thread_num_min: int
+          // A maximum of 512 threads can be dynamically created for subsequent query requests. default 2048
+          fragment_pool_thread_num_max: int
+          // When performing HashJoin, BE will adopt dynamic partition clipping to push the join condition to OlapScanner. default 90
+          doris_max_pushdown_conjuncts_return_rate: int
+          // This command is used to limit the maximum number of scan keys that can be split by the scan node in a query request. default 48
+          doris_max_scan_key_num: int
+          // The BE splits the same ScanRange into multiple scanranges when scanning data.default 524288
+          doris_scan_range_row_count: int
+          // The length of the cache queue of RowBatch between TransferThread and OlapScanner. default 1024
+          doris_scanner_queue_size: int
+          // The maximum number of rows of data returned per scan thread in a single execution default 16384
+          doris_scanner_row_num: int
+          // The maximum number of bytes of data returned per scan thread in a single execution default 10485760
+          doris_scanner_row_bytes: int
+          // Scanner Queue length of the thread pool. default 102400
+          doris_scanner_thread_pool_queue_size: int
+          // Scanner Thread pool Number of threads. default 48
+          doris_scanner_thread_pool_thread_num: int
+          // Remote scanner Maximum number of threads in a thread pool. default 512
+          doris_max_remote_scanner_thread_pool_thread_num: int
+          // Whether to prefetch HashBuket when using PartitionedHashTable for aggregation and join computation default true
+          enable_prefetch: bool
+          // Specifies whether to use the square probe to resolve Hash conflicts when Hash conflicts occur when PartitionedHashTable is used. default true
+          enable_quadratic_probing: bool
+          // ExchangeNode Indicates the Buffer queue size (unit: byte). default 10485760
+          exchg_node_buffer_size_bytes: int
+          // Used to limit the maximum number of criteria that can be pushed down to the storage engine for a single column in a query request. default 1024
+          max_pushdown_conditions_per_column: int
+          // Maximum parallelism of OlapTableSink to send batch data, default 5
+          max_send_batch_parallelism_per_job: int
+          // The maximum amount of data read by each OlapScanner default 1024
+          doris_scan_range_max_mb: int
+          // Shut down an automatic compaction task default false
+          disable_auto_compaction: bool
+          // Whether to enable column compaction default true
+          enable_vertical_compaction: bool
+          // The number of columns that compacts a group when a column compaction occurs default 5
+          vertical_compaction_num_columns_per_group: int
+          // The maximum amount of memory that a row_source_buffer can use when compaction occurs in columns, in MB.default 200
+          vertical_compaction_max_row_source_memory_mb: int
+          // The maximum number of segment files that a column compaction produces, in bytes default 268435456
+          vertical_compaction_max_segment_size: int
+          // Enables compaction of ordered data default true
+          enable_ordered_data_compaction: bool
+          // compaction: The minimum segment size, in bytes, that compacts a ordered data compaction.default 10485760
+          ordered_data_compaction_min_segment_size: int
+          // Base Compaction Maximum number of threads in a thread pool.default 4
+          max_base_compaction_threads: int
+          // The minimum interval between compaction operations default 10(ms)
+          generate_compaction_tasks_interval_ms: int
+          // One of the BaseCompaction triggers is a limit on the Cumulative file number to be reached default 5
+          base_compaction_min_rowset_num: int
+          // One of the BaseCompaction triggers is that the Cumulative file size is proportional to the Base file size.default 0.3(30%)
+          base_compaction_min_data_ratio: float
+          // The maximum number of "permits" that any compaction task can hold to limit the amount of memory that any compaction can consume.default 10000
+          total_permits_for_compaction_score: int
+          // The cumulative compaction results in a total disk size of the rowset that exceeds this configuration size, and the rowset is used by the base compaction. The unit is m bytes. default 1024
+          compaction_promotion_size_mbytes: int
+          // When the total disk size of the cumulative compaction output rowset exceeds the configured proportion of the base version rowset, the rowset is used by the base compaction.default 0.05(5%)
+          compaction_promotion_ratio: float
+          // If the total disk size of the Cumulative compaction output rowset is less than the configured size, the rowset will not be subjected to any base compaction and the cumulative compaction process will continue. The unit is m bytes.default 64
+          compaction_promotion_min_size_mbytes: int
+          //  cumulative compaction merges by level policy only when the total disk size of the rowset to be merged is greater than the cumulative compaction. If it is less than this configuration, the merge is performed directly. The unit is m bytes.default 64
+          compaction_min_size_mbytes: int
+          // Identifies the storage format selected by BE by default. The configurable parameters are "ALPHA" and "BETA". default BETA
+          default_rowset_type: string
+          // cumulative compaction policy: Create a minimum increment to the number of files default 5
+          cumulative_compaction_min_deltas: int
+          // cumulative compaction policy: Create a maxmum increment to the number of files default 1000
+          cumulative_compaction_max_deltas: int
+          // Print the threshold of a base compaction trace, in seconds default 10
+          base_compaction_trace_threshold: int
+          // Print the threshold of the cumulative compaction trace, in seconds default 2
+          cumulative_compaction_trace_threshold: int
+          // The number of compaction tasks that can be executed concurrently per disk (HDD).default 4
+          compaction_task_num_per_disk: int
+          // The number of compaction tasks that can be executed concurrently per high-speed disk (SSD).default 8
+          compaction_task_num_per_fast_disk: int
+          // How many successive rounds of cumulative compaction does the producer of a compaction task produce after each cumulative compaction task? default 9
+          cumulative_compaction_rounds_for_each_base_compaction_round: int
+          // Configure the merge policies for the cumulative compaction phase. Two merge policies are implemented, num_based and size_based default size_based
+          cumulative_compaction_policy: string
+          // Cumulative Compaction Maximum number of threads in the thread pool. default 10
+          max_cumu_compaction_threads: int
+          // Create a segment compaction when importing to reduce the number of segments and avoid a -238 write error default true
+          enable_segcompaction: bool
+          // When the number of segments exceeds this threshold, a segment compaction is triggered or When the number of rows in a segment exceeds this size, it is compact when the segment compacts  default 10
+          segcompaction_batch_size: int
+          // When the number of rows in a segment exceeds this size, it is compact when the segment compacts or The number of rows of a single original segment allowed when a segment compaction task occurs. Any segment that compacts will be skipped. default 1048576
+          segcompaction_candidate_max_rows: int
+          // The size of a single raw segment allowed in a segment compaction task (in bytes). If a segment compacts, it will be skipped. default 104857600
+          segcompaction_candidate_max_bytes: int
+          // The total number of rows of the original segment that a single segment compaction task allows. default 1572864
+          segcompaction_task_max_rows: int
+          // The total size of the original segment (in bytes) allowed when a single segment compaction task occurs. default 157286400
+          segcompaction_task_max_bytes: int
+          // segment compaction thread pool size. default 5
+          segcompaction_num_threads: int
+          // Close trace logs that create compactions If set to true, cumulative_compaction_trace_threshold and base_compaction_trace_threshold have no effect.default true
+          disable_compaction_trace_log: bool
+          // Select the interval between rowsets to merge, in seconds default 86400
+          pick_rowset_to_compact_interval_sec: int
+          // Single Replica Compaction Maximum number of threads in the thread pool. default 10
+          max_single_replica_compaction_threads: int
+          // Minimum interval for updating peer replica infos default 60(s)
+          update_replica_infos_interval_seconds: int
+          // Whether to enable stream load operation records default false
+          enable_stream_load_record: bool
+          // Used for mini load. The mini load data file will be deleted after this time default 4 (hours)
+          load_data_reserve_hours: int
+          // Number of import threads for processing high-priority tasks default 3
+          push_worker_count_high_priority: int
+          // Import the number of threads used to process NORMAL priority tasks default 3
+          push_worker_count_normal_priority: int
+          // Whether to enable the single copy data import function default true
+          enable_single_replica_load: bool
+          // The load error log will be deleted after this time default 48 (hours)
+          load_error_log_reserve_hours: int
+          // Maximum percentage of memory occupied by all import threads on a single node default 50 (%)
+          load_process_max_memory_limit_percent: int
+          // soft limit indicates the upper limit of the memory imported from a single node. default 50 (%)
+          load_process_soft_mem_limit_percent: int
+          // The thread pool size of the routine load task. default 10
+          routine_load_thread_pool_size: int
+          // RPC timeout period for communication between the Master copy and Slave copy in the single copy data import function. default 60
+          slave_replica_writer_rpc_timeout_sec: int
+          // Used to limit the number of segments in the newly generated rowset during import. default 200
+          max_segment_num_per_rowset: int
+          // The number of flush threads allocated per storage path for high-level import tasks. default 1
+          high_priority_flush_thread_num_per_store: int
+          // Number of data consumer caches used by routine load. default 10
+          routine_load_consumer_pool_size: int
+          // First-class multi-table uses this configuration to indicate how many data to save before planning. default 200
+          multi_table_batch_plan_threshold: int
+          // In the single copy data import function, the Slave copy downloads data files from the Master copy through HTTP. default 64
+          single_replica_load_download_num_workers: int
+          // When the timeout time of an import task is less than this threshold, Doris will consider it to be a high-performing task. default 120
+          load_task_high_priority_threshold_second: int
+          // Minimum timeout time of each rpc in the load job. default 20
+          min_load_rpc_timeout_ms: int
+          // If the dependent kafka version is below 0.10.0.0, the value should be set to false. default true
+          kafka_api_version_request: bool
+          // If the dependent kafka version is below 0.10.0.0, when the kafka_api_version_request value is false, the fallback version kafka_broker_version_fallback value will be used. Valid values are: 0.9.0.x, 0.8.x.y. default 0.10.0.0
+          kafka_broker_version_fallback: string
+          // The maximum number of consumers in a data consumer group for routine load. default 3
+          max_consumer_num_per_group: int
+          // Used to limit the maximum amount of data allowed in a Stream load import in csv format. default 10240(M)
+          streaming_load_max_mb: int
+          // Used to limit the maximum amount of data allowed in a single Stream load import of data format json. Unit MB. default 100
+          streaming_load_json_max_mb: int
+          // Number of threads that execute data deletion tasks default 3
+          delete_worker_count: int
+          // The number of threads used to clean up transactions default 1
+          clear_transaction_task_worker_count: int
+          // Number of threads used to perform clone tasks default 3
+          clone_worker_count: int
+          // The number of threads executing the thrift server service on the BE indicates the number of threads that can be used to execute FE requests. default 64
+          be_service_threads:int
+          // Number of download threads default 1
+          download_worker_count: int
+          // Delete the number of threads for the tablet default 3
+          drop_tablet_worker_count: int
+          // The number of threads per store used to refresh the memory table default 2
+          flush_thread_num_per_store: int
+          // Controls the number of threads per kernel running work. default 3
+          num_threads_per_core: int
+          // The maximum number of threads per disk is also the maximum queue depth per disk default 0
+          num_threads_per_disk: int
+          // Number of threads for the slave copy to synchronize data from the Master copy on each BE node, used for the single copy data import function. default 64
+          number_slave_replica_download_threads: int
+          // Number of threads in valid version default 8
+          publish_version_worker_count: int
+          // Maximum number of threads for uploading files default 1
+          upload_worker_count: int
+          // Default number of webserver worker threads default 48
+          webserver_num_workers: int
+          // SendBatch Number of threads in the thread pool. default 64
+          send_batch_thread_pool_thread_num: int
+          // SendBatch Queue length of the thread pool. default 102400
+          send_batch_thread_pool_queue_size: int
+          // Number of threads for creating snapshots default 5
+          make_snapshot_worker_count: int
+          // Number of threads that release snapshots default 5
+          release_snapshot_worker_count: int
+          // Whether to disable the memory cache pool default false
+          disable_mem_pools: bool
+          // Clean up pages that may be saved by the buffer pool default 50(%)
+          buffer_pool_clean_pages_limit: string
+          //  The maximum allocated memory in the buffer pool   default 20(%)
+          buffer_pool_limit: string
+          // The reserved bytes limit of Chunk Allocator, usually set as a percentage of mem_limit. default 20(%)
+          chunk_reserved_bytes_limit: string
+          // Whether to use linux memory for large pages default false
+          madvise_huge_pages: bool
+          // max_memory_cache_batch_count batch_size row is cached default 20
+          max_memory_sink_batch_count: int
+          // Maximum collation memory default 16
+          memory_max_alignment: int
+          // Whether to allocate memory using mmap default false
+          mmap_buffers: bool
+          // memtable memory statistics refresh period (milliseconds) default 100(ms)
+          memtable_mem_tracker_refresh_interval_ms: int
+          // The size of the buffer used to receive data when the cache is downloaded. default 10485760
+          download_cache_buffer_size: int
+          // If the number of rows in a page is less than this value, zonemap is not created to reduce data bloat default 20
+          zone_map_row_num_threshold: int
+          // If the number of rows in a page is less than this value, zonemap is not created to reduce data bloat. Hook TCmalloc new/delete, currently counting thread local memtrackers in Hook. default true
+          enable_tcmalloc_hook: bool
+          // Control the recovery of tcmalloc. If the configuration is performance, doris will release the memory in the tcmalloc cache when the memory usage exceeds 90% of mem_limit. If the configuration is compact, the memory usage exceeds 50% of mem_limit. doris frees the memory in the tcmalloc cache. default performance
+          memory_mode: string
+          // System/proc/meminfo/MemAvailable low water level, the largest unit of byte, the default 1.6 G, default 1717986918
+          max_sys_mem_available_low_water_mark_bytes: int
+          // The maximum memory that a single schema change task can occupy default 2147483648 (2GB)
+          memory_limitation_per_thread_for_schema_change_bytes: int
+          // TCMalloc Hook consume/release MemTracker minimum length,default 1048576
+          mem_tracker_consume_min_size_bytes: int
+          // File handle cache clearing interval, used to clear long-unused file handles. It is also the interval for clearing the Segment Cache. default 1800(s)
+          cache_clean_interval: int
+          // Minimum read buffer size default 1024
+          min_buffer_size: int
+          // The size of the buffer before brushing default 104857600
+          write_buffer_size: int
+          // Cache size used to read files on hdfs or object storage. default 16(MB)
+          remote_storage_read_buffer_mb: int
+          // The type of the cache file. whole_file_cache: downloads the entire segment file; sub_file_cache: slices the segment file into multiple files. If this parameter is set to ", files are not cached. Set this parameter when you need to cache files default ""
+          file_cache_type: string
+          // Retention time of the cache file, in seconds default 604800 (a week)
+          file_cache_alive_time_sec: int
+          // The cache occupies the disk size. Once this setting is exceeded, the cache that has not been accessed for the longest time will be deleted. If it is 0, the size is not limited. default 0
+          file_cache_max_size_per_disk: int
+          // Cache file Maximum file size when sub_file_cache is used, default 104857600 (100MB)
+          max_sub_cache_file_size: int
+          // DownloadCache Specifies the number of threads in the thread pool. default 48
+          download_cache_thread_pool_thread_num: int
+          // DownloadCache Specifies the number of threads in the thread pool. default 102400
+          download_cache_thread_pool_queue_size: int
+          // Cache file clearing interval, default 43200 (12 hours)
+          generate_cache_cleaner_task_interval_sec: int
+          // Whether to enable the thread to reclaim scan data default true
+          path_gc_check: bool
+          // Check interval for reclaiming scan data threads default 86400 (s)
+          path_gc_check_interval_second: int
+          // default 1000
+          path_gc_check_step: int
+          // default 10(ms)
+          path_gc_check_step_interval_ms: int
+          // default 86400
+          path_scan_interval_second: int
+          // This configuration is used for context gc thread scheduling cycles default 5 (min)
+          scan_context_gc_interval_min: int
+          // Configures how many rows of data to contain in a single RowBlock. default 1024
+          default_num_rows_per_column_file_block: int
+          // Whether to use page cache for index caching. This configuration takes effect only in BETA format default false
+          disable_storage_page_cache: bool
+          // Interval for checking disk status default 5 (s)
+          disk_stat_monitor_interval: int
+          // For each io buffer size, the maximum number of buffers that IoMgr will retain ranges from 1024B to 8MB buffers, with a maximum of about 2GB buffers. default 128
+          max_free_io_buffers: int
+          // Maximum interval for disk garbage cleanup  default 3600 (s)
+          max_garbage_sweep_interval: int
+          // The storage engine allows the percentage of damaged hard disks. If the percentage of damaged hard disks exceeds the threshold, the BE automatically exits. default 0
+          max_percentage_of_error_disk: int
+          // The read size is the read size sent to the os. default 8388608
+          read_size: int
+          // Minimum interval for disk garbage cleanup default 180(s)
+          min_garbage_sweep_interval: int
+          // pprof profile save directory default ${DORIS_HOME}/log
+          pprof_profile_dir: string
+          // The directory where SmallFileMgr downloaded files are stored default {DORIS_HOME}/lib/small_file/
+          small_file_dir: string
+          // udf function directory default ${DORIS_HOME}/lib/udf
+          user_function_dir: string
+          // The minimum storage space that should be left in the data directory, default 1073741824
+          storage_flood_stage_left_capacity_bytes: int
+          // The storage_flood_stage_usage_percent and storage_flood_stage_left_capacity_bytes configurations limit the maximum disk capacity usage of the data directory. default 90(%)
+          storage_flood_stage_usage_percent: float
+          // Number of threads to clone default 1
+          storage_medium_migrate_count: int
+          // Cache stores page size default 20(%)
+          storage_page_cache_limit: string
+          // Fragment size of StoragePageCache, the value is 2^n (n=0,1,2,...) . default 16
+          storage_page_cache_shard_size: int
+          // Percentage of index page cache in total page cache, the value is [0, 100]. default 10
+          index_page_cache_percentage: int
+          // Max number of segment cache (the key is rowset id) entries. -1 is for backward compatibility as fd_number * 2/5. Default value: -1
+          segment_cache_capacity: int
+          // Used to check incompatible old format strictly Default value: true
+          storage_strict_check_incompatible_old_format: bool
+          // Whether the storage engine opens sync and keeps it to the disk Default value: false
+          sync_tablet_meta: bool
+          // The maximum duration of unvalidated data retained by the storage engine Default value: 1800 (s)
+          pending_data_expire_time_sec: int
+          // t is used to decide whether to delete the outdated merged rowset if it cannot form a consistent version path. Default value: false
+          ignore_rowset_stale_unconsistent_delete: bool
+          // Description: Number of worker threads for BE to create a tablet Default value: 3
+          create_tablet_worker_count: int
+          // The number of worker threads to calculate the checksum of the tablet Default value: 1
+          check_consistency_worker_count: int
+          // Limit the number of versions of a single tablet. Default value: 500
+          max_tablet_version_num: int
+          // Number of tablet write threads Default value: 16
+          number_tablet_writer_threads: int
+          // tablet_map_lock fragment size, the value is 2^n, n=0,1,2,3,4, this is for better tablet management Default value: 4
+          tablet_map_shard_size: int
+          //  TabletMeta Checkpoint Interval of thread polling Default value: 600 (s)
+          tablet_meta_checkpoint_min_interval_secs: int
+          // The minimum number of Rowsets for storing TabletMeta Checkpoints Default value: 10
+          tablet_meta_checkpoint_min_new_rowsets_num: int
+          // Update interval of tablet state cache Default value:300 (s)
+          tablet_stat_cache_update_interval_second: int
+          // Description: It is used to control the expiration time of cleaning up the merged rowset version. Default value: 300
+          tablet_rowset_stale_sweep_time_sec: int
+          // Update interval of tablet state cache Default value: 60
+          tablet_writer_open_rpc_timeout_sec: int
+          // Used to ignore brpc error '[E1011]The server is overcrowded' when writing data. Default value: false
+          tablet_writer_ignore_eovercrowded: bool
+          // The lifetime of TabletsChannel. If the channel does not receive any data at this time, the channel will be deleted. Default value: 1200
+          streaming_load_rpc_max_alive_time_sec: int
+          //  The number of threads making schema changes Default value: 3
+          alter_tablet_worker_count: int
+          // The number of threads making index change Default value: 3
+          alter_index_worker_count: int
+          // It is used to decide whether to ignore errors and continue to start be in case of tablet loading failure Default value: false
+          ignore_load_tablet_failure: bool
+          // The interval time for the agent to report the disk status to FE Default value: 60 (s)
+          report_disk_state_interval_seconds: int
+          // Result buffer cancellation time Default value: 300 (s)
+          result_buffer_cancelled_interval_time: int
+          // Snapshot file cleaning interval. Default value:172800 (48 hours)
+          snapshot_expire_time_sec: int
+          // enable to use Snappy compression algorithm for data compression when serializing RowBatch Default value: true
+          compress_rowbatches: bool
+          // The maximum size of JVM heap memory used by BE, which is the -Xmx parameter of JVM Default value: 1024M
+          jvm_max_heap_size: string
+          //  Storage directory of BE log data Default value: ${DORIS_HOME}/log
+          sys_log_dir: string
+          // The size of the log split, one log file is split every 1G Default value: SIZE-MB-1024
+          sys_log_roll_mode: string
+          //  Number of log files kept Default value: 10
+          sys_log_roll_num: int
+          // Log display level, used to control the log output at the beginning of VLOG in the code Default value: 10
+          sys_log_verbose_level: int
+          // Log printing module, writing olap will only print the log under the olap module Default value: empty
+          sys_log_verbose_modules: string
+          // log level of AWS SDK,Default value: 3
+          aws_log_level: int
+          // The log flushing strategy is kept in memory by default Default value: empty
+          log_buffer_level: string
+          // The interval time for the agent to report the olap table to the FE Default value: 60 (s)
+          report_tablet_interval_seconds: int
+          // The interval time for the agent to report the task signature to FE Default value: 10 (s)
+          report_task_interval_seconds: int
+          // Update rate counter and sampling counter cycle Default value: 500 (ms)
+          periodic_counter_update_period_ms: int
+          // If set to true, the metric calculator will run to collect BE-related indicator information, if set to false, it will not run Default value: true
+          enable_metric_calculator: bool
+          //  User control to turn on and off system indicators. Default value: true
+          enable_system_metrics: bool
+          // Used for forward compatibility, will be removed later. Default value: true
+          enable_token_check: bool
+          // Max number of txns for every txn_partition_map in txn manager, this is a self protection to avoid too many txns saving in manager Default value: 2000
+          max_runnings_transactions_per_txn_map: int
+          // Maximum download speed limit Default value: 50000 (kb/s)
+          max_download_speed_kbps: int
+          // Download time limit Default value: 300 (s)
+          download_low_speed_time: int
+          // Minimum download speed Default value: 50 (KB/s)
+          download_low_speed_limit_kbps: int
+          // Description: Cgroups assigned to doris Default value: empty
+          doris_cgroups: string
+          // the increased frequency of priority for remaining tasks in BlockingPriorityQueue Default value: 512
+          priority_queue_remaining_tasks_increased_frequency: int
+          // Default dirs to put jdbc drivers. Default value: ${DORIS_HOME}/jdbc_drivers
+          jdbc_drivers_dir: string
+          // Whether enable simdjson to parse json while stream load Default value: true
+          enable_simdjson_reader: bool
+          // If true, when the process does not exceed the soft mem limit, the query memory will not be limited; Default value: true
+          enable_query_memory_overcommit: bool
+          // The storage directory for files queried by local table valued functions. Default value: ${DORIS_HOME}
+          user_files_secure_path: string
+          //  The batch size for sending data by brpc streaming client Default value: 262144
+          brpc_streaming_client_batch_bytes: int
+          // In cloud native deployment scenario, BE will be add to cluster and remove from cluster very frequently. User's query will fail if there is a fragment is running on the shuting down BE. Default value: 120
+          grace_shutdown_wait_seconds: int
+          // BE Whether to enable the use of java-jni.  Default value: true
+          enable_java_support: bool
+      }
+      configuration: #DorisbeParameter & {
+      }
+
+  ## define static parameter list
+  staticParameters:
+      - priority_networks
+      - CUR_DATE
+      - PPROF_TMPDIR
+      - JAVA_OPTS
+      - JAVA_OPTS_FOR_JDK_9
+      - JEMALLOC_CONF
+      - JEMALLOC_PROF_PRFIX
+      - sys_log_level
+      - be_port
+      - webserver_port
+      - heartbeat_service_port
+      - brpc_port
+      - enable_https
+      - ssl_certificate_path
+      - ssl_private_key_path
+      - enable_auth
+      - single_replica_load_brpc_port
+      - single_replica_load_download_port
+      - storage_root_path
+      - heartbeat_service_thread_count
+      - ignore_broken_disk
+      - mem_limit
+      - cluster_id
+      - custom_config_dir
+      - trash_file_expire_time_sec
+      - es_http_timeout_ms
+      - es_scroll_keepalive
+      - external_table_connect_timeout_sec
+      - status_report_interval
+      - brpc_max_body_size
+      - brpc_socket_max_unwritten_bytes
+      - transfer_large_data_by_brpc
+      - brpc_num_threads
+      - thrift_rpc_timeout_ms
+      - thrift_client_retry_interval_ms
+      - thrift_connect_timeout_seconds
+      - thrift_server_type_of_fe
+      - txn_commit_rpc_timeout_ms
+      - txn_map_shard_size
+      - txn_shard_size
+      - unused_rowset_monitor_interval
+      - max_client_cache_size_per_host
+      - string_type_length_soft_limit_bytes
+      - big_column_size_buffer
+      - small_column_size_buffer
+      - jsonb_type_length_soft_limit_bytes
+      - fragment_pool_queue_size
+      - fragment_pool_thread_num_min
+      - fragment_pool_thread_num_max
+      - doris_max_pushdown_conjuncts_return_rate
+      - doris_max_scan_key_num
+      - doris_scan_range_row_count
+      - doris_scanner_queue_size
+      - doris_scanner_row_num
+      - doris_scanner_row_bytes
+      - doris_scanner_thread_pool_queue_size
+      - doris_scanner_thread_pool_thread_num
+      - doris_max_remote_scanner_thread_pool_thread_num
+      - enable_prefetch
+      - enable_quadratic_probing
+      - exchg_node_buffer_size_bytes
+      - max_pushdown_conditions_per_column
+      - max_send_batch_parallelism_per_job
+      - doris_scan_range_max_mb
+      - disable_auto_compaction
+      - enable_vertical_compaction
+      - vertical_compaction_num_columns_per_group
+      - vertical_compaction_max_row_source_memory_mb
+      - vertical_compaction_max_segment_size
+      - enable_ordered_data_compaction
+      - ordered_data_compaction_min_segment_size
+      - max_base_compaction_threads
+      - generate_compaction_tasks_interval_ms
+      - base_compaction_min_rowset_num
+      - base_compaction_min_data_ratio
+      - total_permits_for_compaction_score
+      - compaction_promotion_size_mbytes
+      - compaction_promotion_ratio
+      - compaction_promotion_min_size_mbytes
+      - compaction_min_size_mbytes
+      - default_rowset_type
+      - cumulative_compaction_min_deltas
+      - cumulative_compaction_max_deltas
+      - base_compaction_trace_threshold
+      - cumulative_compaction_trace_threshold
+      - compaction_task_num_per_disk
+      - compaction_task_num_per_fast_disk
+      - cumulative_compaction_rounds_for_each_base_compaction_round
+      - cumulative_compaction_policy
+      - max_cumu_compaction_threads
+      - enable_segcompaction
+      - segcompaction_batch_size
+      - segcompaction_candidate_max_rows
+      - segcompaction_candidate_max_bytes
+      - segcompaction_task_max_rows
+      - segcompaction_task_max_bytes
+      - segcompaction_num_threads
+      - disable_compaction_trace_log
+      - pick_rowset_to_compact_interval_sec
+      - max_single_replica_compaction_threads
+      - update_replica_infos_interval_seconds
+      - enable_stream_load_record
+      - load_data_reserve_hours
+      - push_worker_count_high_priority
+      - push_worker_count_normal_priority
+      - enable_single_replica_load
+      - load_error_log_reserve_hours
+      - load_process_max_memory_limit_percent
+      - load_process_soft_mem_limit_percent
+      - routine_load_thread_pool_size
+      - slave_replica_writer_rpc_timeout_sec
+      - max_segment_num_per_rowset
+      - high_priority_flush_thread_num_per_store
+      - routine_load_consumer_pool_size
+      - multi_table_batch_plan_threshold
+      - single_replica_load_download_num_workers
+      - load_task_high_priority_threshold_second
+      - min_load_rpc_timeout_ms
+      - kafka_api_version_request
+      - kafka_broker_version_fallback
+      - max_consumer_num_per_group
+      - streaming_load_max_mb
+      - streaming_load_json_max_mb
+      - delete_worker_count
+      - clear_transaction_task_worker_count
+      - clone_worker_count
+      - be_service_threads
+      - download_worker_count
+      - drop_tablet_worker_count
+      - flush_thread_num_per_store
+      - num_threads_per_core
+      - num_threads_per_disk
+      - number_slave_replica_download_threads
+      - publish_version_worker_count
+      - upload_worker_count
+      - webserver_num_workers
+      - send_batch_thread_pool_thread_num
+      - send_batch_thread_pool_queue_size
+      - make_snapshot_worker_count
+      - release_snapshot_worker_count
+      - disable_mem_pools
+      - buffer_pool_clean_pages_limit
+      - buffer_pool_limit
+      - chunk_reserved_bytes_limit
+      - madvise_huge_pages
+      - max_memory_sink_batch_count
+      - memory_max_alignment
+      - mmap_buffers
+      - memtable_mem_tracker_refresh_interval_ms
+      - download_cache_buffer_size
+      - zone_map_row_num_threshold
+      - enable_tcmalloc_hook
+      - memory_mode
+      - max_sys_mem_available_low_water_mark_bytes
+      - memory_limitation_per_thread_for_schema_change_bytes
+      - mem_tracker_consume_min_size_bytes
+      - cache_clean_interval
+      - min_buffer_size
+      - write_buffer_size
+      - remote_storage_read_buffer_mb
+      - file_cache_type
+      - file_cache_alive_time_sec
+      - file_cache_max_size_per_disk
+      - max_sub_cache_file_size
+      - download_cache_thread_pool_thread_num
+      - download_cache_thread_pool_queue_size
+      - generate_cache_cleaner_task_interval_sec
+      - path_gc_check
+      - path_gc_check_interval_second
+      - path_gc_check_step
+      - path_gc_check_step_interval_ms
+      - path_scan_interval_second
+      - scan_context_gc_interval_min
+      - default_num_rows_per_column_file_block
+      - disable_storage_page_cache
+      - disk_stat_monitor_interval
+      - max_free_io_buffers
+      - max_garbage_sweep_interval
+      - max_percentage_of_error_disk
+      - read_size
+      - min_garbage_sweep_interval
+      - pprof_profile_dir
+      - small_file_dir
+      - user_function_dir
+      - storage_flood_stage_left_capacity_bytes
+      - storage_flood_stage_usage_percent
+      - storage_medium_migrate_count
+      - storage_page_cache_limit
+      - storage_page_cache_shard_size
+      - index_page_cache_percentage
+      - segment_cache_capacity
+      - storage_strict_check_incompatible_old_format
+      - sync_tablet_meta
+      - pending_data_expire_time_sec
+      - ignore_rowset_stale_unconsistent_delete
+      - create_tablet_worker_count
+      - check_consistency_worker_count
+      - max_tablet_version_num
+      - number_tablet_writer_threads
+      - tablet_map_shard_size
+      - tablet_meta_checkpoint_min_interval_secs
+      - tablet_meta_checkpoint_min_new_rowsets_num
+      - tablet_stat_cache_update_interval_second
+      - tablet_rowset_stale_sweep_time_sec
+      - tablet_writer_open_rpc_timeout_sec
+      - tablet_writer_ignore_eovercrowded
+      - streaming_load_rpc_max_alive_time_sec
+      - alter_tablet_worker_count
+      - alter_index_worker_count
+      - ignore_load_tablet_failure
+      - report_disk_state_interval_seconds
+      - result_buffer_cancelled_interval_time
+      - snapshot_expire_time_sec
+      - compress_rowbatches
+      - jvm_max_heap_size
+      - sys_log_dir
+      - sys_log_roll_mode
+      - sys_log_roll_num
+      - sys_log_verbose_level
+      - sys_log_verbose_modules
+      - aws_log_level
+      - log_buffer_level
+      - report_tablet_interval_seconds
+      - report_task_interval_seconds
+      - periodic_counter_update_period_ms
+      - enable_metric_calculator
+      - enable_system_metrics
+      - enable_token_check
+      - max_runnings_transactions_per_txn_map
+      - max_download_speed_kbps
+      - download_low_speed_time
+      - download_low_speed_limit_kbps
+      - doris_cgroups
+      - priority_queue_remaining_tasks_increased_frequency
+      - jdbc_drivers_dir
+      - enable_simdjson_reader
+      - enable_query_memory_overcommit
+      - user_files_secure_path
+      - brpc_streaming_client_batch_bytes
+      - grace_shutdown_wait_seconds
+      - enable_java_support
+
+  ## define dynamic parameter list
+
+  ## define immutable parameter list, this feature is not currently supported.
+
+
+  # mysql configuration file format
+  fileFormatConfig:
+    format: props-plus
+---
+# Source: doris/templates/cn-configconstraint.yaml
+apiVersion: apps.kubeblocks.io/v1beta1
+kind: ConfigConstraint
+metadata:
+  name: doris-cn-config-constraints
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+spec:
+  # configmap reference
+  # tplRef: doris-cn-3node-tpl-8.0
+
+  # ConfigurationSchema that impose restrictions on engine parameter's rule
+  parametersSchema:
+    # top level mysql configuration type
+    topLevelKey: DoriscnParameter
+
+    # schemaInJSON: auto generate from cue scripts
+    # example: ../../internal/configuration/testdata/mysql_openapi.json
+    cue: |-
+      #DoriscnParameter: {
+          // Declare a selection policy for servers that have a lot of ip. Note that at most one ip should match this list. This is a list in semicolon-separated format, using CIDR notation, such as 10.10.10.0/24. If no ip address matches this rule, a random IP address is selected. default ''
+          priority_networks: string
+          // set current date for java_opts
+          CUR_DATE: string
+          // log path
+          PPROF_TMPDIR: string
+          // java_opts
+          JAVA_OPTS: string
+          // java_opts_jdk_9
+          JAVA_OPTS_FOR_JDK_9: string
+          // JEMALLOC CONF
+          JEMALLOC_CONF: string
+          // JEMALLOC PROF PRFIX default ""
+          JEMALLOC_PROF_PRFIX: string
+          // system log level
+          sys_log_level: string
+          // Port number of the thrift server on BE, used to receive requests from FE default 9060
+          be_port: int
+          // Service port of the http server on BE default 8040
+          webserver_port: int
+          // The heartbeat service port (thrift) on the BE is used to receive heartbeats from the FE default 9050
+          heartbeat_service_port: int
+          // The port of the brpc on the BE, used for communication between the BE default 9060
+          brpc_port: int
+          // Whether https is supported. If yes, configure ssl_certificate_path and ssl_private_key_path in be.conf default false
+          enable_https: bool
+          // Whether https is supported. If yes, configure ssl_certificate_path in be.conf
+          ssl_certificate_path: string
+          // Whether https is supported. If yes, configure ssl_private_key_path in be.conf
+          ssl_private_key_path: string
+          // cdfm self-defined parameter default false
+          enable_auth: bool
+          // Specifies whether it will be a compute node optionals: max computation
+          be_node_role: string
+          //  RPC port for communication between the Master copy and Slave copy in the single copy data import function. default 9070
+          single_replica_load_brpc_port: int
+          // In the single copy data import function, the Slave copy downloads data files from the Master copy through HTTP. default 8050
+          single_replica_load_download_port: int
+          // BE data storage directory, multi-directory with English status semicolon; Separate. You can distinguish the storage medium, HDD or SSD, by the path. default ${DORIS_HOME}/storage
+          storage_root_path: string
+          // Number of threads executing the heartbeat service on the BE. The default value is 1. You are not recommended to change the value default 1
+          heartbeat_service_thread_count: int
+          // ignore_broken_disk=true If the path does not exist or files cannot be read or written in the path (bad disk), the path is ignored. If other paths are available, the startup is not interrupted.default false
+          ignore_broken_disk: bool
+          // Limit the maximum percentage of server memory used by the BE process. default auto
+          mem_limit: string
+          // The id of the cluster to which the BE belongs is specified.default -1
+          cluster_id: int
+          // Dynamic configuration Modifies the directory
+          custom_config_dir: string
+          // The interval for cleaning the recycle bin is 72 hours. If the disk space is insufficient, the file retention period in the trash does not comply with this parameter default 259200
+          trash_file_expire_time_sec: int
+          // The timeout time for connecting to ES over http,default 5000(ms)
+          es_http_timeout_ms: int
+          // es scroll Keeplive hold time, default 5(m)
+          es_scroll_keepalive: int
+          // Timeout period for establishing a connection with an external table. default 5(s)
+          external_table_connect_timeout_sec: int
+          // Interval between configuration file reports;default 5(s)
+          status_report_interval: int
+          // This configuration is used to modify the brpc parameter max_body_size.
+          brpc_max_body_size: int
+          // This configuration is used to modify the brpc parameter socket_max_unwritten_bytes.
+          brpc_socket_max_unwritten_bytes: int
+          // This parameter is used to control whether the Tuple/Block data length is greater than 1.8 GB. The protoBuf request is serialized and embedded into the controller attachment along with the Tuple/Block data and sent via http brpc.default true
+          transfer_large_data_by_brpc: bool
+          // This configuration is primarily used to modify the number of bthreads in the brpc. The default value for this configuration is set to -1, which means that the number of bthreads will be set to the number of cpu cores on the machine. default -1
+          brpc_num_threads: int
+          // Default timeout of thrift default 10000(ms)
+          thrift_rpc_timeout_ms: int
+          // This parameter is used to set the retry interval for the thrift client of be to prevent avalanches from occurring on the thrift server of fe default 1000(ms)
+          thrift_client_retry_interval_ms: int
+          // Default connection timeout of thrift client default 180 (3m)
+          thrift_connect_timeout_seconds: int
+          // Configure the service model used by the Thrift service of FE. optionals: 1.THREADED 2.THREAD_POOL
+          thrift_server_type_of_fe: string
+          // The txn rpc submission timed out default 60000(ms)
+          txn_commit_rpc_timeout_ms: int
+          // txn map lock Fragment size. The value is 2^n default 128
+          txn_map_shard_size: int
+          // txn lock fragment size, the value is 2^n, default 1024
+          txn_shard_size: int
+          // Interval for clearing an expired Rowset default 30(s)
+          unused_rowset_monitor_interval: int
+          // Maximum number of client caches per host, default 10
+          max_client_cache_size_per_host: int
+          // String Soft limit of the maximum length, in bytes default 1048576
+          string_type_length_soft_limit_bytes: int
+          // When using the odbc facade, if one of the columns in the odbc source table is of type HLL, CHAR, or VARCHAR, and the column value is longer than this value, the value is increaseddefault 65535
+          big_column_size_buffer: int
+          // When using the odbc facade, if the odbc source table has a column type other than HLL, CHAR, or VARCHAR, and the column value length exceeds this value, increase the value default 100
+          small_column_size_buffer: int
+          // Soft limit of the maximum length of the SONB type, in bytes default 1048576
+          jsonb_type_length_soft_limit_bytes: int
+          // Maximum number of query requests that can be processed on a single node default 4096
+          fragment_pool_queue_size: int
+          // Query the number of threads. By default, a minimum of 64 threads can be started. default 64
+          fragment_pool_thread_num_min: int
+          // A maximum of 512 threads can be dynamically created for subsequent query requests. default 2048
+          fragment_pool_thread_num_max: int
+          // When performing HashJoin, BE will adopt dynamic partition clipping to push the join condition to OlapScanner. default 90
+          doris_max_pushdown_conjuncts_return_rate: int
+          // This command is used to limit the maximum number of scan keys that can be split by the scan node in a query request. default 48
+          doris_max_scan_key_num: int
+          // The BE splits the same ScanRange into multiple scanranges when scanning data.default 524288
+          doris_scan_range_row_count: int
+          // The length of the cache queue of RowBatch between TransferThread and OlapScanner. default 1024
+          doris_scanner_queue_size: int
+          // The maximum number of rows of data returned per scan thread in a single execution default 16384
+          doris_scanner_row_num: int
+          // The maximum number of bytes of data returned per scan thread in a single execution default 10485760
+          doris_scanner_row_bytes: int
+          // Scanner Queue length of the thread pool. default 102400
+          doris_scanner_thread_pool_queue_size: int
+          // Scanner Thread pool Number of threads. default 48
+          doris_scanner_thread_pool_thread_num: int
+          // Remote scanner Maximum number of threads in a thread pool. default 512
+          doris_max_remote_scanner_thread_pool_thread_num: int
+          // Whether to prefetch HashBuket when using PartitionedHashTable for aggregation and join computation default true
+          enable_prefetch: bool
+          // Specifies whether to use the square probe to resolve Hash conflicts when Hash conflicts occur when PartitionedHashTable is used. default true
+          enable_quadratic_probing: bool
+          // ExchangeNode Indicates the Buffer queue size (unit: byte). default 10485760
+          exchg_node_buffer_size_bytes: int
+          // Used to limit the maximum number of criteria that can be pushed down to the storage engine for a single column in a query request. default 1024
+          max_pushdown_conditions_per_column: int
+          // Maximum parallelism of OlapTableSink to send batch data, default 5
+          max_send_batch_parallelism_per_job: int
+          // The maximum amount of data read by each OlapScanner default 1024
+          doris_scan_range_max_mb: int
+          // Shut down an automatic compaction task default false
+          disable_auto_compaction: bool
+          // Whether to enable column compaction default true
+          enable_vertical_compaction: bool
+          // The number of columns that compacts a group when a column compaction occurs default 5
+          vertical_compaction_num_columns_per_group: int
+          // The maximum amount of memory that a row_source_buffer can use when compaction occurs in columns, in MB.default 200
+          vertical_compaction_max_row_source_memory_mb: int
+          // The maximum number of segment files that a column compaction produces, in bytes default 268435456
+          vertical_compaction_max_segment_size: int
+          // Enables compaction of ordered data default true
+          enable_ordered_data_compaction: bool
+          // compaction: The minimum segment size, in bytes, that compacts a ordered data compaction.default 10485760
+          ordered_data_compaction_min_segment_size: int
+          // Base Compaction Maximum number of threads in a thread pool.default 4
+          max_base_compaction_threads: int
+          // The minimum interval between compaction operations default 10(ms)
+          generate_compaction_tasks_interval_ms: int
+          // One of the BaseCompaction triggers is a limit on the Cumulative file number to be reached default 5
+          base_compaction_min_rowset_num: int
+          // One of the BaseCompaction triggers is that the Cumulative file size is proportional to the Base file size.default 0.3(30%)
+          base_compaction_min_data_ratio: float
+          // The maximum number of "permits" that any compaction task can hold to limit the amount of memory that any compaction can consume.default 10000
+          total_permits_for_compaction_score: int
+          // The cumulative compaction results in a total disk size of the rowset that exceeds this configuration size, and the rowset is used by the base compaction. The unit is m bytes. default 1024
+          compaction_promotion_size_mbytes: int
+          // When the total disk size of the cumulative compaction output rowset exceeds the configured proportion of the base version rowset, the rowset is used by the base compaction.default 0.05(5%)
+          compaction_promotion_ratio: float
+          // If the total disk size of the Cumulative compaction output rowset is less than the configured size, the rowset will not be subjected to any base compaction and the cumulative compaction process will continue. The unit is m bytes.default 64
+          compaction_promotion_min_size_mbytes: int
+          //  cumulative compaction merges by level policy only when the total disk size of the rowset to be merged is greater than the cumulative compaction. If it is less than this configuration, the merge is performed directly. The unit is m bytes.default 64
+          compaction_min_size_mbytes: int
+          // Identifies the storage format selected by BE by default. The configurable parameters are "ALPHA" and "BETA". default BETA
+          default_rowset_type: string
+          // cumulative compaction policy: Create a minimum increment to the number of files default 5
+          cumulative_compaction_min_deltas: int
+          // cumulative compaction policy: Create a maxmum increment to the number of files default 1000
+          cumulative_compaction_max_deltas: int
+          // Print the threshold of a base compaction trace, in seconds default 10
+          base_compaction_trace_threshold: int
+          // Print the threshold of the cumulative compaction trace, in seconds default 2
+          cumulative_compaction_trace_threshold: int
+          // The number of compaction tasks that can be executed concurrently per disk (HDD).default 4
+          compaction_task_num_per_disk: int
+          // The number of compaction tasks that can be executed concurrently per high-speed disk (SSD).default 8
+          compaction_task_num_per_fast_disk: int
+          // How many successive rounds of cumulative compaction does the producer of a compaction task produce after each cumulative compaction task? default 9
+          cumulative_compaction_rounds_for_each_base_compaction_round: int
+          // Configure the merge policies for the cumulative compaction phase. Two merge policies are implemented, num_based and size_based default size_based
+          cumulative_compaction_policy: string
+          // Cumulative Compaction Maximum number of threads in the thread pool. default 10
+          max_cumu_compaction_threads: int
+          // Create a segment compaction when importing to reduce the number of segments and avoid a -238 write error default true
+          enable_segcompaction: bool
+          // When the number of segments exceeds this threshold, a segment compaction is triggered or When the number of rows in a segment exceeds this size, it is compact when the segment compacts  default 10
+          segcompaction_batch_size: int
+          // When the number of rows in a segment exceeds this size, it is compact when the segment compacts or The number of rows of a single original segment allowed when a segment compaction task occurs. Any segment that compacts will be skipped. default 1048576
+          segcompaction_candidate_max_rows: int
+          // The size of a single raw segment allowed in a segment compaction task (in bytes). If a segment compacts, it will be skipped. default 104857600
+          segcompaction_candidate_max_bytes: int
+          // The total number of rows of the original segment that a single segment compaction task allows. default 1572864
+          segcompaction_task_max_rows: int
+          // The total size of the original segment (in bytes) allowed when a single segment compaction task occurs. default 157286400
+          segcompaction_task_max_bytes: int
+          // segment compaction thread pool size. default 5
+          segcompaction_num_threads: int
+          // Close trace logs that create compactions If set to true, cumulative_compaction_trace_threshold and base_compaction_trace_threshold have no effect.default true
+          disable_compaction_trace_log: bool
+          // Select the interval between rowsets to merge, in seconds default 86400
+          pick_rowset_to_compact_interval_sec: int
+          // Single Replica Compaction Maximum number of threads in the thread pool. default 10
+          max_single_replica_compaction_threads: int
+          // Minimum interval for updating peer replica infos default 60(s)
+          update_replica_infos_interval_seconds: int
+          // Whether to enable stream load operation records default false
+          enable_stream_load_record: bool
+          // Used for mini load. The mini load data file will be deleted after this time default 4 (hours)
+          load_data_reserve_hours: int
+          // Number of import threads for processing high-priority tasks default 3
+          push_worker_count_high_priority: int
+          // Import the number of threads used to process NORMAL priority tasks default 3
+          push_worker_count_normal_priority: int
+          // Whether to enable the single copy data import function default true
+          enable_single_replica_load: bool
+          // The load error log will be deleted after this time default 48 (hours)
+          load_error_log_reserve_hours: int
+          // Maximum percentage of memory occupied by all import threads on a single node default 50 (%)
+          load_process_max_memory_limit_percent: int
+          // soft limit indicates the upper limit of the memory imported from a single node. default 50 (%)
+          load_process_soft_mem_limit_percent: int
+          // The thread pool size of the routine load task. default 10
+          routine_load_thread_pool_size: int
+          // RPC timeout period for communication between the Master copy and Slave copy in the single copy data import function. default 60
+          slave_replica_writer_rpc_timeout_sec: int
+          // Used to limit the number of segments in the newly generated rowset during import. default 200
+          max_segment_num_per_rowset: int
+          // The number of flush threads allocated per storage path for high-level import tasks. default 1
+          high_priority_flush_thread_num_per_store: int
+          // Number of data consumer caches used by routine load. default 10
+          routine_load_consumer_pool_size: int
+          // First-class multi-table uses this configuration to indicate how many data to save before planning. default 200
+          multi_table_batch_plan_threshold: int
+          // In the single copy data import function, the Slave copy downloads data files from the Master copy through HTTP. default 64
+          single_replica_load_download_num_workers: int
+          // When the timeout time of an import task is less than this threshold, Doris will consider it to be a high-performing task. default 120
+          load_task_high_priority_threshold_second: int
+          // Minimum timeout time of each rpc in the load job. default 20
+          min_load_rpc_timeout_ms: int
+          // If the dependent kafka version is below 0.10.0.0, the value should be set to false. default true
+          kafka_api_version_request: bool
+          // If the dependent kafka version is below 0.10.0.0, when the kafka_api_version_request value is false, the fallback version kafka_broker_version_fallback value will be used. Valid values are: 0.9.0.x, 0.8.x.y. default 0.10.0.0
+          kafka_broker_version_fallback: string
+          // The maximum number of consumers in a data consumer group for routine load. default 3
+          max_consumer_num_per_group: int
+          // Used to limit the maximum amount of data allowed in a Stream load import in csv format. default 10240(M)
+          streaming_load_max_mb: int
+          // Used to limit the maximum amount of data allowed in a single Stream load import of data format json. Unit MB. default 100
+          streaming_load_json_max_mb: int
+          // Number of threads that execute data deletion tasks default 3
+          delete_worker_count: int
+          // The number of threads used to clean up transactions default 1
+          clear_transaction_task_worker_count: int
+          // Number of threads used to perform clone tasks default 3
+          clone_worker_count: int
+          // The number of threads executing the thrift server service on the BE indicates the number of threads that can be used to execute FE requests. default 64
+          be_service_threads:int
+          // Number of download threads default 1
+          download_worker_count: int
+          // Delete the number of threads for the tablet default 3
+          drop_tablet_worker_count: int
+          // The number of threads per store used to refresh the memory table default 2
+          flush_thread_num_per_store: int
+          // Controls the number of threads per kernel running work. default 3
+          num_threads_per_core: int
+          // The maximum number of threads per disk is also the maximum queue depth per disk default 0
+          num_threads_per_disk: int
+          // Number of threads for the slave copy to synchronize data from the Master copy on each BE node, used for the single copy data import function. default 64
+          number_slave_replica_download_threads: int
+          // Number of threads in valid version default 8
+          publish_version_worker_count: int
+          // Maximum number of threads for uploading files default 1
+          upload_worker_count: int
+          // Default number of webserver worker threads default 48
+          webserver_num_workers: int
+          // SendBatch Number of threads in the thread pool. default 64
+          send_batch_thread_pool_thread_num: int
+          // SendBatch Queue length of the thread pool. default 102400
+          send_batch_thread_pool_queue_size: int
+          // Number of threads for creating snapshots default 5
+          make_snapshot_worker_count: int
+          // Number of threads that release snapshots default 5
+          release_snapshot_worker_count: int
+          // Whether to disable the memory cache pool default false
+          disable_mem_pools: bool
+          // Clean up pages that may be saved by the buffer pool default 50(%)
+          buffer_pool_clean_pages_limit: string
+          //  The maximum allocated memory in the buffer pool   default 20(%)
+          buffer_pool_limit: string
+          // The reserved bytes limit of Chunk Allocator, usually set as a percentage of mem_limit. default 20(%)
+          chunk_reserved_bytes_limit: string
+          // Whether to use linux memory for large pages default false
+          madvise_huge_pages: bool
+          // max_memory_cache_batch_count batch_size row is cached default 20
+          max_memory_sink_batch_count: int
+          // Maximum collation memory default 16
+          memory_max_alignment: int
+          // Whether to allocate memory using mmap default false
+          mmap_buffers: bool
+          // memtable memory statistics refresh period (milliseconds) default 100(ms)
+          memtable_mem_tracker_refresh_interval_ms: int
+          // The size of the buffer used to receive data when the cache is downloaded. default 10485760
+          download_cache_buffer_size: int
+          // If the number of rows in a page is less than this value, zonemap is not created to reduce data bloat default 20
+          zone_map_row_num_threshold: int
+          // If the number of rows in a page is less than this value, zonemap is not created to reduce data bloat. Hook TCmalloc new/delete, currently counting thread local memtrackers in Hook. default true
+          enable_tcmalloc_hook: bool
+          // Control the recovery of tcmalloc. If the configuration is performance, doris will release the memory in the tcmalloc cache when the memory usage exceeds 90% of mem_limit. If the configuration is compact, the memory usage exceeds 50% of mem_limit. doris frees the memory in the tcmalloc cache. default performance
+          memory_mode: string
+          // System/proc/meminfo/MemAvailable low water level, the largest unit of byte, the default 1.6 G, default 1717986918
+          max_sys_mem_available_low_water_mark_bytes: int
+          // The maximum memory that a single schema change task can occupy default 2147483648 (2GB)
+          memory_limitation_per_thread_for_schema_change_bytes: int
+          // TCMalloc Hook consume/release MemTracker minimum length,default 1048576
+          mem_tracker_consume_min_size_bytes: int
+          // File handle cache clearing interval, used to clear long-unused file handles. It is also the interval for clearing the Segment Cache. default 1800(s)
+          cache_clean_interval: int
+          // Minimum read buffer size default 1024
+          min_buffer_size: int
+          // The size of the buffer before brushing default 104857600
+          write_buffer_size: int
+          // Cache size used to read files on hdfs or object storage. default 16(MB)
+          remote_storage_read_buffer_mb: int
+          // The type of the cache file. whole_file_cache: downloads the entire segment file; sub_file_cache: slices the segment file into multiple files. If this parameter is set to ", files are not cached. Set this parameter when you need to cache files default ""
+          file_cache_type: string
+          // Retention time of the cache file, in seconds default 604800 (a week)
+          file_cache_alive_time_sec: int
+          // The cache occupies the disk size. Once this setting is exceeded, the cache that has not been accessed for the longest time will be deleted. If it is 0, the size is not limited. default 0
+          file_cache_max_size_per_disk: int
+          // Cache file Maximum file size when sub_file_cache is used, default 104857600 (100MB)
+          max_sub_cache_file_size: int
+          // DownloadCache Specifies the number of threads in the thread pool. default 48
+          download_cache_thread_pool_thread_num: int
+          // DownloadCache Specifies the number of threads in the thread pool. default 102400
+          download_cache_thread_pool_queue_size: int
+          // Cache file clearing interval, default 43200 (12 hours)
+          generate_cache_cleaner_task_interval_sec: int
+          // Whether to enable the thread to reclaim scan data default true
+          path_gc_check: bool
+          // Check interval for reclaiming scan data threads default 86400 (s)
+          path_gc_check_interval_second: int
+          // default 1000
+          path_gc_check_step: int
+          // default 10(ms)
+          path_gc_check_step_interval_ms: int
+          // default 86400
+          path_scan_interval_second: int
+          // This configuration is used for context gc thread scheduling cycles default 5 (min)
+          scan_context_gc_interval_min: int
+          // Configures how many rows of data to contain in a single RowBlock. default 1024
+          default_num_rows_per_column_file_block: int
+          // Whether to use page cache for index caching. This configuration takes effect only in BETA format default false
+          disable_storage_page_cache: bool
+          // Interval for checking disk status default 5 (s)
+          disk_stat_monitor_interval: int
+          // For each io buffer size, the maximum number of buffers that IoMgr will retain ranges from 1024B to 8MB buffers, with a maximum of about 2GB buffers. default 128
+          max_free_io_buffers: int
+          // Maximum interval for disk garbage cleanup  default 3600 (s)
+          max_garbage_sweep_interval: int
+          // The storage engine allows the percentage of damaged hard disks. If the percentage of damaged hard disks exceeds the threshold, the BE automatically exits. default 0
+          max_percentage_of_error_disk: int
+          // The read size is the read size sent to the os. default 8388608
+          read_size: int
+          // Minimum interval for disk garbage cleanup default 180(s)
+          min_garbage_sweep_interval: int
+          // pprof profile save directory default ${DORIS_HOME}/log
+          pprof_profile_dir: string
+          // The directory where SmallFileMgr downloaded files are stored default {DORIS_HOME}/lib/small_file/
+          small_file_dir: string
+          // udf function directory default ${DORIS_HOME}/lib/udf
+          user_function_dir: string
+          // The minimum storage space that should be left in the data directory, default 1073741824
+          storage_flood_stage_left_capacity_bytes: int
+          // The storage_flood_stage_usage_percent and storage_flood_stage_left_capacity_bytes configurations limit the maximum disk capacity usage of the data directory. default 90(%)
+          storage_flood_stage_usage_percent: float
+          // Number of threads to clone default 1
+          storage_medium_migrate_count: int
+          // Cache stores page size default 20(%)
+          storage_page_cache_limit: string
+          // Fragment size of StoragePageCache, the value is 2^n (n=0,1,2,...) . default 16
+          storage_page_cache_shard_size: int
+          // Percentage of index page cache in total page cache, the value is [0, 100]. default 10
+          index_page_cache_percentage: int
+          // Max number of segment cache (the key is rowset id) entries. -1 is for backward compatibility as fd_number * 2/5. Default value: -1
+          segment_cache_capacity: int
+          // Used to check incompatible old format strictly Default value: true
+          storage_strict_check_incompatible_old_format: bool
+          // Whether the storage engine opens sync and keeps it to the disk Default value: false
+          sync_tablet_meta: bool
+          // The maximum duration of unvalidated data retained by the storage engine Default value: 1800 (s)
+          pending_data_expire_time_sec: int
+          // t is used to decide whether to delete the outdated merged rowset if it cannot form a consistent version path. Default value: false
+          ignore_rowset_stale_unconsistent_delete: bool
+          // Description: Number of worker threads for BE to create a tablet Default value: 3
+          create_tablet_worker_count: int
+          // The number of worker threads to calculate the checksum of the tablet Default value: 1
+          check_consistency_worker_count: int
+          // Limit the number of versions of a single tablet. Default value: 500
+          max_tablet_version_num: int
+          // Number of tablet write threads Default value: 16
+          number_tablet_writer_threads: int
+          // tablet_map_lock fragment size, the value is 2^n, n=0,1,2,3,4, this is for better tablet management Default value: 4
+          tablet_map_shard_size: int
+          //  TabletMeta Checkpoint Interval of thread polling Default value: 600 (s)
+          tablet_meta_checkpoint_min_interval_secs: int
+          // The minimum number of Rowsets for storing TabletMeta Checkpoints Default value: 10
+          tablet_meta_checkpoint_min_new_rowsets_num: int
+          // Update interval of tablet state cache Default value:300 (s)
+          tablet_stat_cache_update_interval_second: int
+          // Description: It is used to control the expiration time of cleaning up the merged rowset version. Default value: 300
+          tablet_rowset_stale_sweep_time_sec: int
+          // Update interval of tablet state cache Default value: 60
+          tablet_writer_open_rpc_timeout_sec: int
+          // Used to ignore brpc error '[E1011]The server is overcrowded' when writing data. Default value: false
+          tablet_writer_ignore_eovercrowded: bool
+          // The lifetime of TabletsChannel. If the channel does not receive any data at this time, the channel will be deleted. Default value: 1200
+          streaming_load_rpc_max_alive_time_sec: int
+          //  The number of threads making schema changes Default value: 3
+          alter_tablet_worker_count: int
+          // The number of threads making index change Default value: 3
+          alter_index_worker_count: int
+          // It is used to decide whether to ignore errors and continue to start be in case of tablet loading failure Default value: false
+          ignore_load_tablet_failure: bool
+          // The interval time for the agent to report the disk status to FE Default value: 60 (s)
+          report_disk_state_interval_seconds: int
+          // Result buffer cancellation time Default value: 300 (s)
+          result_buffer_cancelled_interval_time: int
+          // Snapshot file cleaning interval. Default value:172800 (48 hours)
+          snapshot_expire_time_sec: int
+          // enable to use Snappy compression algorithm for data compression when serializing RowBatch Default value: true
+          compress_rowbatches: bool
+          // The maximum size of JVM heap memory used by BE, which is the -Xmx parameter of JVM Default value: 1024M
+          jvm_max_heap_size: string
+          //  Storage directory of BE log data Default value: ${DORIS_HOME}/log
+          sys_log_dir: string
+          // The size of the log split, one log file is split every 1G Default value: SIZE-MB-1024
+          sys_log_roll_mode: string
+          //  Number of log files kept Default value: 10
+          sys_log_roll_num: int
+          // Log display level, used to control the log output at the beginning of VLOG in the code Default value: 10
+          sys_log_verbose_level: int
+          // Log printing module, writing olap will only print the log under the olap module Default value: empty
+          sys_log_verbose_modules: string
+          // log level of AWS SDK,Default value: 3
+          aws_log_level: int
+          // The log flushing strategy is kept in memory by default Default value: empty
+          log_buffer_level: string
+          // The interval time for the agent to report the olap table to the FE Default value: 60 (s)
+          report_tablet_interval_seconds: int
+          // The interval time for the agent to report the task signature to FE Default value: 10 (s)
+          report_task_interval_seconds: int
+          // Update rate counter and sampling counter cycle Default value: 500 (ms)
+          periodic_counter_update_period_ms: int
+          // If set to true, the metric calculator will run to collect BE-related indicator information, if set to false, it will not run Default value: true
+          enable_metric_calculator: bool
+          //  User control to turn on and off system indicators. Default value: true
+          enable_system_metrics: bool
+          // Used for forward compatibility, will be removed later. Default value: true
+          enable_token_check: bool
+          // Max number of txns for every txn_partition_map in txn manager, this is a self protection to avoid too many txns saving in manager Default value: 2000
+          max_runnings_transactions_per_txn_map: int
+          // Maximum download speed limit Default value: 50000 (kb/s)
+          max_download_speed_kbps: int
+          // Download time limit Default value: 300 (s)
+          download_low_speed_time: int
+          // Minimum download speed Default value: 50 (KB/s)
+          download_low_speed_limit_kbps: int
+          // Description: Cgroups assigned to doris Default value: empty
+          doris_cgroups: string
+          // the increased frequency of priority for remaining tasks in BlockingPriorityQueue Default value: 512
+          priority_queue_remaining_tasks_increased_frequency: int
+          // Default dirs to put jdbc drivers. Default value: ${DORIS_HOME}/jdbc_drivers
+          jdbc_drivers_dir: string
+          // Whether enable simdjson to parse json while stream load Default value: true
+          enable_simdjson_reader: bool
+          // If true, when the process does not exceed the soft mem limit, the query memory will not be limited; Default value: true
+          enable_query_memory_overcommit: bool
+          // The storage directory for files queried by local table valued functions. Default value: ${DORIS_HOME}
+          user_files_secure_path: string
+          //  The batch size for sending data by brpc streaming client Default value: 262144
+          brpc_streaming_client_batch_bytes: int
+          // In cloud native deployment scenario, BE will be add to cluster and remove from cluster very frequently. User's query will fail if there is a fragment is running on the shuting down BE. Default value: 120
+          grace_shutdown_wait_seconds: int
+          // BE Whether to enable the use of java-jni.  Default value: true
+          enable_java_support: bool
+      }
+      configuration: #DoriscnParameter & {
+      }
+
+  ## define static parameter list
+  staticParameters:
+      - priority_networks
+      - CUR_DATE
+      - PPROF_TMPDIR
+      - JAVA_OPTS
+      - JAVA_OPTS_FOR_JDK_9
+      - JEMALLOC_CONF
+      - JEMALLOC_PROF_PRFIX
+      - sys_log_level
+      - be_port
+      - webserver_port
+      - heartbeat_service_port
+      - brpc_port
+      - enable_https
+      - ssl_certificate_path
+      - ssl_private_key_path
+      - enable_auth
+      - be_node_role
+      - single_replica_load_brpc_port
+      - single_replica_load_download_port
+      - storage_root_path
+      - heartbeat_service_thread_count
+      - ignore_broken_disk
+      - mem_limit
+      - cluster_id
+      - custom_config_dir
+      - trash_file_expire_time_sec
+      - es_http_timeout_ms
+      - es_scroll_keepalive
+      - external_table_connect_timeout_sec
+      - status_report_interval
+      - brpc_max_body_size
+      - brpc_socket_max_unwritten_bytes
+      - transfer_large_data_by_brpc
+      - brpc_num_threads
+      - thrift_rpc_timeout_ms
+      - thrift_client_retry_interval_ms
+      - thrift_connect_timeout_seconds
+      - thrift_server_type_of_fe
+      - txn_commit_rpc_timeout_ms
+      - txn_map_shard_size
+      - txn_shard_size
+      - unused_rowset_monitor_interval
+      - max_client_cache_size_per_host
+      - string_type_length_soft_limit_bytes
+      - big_column_size_buffer
+      - small_column_size_buffer
+      - jsonb_type_length_soft_limit_bytes
+      - fragment_pool_queue_size
+      - fragment_pool_thread_num_min
+      - fragment_pool_thread_num_max
+      - doris_max_pushdown_conjuncts_return_rate
+      - doris_max_scan_key_num
+      - doris_scan_range_row_count
+      - doris_scanner_queue_size
+      - doris_scanner_row_num
+      - doris_scanner_row_bytes
+      - doris_scanner_thread_pool_queue_size
+      - doris_scanner_thread_pool_thread_num
+      - doris_max_remote_scanner_thread_pool_thread_num
+      - enable_prefetch
+      - enable_quadratic_probing
+      - exchg_node_buffer_size_bytes
+      - max_pushdown_conditions_per_column
+      - max_send_batch_parallelism_per_job
+      - doris_scan_range_max_mb
+      - disable_auto_compaction
+      - enable_vertical_compaction
+      - vertical_compaction_num_columns_per_group
+      - vertical_compaction_max_row_source_memory_mb
+      - vertical_compaction_max_segment_size
+      - enable_ordered_data_compaction
+      - ordered_data_compaction_min_segment_size
+      - max_base_compaction_threads
+      - generate_compaction_tasks_interval_ms
+      - base_compaction_min_rowset_num
+      - base_compaction_min_data_ratio
+      - total_permits_for_compaction_score
+      - compaction_promotion_size_mbytes
+      - compaction_promotion_ratio
+      - compaction_promotion_min_size_mbytes
+      - compaction_min_size_mbytes
+      - default_rowset_type
+      - cumulative_compaction_min_deltas
+      - cumulative_compaction_max_deltas
+      - base_compaction_trace_threshold
+      - cumulative_compaction_trace_threshold
+      - compaction_task_num_per_disk
+      - compaction_task_num_per_fast_disk
+      - cumulative_compaction_rounds_for_each_base_compaction_round
+      - cumulative_compaction_policy
+      - max_cumu_compaction_threads
+      - enable_segcompaction
+      - segcompaction_batch_size
+      - segcompaction_candidate_max_rows
+      - segcompaction_candidate_max_bytes
+      - segcompaction_task_max_rows
+      - segcompaction_task_max_bytes
+      - segcompaction_num_threads
+      - disable_compaction_trace_log
+      - pick_rowset_to_compact_interval_sec
+      - max_single_replica_compaction_threads
+      - update_replica_infos_interval_seconds
+      - enable_stream_load_record
+      - load_data_reserve_hours
+      - push_worker_count_high_priority
+      - push_worker_count_normal_priority
+      - enable_single_replica_load
+      - load_error_log_reserve_hours
+      - load_process_max_memory_limit_percent
+      - load_process_soft_mem_limit_percent
+      - routine_load_thread_pool_size
+      - slave_replica_writer_rpc_timeout_sec
+      - max_segment_num_per_rowset
+      - high_priority_flush_thread_num_per_store
+      - routine_load_consumer_pool_size
+      - multi_table_batch_plan_threshold
+      - single_replica_load_download_num_workers
+      - load_task_high_priority_threshold_second
+      - min_load_rpc_timeout_ms
+      - kafka_api_version_request
+      - kafka_broker_version_fallback
+      - max_consumer_num_per_group
+      - streaming_load_max_mb
+      - streaming_load_json_max_mb
+      - delete_worker_count
+      - clear_transaction_task_worker_count
+      - clone_worker_count
+      - be_service_threads
+      - download_worker_count
+      - drop_tablet_worker_count
+      - flush_thread_num_per_store
+      - num_threads_per_core
+      - num_threads_per_disk
+      - number_slave_replica_download_threads
+      - publish_version_worker_count
+      - upload_worker_count
+      - webserver_num_workers
+      - send_batch_thread_pool_thread_num
+      - send_batch_thread_pool_queue_size
+      - make_snapshot_worker_count
+      - release_snapshot_worker_count
+      - disable_mem_pools
+      - buffer_pool_clean_pages_limit
+      - buffer_pool_limit
+      - chunk_reserved_bytes_limit
+      - madvise_huge_pages
+      - max_memory_sink_batch_count
+      - memory_max_alignment
+      - mmap_buffers
+      - memtable_mem_tracker_refresh_interval_ms
+      - download_cache_buffer_size
+      - zone_map_row_num_threshold
+      - enable_tcmalloc_hook
+      - memory_mode
+      - max_sys_mem_available_low_water_mark_bytes
+      - memory_limitation_per_thread_for_schema_change_bytes
+      - mem_tracker_consume_min_size_bytes
+      - cache_clean_interval
+      - min_buffer_size
+      - write_buffer_size
+      - remote_storage_read_buffer_mb
+      - file_cache_type
+      - file_cache_alive_time_sec
+      - file_cache_max_size_per_disk
+      - max_sub_cache_file_size
+      - download_cache_thread_pool_thread_num
+      - download_cache_thread_pool_queue_size
+      - generate_cache_cleaner_task_interval_sec
+      - path_gc_check
+      - path_gc_check_interval_second
+      - path_gc_check_step
+      - path_gc_check_step_interval_ms
+      - path_scan_interval_second
+      - scan_context_gc_interval_min
+      - default_num_rows_per_column_file_block
+      - disable_storage_page_cache
+      - disk_stat_monitor_interval
+      - max_free_io_buffers
+      - max_garbage_sweep_interval
+      - max_percentage_of_error_disk
+      - read_size
+      - min_garbage_sweep_interval
+      - pprof_profile_dir
+      - small_file_dir
+      - user_function_dir
+      - storage_flood_stage_left_capacity_bytes
+      - storage_flood_stage_usage_percent
+      - storage_medium_migrate_count
+      - storage_page_cache_limit
+      - storage_page_cache_shard_size
+      - index_page_cache_percentage
+      - segment_cache_capacity
+      - storage_strict_check_incompatible_old_format
+      - sync_tablet_meta
+      - pending_data_expire_time_sec
+      - ignore_rowset_stale_unconsistent_delete
+      - create_tablet_worker_count
+      - check_consistency_worker_count
+      - max_tablet_version_num
+      - number_tablet_writer_threads
+      - tablet_map_shard_size
+      - tablet_meta_checkpoint_min_interval_secs
+      - tablet_meta_checkpoint_min_new_rowsets_num
+      - tablet_stat_cache_update_interval_second
+      - tablet_rowset_stale_sweep_time_sec
+      - tablet_writer_open_rpc_timeout_sec
+      - tablet_writer_ignore_eovercrowded
+      - streaming_load_rpc_max_alive_time_sec
+      - alter_tablet_worker_count
+      - alter_index_worker_count
+      - ignore_load_tablet_failure
+      - report_disk_state_interval_seconds
+      - result_buffer_cancelled_interval_time
+      - snapshot_expire_time_sec
+      - compress_rowbatches
+      - jvm_max_heap_size
+      - sys_log_dir
+      - sys_log_roll_mode
+      - sys_log_roll_num
+      - sys_log_verbose_level
+      - sys_log_verbose_modules
+      - aws_log_level
+      - log_buffer_level
+      - report_tablet_interval_seconds
+      - report_task_interval_seconds
+      - periodic_counter_update_period_ms
+      - enable_metric_calculator
+      - enable_system_metrics
+      - enable_token_check
+      - max_runnings_transactions_per_txn_map
+      - max_download_speed_kbps
+      - download_low_speed_time
+      - download_low_speed_limit_kbps
+      - doris_cgroups
+      - priority_queue_remaining_tasks_increased_frequency
+      - jdbc_drivers_dir
+      - enable_simdjson_reader
+      - enable_query_memory_overcommit
+      - user_files_secure_path
+      - brpc_streaming_client_batch_bytes
+      - grace_shutdown_wait_seconds
+      - enable_java_support
+
+  ## define dynamic parameter list
+
+  ## define immutable parameter list, this feature is not currently supported.
+
+
+  # mysql configuration file format
+  fileFormatConfig:
+    format: props-plus
+---
+# Source: doris/templates/configconstraint.yaml
+apiVersion: apps.kubeblocks.io/v1beta1
+kind: ConfigConstraint
+metadata:
+  name: doris-fe-config-constraints
+  labels:
+    helm.sh/chart: doris-2.0.3
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance:  release-name
+    app.kubernetes.io/name: doris
+    app: doris
+spec:
+  # configmap reference
+  # tplRef: doris-3node-tpl-8.0
+  reloadAction:
+    shellTrigger:
+      sync: true
+      command:
+        - "update-dynamic-config.sh"
+      scriptConfig:
+        scriptConfigMapRef: doris-tools-script
+        namespace: default
+
+  # ConfigurationSchema that impose restrictions on engine parameter's rule
+  parametersSchema:
+    # top level mysql configuration type
+    topLevelKey: DorisParameter
+
+    # schemaInJSON: auto generate from cue scripts
+    # example: ../../internal/configuration/testdata/mysql_openapi.json
+    cue: |-
+      #DorisParameter: {
+          // If using a third-party deployment manager to deploy Doris optionals：1.disable: No deployment manager is available 2.k8s：Kubernetes 3.ambari：Ambari 4.local: local file (for testing or Boxer2 BCC version)
+          enable_deploy_manager: string
+          // This configuration is used for the k8s deployment environment. When enable_fqdn_mode is true, changing the ip of the rebuild pod for be is allowed.
+          enable_fqdn_mode: bool
+          // Declare a selection policy for servers that have a lot of ip. Note that at most one ip should match this list. This is a list in semicolon-separated format, using CIDR notation, such as 10.10.10.0/24. If no ip address matches this rule, a random IP address is selected. default ''
+          priority_networks: string
+          // Dynamic configuration Modifies the directory
+          custom_config_dir: string
+          // This configuration is used to control whether the system drops the BE after it has been Decommission successfully.
+          drop_backend_after_decommission: bool
+          // set current date for java_opts
+          CUR_DATE: string
+          // log dir
+          LOG_DIR: string
+          // java_opts
+          JAVA_OPTS: string
+          // java_opts_jdk_9
+          JAVA_OPTS_FOR_JDK_9: string
+          // system log level
+          sys_log_level: string
+          // system log mode
+          sys_log_mode: string
+          // http port
+          http_port: int
+          // rpc port
+          rpc_port: int
+          // query port
+          query_port: int
+          // edit log port
+          edit_log_port: int
+          // The Doris metadata will be saved here
+          meta_dir: string
+          // Set the tryLock timeout for metadata lock
+          catalog_try_lock_timeout_ms: int
+          // If this parameter is set to true, FE will start in BDBJE debugging mode. You can view related information on the Web page System->bdbje.
+          enable_bdbje_debug_mode: bool
+          // Set the maximum acceptable clock deviation between the non-active FE host and the active FE host
+          max_bdbje_clock_delta_ms: int
+          // If true, FE will reset the bdbje replication group (i.e. remove all optional node information) and should start as Master
+          metadata_failure_recovery: bool
+          // The maximum number of TXNS that bdbje can roll back when trying to rejoin a group
+          txn_rollback_limit?: int & >=1 & <=65535 | *100
+          // Metadata is synchronously written to multiple fe FeEs. This parameter controls the timeout period for Master FE to wait for Follower FE to send an ack
+          bdbje_replica_ack_timeout_second: int
+          // The number of threads that process grpc events in grpc threadmgr
+          grpc_threadmgr_threads_nums: int
+          // lock timeout for the bdbje operation If there are many LocktimeOutExceptions in the FE WARN log, you can try to increase this value
+          bdbje_lock_timeout_second: int
+          // The bdbje heartbeat between the master and the fe times out default 30s
+          bdbje_heartbeat_timeout_second: int
+          // Duplicate ack policy of bdbje default SIMPLE_MAJORITY optionals:ALL, NONE, SIMPLE_MAJORITY
+          replica_ack_policy: string
+          // fe FE synchronization policy of bdbje default SYNC optionals:SYNC, NO_SYNC, WRITE_NO_SYNC
+          replica_sync_policy: string
+          // Master FE bdbje synchronization policy
+          master_sync_policy: string
+          // Used to limit the maximum disk space that bdbje can keep for files. default 1073741824
+          bdbje_reserved_disk_bytes: int
+          // If true, the non-primary FE will ignore the metadata delay gap between the primary FE and itself, even if the metadata delay gap exceeds meta_delay_toleration_second. The non-active FE still provides read services
+          ignore_meta_check: bool
+          // If the metadata delay interval exceeds meta_delay_toleration_second, the non-primary FE will stop providing service default 300s
+          meta_delay_toleration_second: int
+          // Master FE will save image every edit_log_roll_num meta journals. default 50000
+          edit_log_roll_num: int
+          // If set to true, the checkpoint thread will create checkpoints regardless of jvm memory usage percentage
+          force_do_metadata_checkpoint: bool
+          // If the percentage of jvm memory usage (heap or old memory pool) exceeds this threshold, the checkpoint thread will not work to avoid OOM.default 60(60%)
+          metadata_checkpoint_memory_threshold: int
+          // This parameter is used to set the maximum number of metadata with the same name in the recycle bin. If the number exceeds the maximum, the earliest metadata will be completely deleted and cannot be recovered. 0 indicates that the object with the same name is not reserved. < 0 indicates no restriction default 3
+          max_same_name_catalog_trash_num: int
+          // If the nodes (FE or BE) have the same cluster id, they are considered to belong to the same Doris cluster. The Cluster id is usually a random integer generated when the primary FE is first started. You can also specify one default -1
+          cluster_id: int
+          // Store the block queue size for heartbeat tasks in heartbeat_mgr.default 1024
+          heartbeat_mgr_blocking_queue_size: int
+          // Number of threads processing heartbeat events in heartbeat mgr. default 8
+          heartbeat_mgr_threads_num: int
+          // The multi-cluster feature will be deprecated in version 0.12, and setting this configuration to true will disable all actions related to the cluster feature default true
+          disable_cluster_feature: bool
+          // If using the k8s deployment manager locally, set it to true and prepare the certificate file default false
+          with_k8s_certs: bool
+          // This will be removed later for forward compatibility. Check the token when downloading the image file. default true
+          enable_token_check: bool
+          // Whether to enable the multi-label function of a single BE default false
+          enable_multi_tags: bool
+          // Doris FE queries the connection port through Arrow Flight SQL default -1
+          arrow_flight_sql_port: int
+          // FE https port: All current FE https ports must be the same default 8050
+          https_port: int
+          // FE https Indicates the https flag bit. false indicates that http is supported. true indicates that both http and https are supported and http requests are automatically redirected to HTTPS. If enable_https is true, You need to configure ssl certificate information in fe.conf default false
+          enable_https: bool
+          // If set to true, doris establishes an SSL-based encrypted channel with the mysql service. default true
+          enable_ssl: bool
+          // Maximum number of connections per FE default 1024
+          qe_max_connection: int
+          // Doris will check whether the compiled and running Java versions are compatible, and if not, will throw an exception message that the Java version does not match, and terminate the startup default true
+          check_java_version: bool
+          // This configuration indicates the service model used by the Thrift service of FE. The type is string and case - insensitive. optionals: 1.SIMPLE 2.THREADED 3.THREAD_POOL
+          thrift_server_type: string
+          // Maximum number of working threads of Thrift Server default 4096
+          thrift_server_max_worker_threads: int
+          // Thrift server backlog_num when you expand the backlog_num, you should ensure that its value is greater than the Linux/proc/sys/net/core/somaxconn configuration default 1024
+          thrift_backlog_num: int
+          //Connection timeout and socket timeout configuration of the thrift server default 0
+          thrift_client_timeout_ms: int
+          // Whether to send the query plan structure in a compressed format. default true
+          use_compact_thrift_rpc: bool
+          // Used to set the initial stream window size of the GRPC client channel and also to set the maximum message size. This value may need to be increased when the result set is large default 1G
+          grpc_max_message_size_bytes: string
+          // The maximum number of threads to process a task in mysql. default 4096
+          max_mysql_service_task_threads_num: int
+          // Number of threads handling I/O events in mysql. default 4
+          mysql_service_io_threads_num: int
+          // Mysql nio server backlog_num when you zoom in the backlog_num, you should also enlarge the Linux/proc/sys/net/core/somaxconn the values in the file default 1024
+          mysql_nio_backlog_num: int
+          // Default timeout for Broker rpc default 10000(10s)
+          broker_timeout_ms: int
+          // Timeout duration of rpc request sent by FE to BackendService of BE, in milliseconds.Default value: 60000
+          backend_rpc_timeout_ms: int
+          // Default: 3600 (1 hour)
+          max_backend_down_time_second: int
+          // Disables the BE blacklist function. After this function is disabled, the BE will not BE added to the blacklist if the query request to the BE fails. Default false
+          disable_backend_black_list: bool
+          // Maximum allowable number of heartbeat failures of a BE node. If the number of consecutive heartbeat failures exceeds this value, the BE status is set to dead default 1
+          max_backend_heartbeat_failure_tolerance_count: int
+          // This configuration is used to try to skip proxies when accessing bos or other cloud storage through proxies Default false
+          enable_access_file_without_broker: bool
+          // This configuration determines whether to resend a proxy task when the creation time of the proxy task is set. ReportHandler can resend a proxy task if and only if the current time minus the creation time is greater than agent_task_task_resend_wait_time_ms.default 5000
+          agent_task_resend_wait_time_ms: int
+          // The maximum number of threads in the agent task thread pool that process the agent task. default 4096
+          max_agent_task_threads_num: int
+          // Timeout period of asynchronous remote fragment execution. default 30000 (ms)
+          remote_fragment_exec_timeout_ms: int
+          // Cluster token for internal authentication. default ''
+          auth_token: string
+          // HTTP Server V2 is implemented by SpringBoot and uses a front-end separation architecture. Users will not be able to use the new front-end UI interface until httpv2 is enabled Default: true by default since the official 0.14.0 release, false by default before
+          enable_http_server_v2: bool
+          // Default: true by default since the official 0.14.0 release, false by default before the base path is the URL prefix of all API paths. Some deployment environments need to configure additional base paths to match resources. This Api returns the path configured in Config.http_api_extra_base_path. The default value is blank, indicating that the value is not set.
+          http_api_extra_base_path: string
+          // default 2
+          jetty_server_acceptors: int
+          // default 4
+          jetty_server_selectors: int
+          // workers thread pools are not configured by default. Set them as required default 0
+          jetty_server_workers: int
+          // This is the maximum number of bytes that can be uploaded by the put or post method. The default value is 100MB (100*1024*1024)
+          jetty_server_max_http_post_size: int
+          // http header size Indicates the configuration parameter Default value: 1048576 (1M)
+          jetty_server_max_http_header_size: int
+          // When the user attribute max_query_instances is less than or equal to 0, this configuration is used to limit the number of query instances that a single user can use at a time. If this parameter is less than or equal to 0, it indicates no limit.default -1
+          default_max_query_instances: int
+          // Query retry times default 1
+          max_query_retry_time: int
+          // It is used to limit the maximum number of partitions that can be created when creating a dynamic partition table to avoid creating too many partitions at a time. The number is determined by "Start" and "end" in the dynamic partition parameters. default 500
+          max_dynamic_partition_num: int
+          //  Whether to enable dynamic partition scheduling default true
+          dynamic_partition_enable: bool
+          // Check the frequency of dynamic partitioning deafult 600(s) 10min
+          dynamic_partition_check_interval_seconds: int
+          // This parameter limits the maximum number of partitions that can be created when a partition table is created in batches to prevent too many partitions from being created at a time.default 4096
+          max_multi_partition_num: int
+          // Use this parameter to set the prefix of the partition name of multi partition. This parameter takes effect only for multi partition, not for dynamic partitions. The default prefix is p_.
+          multi_partition_name_prefix: string
+          // Time to update the global partition information in memory default 300(s)
+          partition_in_memory_update_interval_secs: int
+          // Whether to enable concurrent update default false
+          enable_concurrent_update: bool
+          // 0: The table name is case sensitive and stored as specified. 1: The table name is stored in lowercase and case insensitive. 2: Table names are stored as specified, but are compared in lower case. default 0
+          lower_case_table_names: int
+          // Used to control the maximum table name length default 64
+          table_name_length_limit: int
+          // If set to true, the SQL query result set is cached.default true
+          cache_enable_sql_mode: bool
+          // If set to true, FE will fetch data from the BE cache, and this option is suitable for real-time updates of some partitions. default true
+          cache_enable_partition_mode: bool
+          // Sets the maximum number of rows that can be cached default 3000
+          cache_result_max_row_count: int
+          // Sets the maximum size of data that can be cached, in Bytes default 31457280
+          cache_result_max_data_size: int
+          // The minimum interval at which results are cached from the previous version. This parameter distinguishes between offline updates and real-time updates default 900
+          cache_last_version_interval_second: int
+          // Whether to add a delete flag column when creating a unique table default false
+          enable_batch_delete_by_default: bool
+          // Used to limit the number of Predicate elements in a delete statement default 1024
+          max_allowed_in_element_num_of_delete: int
+          // Controls the Rollup job concurrency limit default 1
+          max_running_rollup_job_num_per_table: int
+          // This will limit the maximum recursion depth of the hash distribution trimmer.  default 100
+          max_distribution_pruner_recursion_depth: int
+          // If set to true, Planner will try to select a copy of the tablet on the same host as the previous one default false
+          enable_local_replica_selection: bool
+          // When the enable_local_replica_selection parameter is used, the non-local replica service is used to query data when the local replica is unavailable.default false
+          enable_local_replica_selection_fallback: bool
+          // Limit the expr tree depth. Exceeding this limit may result in excessively long analysis times when a db read lock is held.default 3000
+          expr_depth_limit: int
+          // Limit the number of expr children in the expr tree. Exceeding this limit may result in excessively long analysis times when a database read lock is held. default 10000
+          expr_children_limit: int
+          // Used to define the serialization format for passing blocks between fragments. optionals: max_be_exec_version min_be_exec_version
+          be_exec_version: string
+          // This parameter is used to set the maximum number of profiles to save the query. default 100
+          max_query_profile_num: int
+          // The minimum interval between two release operations default 10(ms)
+          publish_version_interval_ms: int
+          // The maximum waiting time for all published versions of a transaction to complete default 30(s)
+          publish_version_timeout_second: int
+          // colocate join PlanFragment instance 的 memory_limit = exec_mem_limit / min (query_colocate_join_memory_limit_penalty_factor, instance_num) default 1
+          query_colocate_join_memory_limit_penalty_factor: int
+          // For tables of the AGG model only, when the variable is true, the rewriting is based on whether c1 is a bitmap or hll. count distinct (c1) default true
+          rewrite_count_distinct_to_bitmap_hll: bool
+          // Whether to enable vectorization import default true
+          enable_vectorized_load: bool
+          // Whether to enable a new file scan node default true
+          enable_new_load_scan_node: bool
+          // The maximum percentage of data that can be filtered (for reasons such as data irregularities). The default value is 0, indicating strict mode, as long as one piece of data is filtered out, the entire import fails default 0
+          default_max_filter_ratio: int
+          // This configuration is mainly used to control the number of concurrent imports of the same DB. default 1000
+          max_running_txn_num_per_db: int
+          // If set to true, insert stmt handling errors will still return a label to the user. Users can use this tag to check the status of the import job. The default value is false, indicating that the insert operation encountered an error, and the exception is directly thrown to the user client without the import label. default false
+          using_old_load_usage_pattern: bool
+          // If this is set to true, all pending import jobs will fail when the start txn api is called; When the commit txn api is called, all ready import jobs fail; All submitted import jobs will await publication default false
+          disable_load_job: bool
+          // The maximum wait time for inserting all data before committing a transaction This is the timeout seconds of the command "commit" default 30(s)
+          commit_timeout_second: int
+          // The value can be PENDING, ETL, LOADING, or QUORUM_FINISHED. default 1000
+          max_unfinished_load_job: int
+          // This configuration is used to set the interval at which the value of the amount of data used by the database is updated default 300(s)
+          db_used_data_quota_update_interval_secs: int
+          // Whether to disable stream load display and clear stream load records from memory. default false
+          disable_show_stream_load: bool
+          // The default maximum number of recent stream load records that can be stored in memory default 5000
+          max_stream_load_record_size: int
+          // Gets the stream load record interval default 120
+          fetch_stream_load_record_interval_second: int
+          // The maximum number of bytes that a broker scanner program can process in a broker load job default 500*1024*1024*1024L (500G)
+          max_bytes_per_broker_scanner: int
+          // The default concurrency for broker load imports on a single node. default 1
+          default_load_parallelism: int
+          // broker scanner maximum number of concurrent requests.default 10
+          max_broker_concurrency: int
+          // The minimum number of bytes that a single broker scanner will read. Default value: 67108864L (64M)
+          min_bytes_per_broker_scanner: int
+          //  Automatically restore the period of Routine load default 5(s)
+          period_of_auto_resume_min: int
+          // As long as one BE fails, Routine Load cannot be automatically restored  default 0
+          max_tolerable_backend_down_num: int
+          // Maximum number of concurrent Routine Load tasks for each BE. default 5
+          max_routine_load_task_num_per_be: int
+          //  Maximum number of concurrent tasks in a Routine Load job default 5
+          max_routine_load_task_concurrent_num: int
+          // Maximum number of Routine Load jobs, including NEED_SCHEDULED, RUNNING, and PAUSE default 100
+          max_routine_load_job_num: int
+          // The default number of waiting jobs loaded by the routine load V2 version is an ideal number. default 100
+          desired_max_waiting_jobs: int
+          // hadoop cluster load is not recommended in the future. Set to true to disable this load mode. default false
+          disable_hadoop_load: bool
+          // Whether to temporarily enable spark load. The function is disabled by default This parameter was removed in version 1.2 and spark_load is enabled by default default false
+          enable_spark_load: bool
+          // Spark Load scheduler running interval. The default interval is 60 seconds default 60
+          spark_load_checker_interval_second: int
+          // Size of the loading load task execution program pool. default 10
+          async_loading_load_task_pool_size: int
+          //  pending load Task execution program pool size. default 10
+          async_pending_load_task_pool_size: int
+          // This configuration is only for compatibility with older versions, it has been replaced by async_loading_load_task_pool_size and will be removed later. default 10
+          async_load_task_pool_size: int
+          //  Whether to enable the single copy data import function. default false
+          enable_single_replica_load: bool
+          // Minimum timeout, applicable to all types of load default 1(s)
+          min_load_timeout_second: int
+          // Maximum timeout of stream load and mini load Default value: 259200 (3 days)
+          max_stream_load_timeout_second: int
+          // load Maximum timeout for all types of loads except stream load Default value: 259200 (3 days)
+          max_load_timeout_second: int
+          // Default stream load and mini load timeout times default 86400 * 3 (3 days)
+          stream_load_default_timeout_second: int
+          // Default stream load pre-commit timeout default 3600(s)
+          stream_load_default_precommit_timeout_second: int
+          // Default insert load timeout default 3600 (an hour)
+          insert_load_default_timeout_second: int
+          // The timeout period of mini load, which is not a stream load by default default 3600 (an hour)
+          mini_load_default_timeout_second: int
+          // Default timeout of Broker load default 14400 (four hours)
+          broker_load_default_timeout_second: int
+          // Default Spark import timeout period default 86400 (one day)
+          spark_load_default_timeout_second: int
+          // Hadoop import timeout default 86400*3 (tree day)
+          hadoop_load_default_timeout_second: int
+          // Load Maximum number of tasks. The default value is 0 default 0
+          load_running_job_num_limit: int
+          // Load Specifies the data size entered in the load job. The default value is 0 default 0
+          load_input_size_limit_gb: int
+          // NORMAL Priority Number of concurrent etl load jobs. default 10
+          load_etl_thread_num_normal_priority: int
+          // The number of concurrent etl load jobs with high priority. default 3
+          load_etl_thread_num_high_priority: int
+          // NORMAL Priority Number of concurrent suspended load jobs. default 10
+          load_pending_thread_num_normal_priority: int
+          // The number of concurrent high-priority suspended load jobs. default 3
+          load_pending_thread_num_high_priority: int
+          // Load scheduler run interval. The load job transfers its state from PENDING to LOADING to FINISHED. default 5(s)
+          load_checker_interval_second: int
+          // The maximum number of waiting seconds for a lagging node in the load default 300(s)
+          load_straggler_wait_second: int
+          // label_keep_max_second removes labels for completed or canceled load jobs, default 382483600 (tree day)
+          label_keep_max_second: int
+          // For some high frequency LOAD work, such as INSERT, STREAMING LOAD, ROUTINE_LOAD_TASK. If it expires, the completed job or task is deleted. default 43200 (12 hours)
+          streaming_label_keep_max_second: int
+          // The load label cleaner will run every label_clean_interval_second to clean up obsolete jobs. default 1*3600 (an hour)
+          label_clean_interval_second: int
+          // If the transaction is visible or aborted, the transaction will be cleared after transaction_clean_interval_second default 30
+          transaction_clean_interval_second: int
+          // The maximum interval between committing a transaction. default 10
+          sync_commit_interval_second: int
+          // Check the running status of data synchronization jobs default 10
+          sync_checker_interval_second: int
+          // The maximum number of threads in the data synchronization job thread pool. default 10
+          max_sync_task_threads_num: int
+          // The minimum number of events required to commit a transaction. default 10000
+          min_sync_commit_size: int
+          // The minimum data size required to commit a transaction.default 15*1024*1024 (15M)
+          min_bytes_sync_commit: int
+          // The maximum number of threads in the data synchronization job thread pool. default 10
+          max_bytes_sync_commit: int
+          // Whether to allow the outfile function to export results to the local disk default fales
+          enable_outfile_to_local: bool
+          // The number of tablets per export query plan default 5
+          export_tablet_num_per_task: int
+          // Default timeout period of the export job default 2*3600 (2 hours)
+          export_task_default_timeout_second: int
+          // Concurrency limit for running export jobs. The default value is 5,0 indicates no limit default 5
+          export_running_job_num_limit: int
+          // Export the run interval of the inspector default 5
+          export_checker_interval_second: int
+          // The maximum size of a system log and an audit log default 1024 (1G)
+          log_roll_size_mb: int
+          // This specifies the FE log directory. FE generates two log files fe.log and fe.warn.log default DorisFE.DORIS_HOME_DIR + "/log"
+          sys_log_dir: string
+          // The maximum FE log file to be saved in sys_log_roll_interval. The default value is 10, which indicates that there are a maximum of 10 log files in a day
+          sys_log_roll_num?: int & >=1 & <=65535 | *10
+          // Detailed module. VERBOSE level is implemented by log4j DEBUG level. default {}
+          sys_log_verbose_modules: string
+          // Optional:1.DAY: log The prefix is yyyyMMdd 2.HOUR: log The prefix is yyyyMMddHH default DAY
+          sys_log_roll_interval: string
+          // If the logs were last modified 7 days ago, delete them. default 7d format: 1. 7d 2. 10h 3. 60m 4. 120s
+          sys_log_delete_age: string
+          // Size of a log file: One log file is split every 1 GB default SIZE-MB-1024
+          sys_log_roll_mode: string
+          // Controls whether to compress fe logs, including fe.log and fe.warn.log. If enabled, the gzip algorithm is used for compression. default false
+          sys_log_enable_compress: bool
+          // Audit Log directory: This specifies the FE audit log directory. The audit log fe.audit.log contains all requests and related information, such as user, host, cost, and status. default DorisFE.DORIS_HOME_DIR + "/log"
+          audit_log_dir: string
+          // The maximum FE audit log file in audit_log_roll_interval is reserved. default 90
+          audit_log_roll_num: int
+          // slow queries include all queries that cost more than qe slow log ms default {"slow_query", "query", "load", "stream_load"}
+          audit_log_modules: string
+          // If the response time of a query exceeds this threshold, it will be recorded in the audit log as slow_query. default 5000 (5s)
+          qe_slow_log_ms: int
+          // Optional:1.DAY: log The prefix is yyyyMMdd 2.HOUR: log The prefix is yyyyMMddHH default DAY
+          audit_log_roll_interval: int
+          // If the audit logs were last modified 7 days ago, delete them. default 7d format: 1. 7d 2. 10h 3. 60m 4. 120s
+          audit_log_delete_age: string
+          // Controls whether to compress fe.audit.log. If enabled, the gzip algorithm is used for compression. default false
+          audit_log_enable_compress: bool
+          // Used to set the minimum number of replication for a single tablet. default 1
+          min_replication_num_per_tablet: int
+          // Used to set the maximum number of replication for a single tablet. default 32767
+          max_replication_num_per_tablet: int
+          // It is used to set the default database data quota size. Setting the quota size of a single database can be used: default 1125899906842624 (1PB)
+          default_db_data_quota_bytes: int
+          // This parameter is used to set the default Replica number quota size in the database. You can set the number of replicas in a single database as follows: default 1073741824
+          default_db_replica_quota_size: int
+          // You can set this configuration to true. The corrupted tablet is replaced with an empty tablet to ensure that the query can be executed default false
+          recover_with_empty_tablet: bool
+          // Limit the minimum time of a clone task default 180 (3min)
+          min_clone_task_timeout_sec: int
+          // Limit the maximum time of a clone task default 180 (3min)
+          max_clone_task_timeout_sec: int
+          // ReportHandler will not check the tablet's storage media and will disable the storage cooling function default false
+          disable_storage_medium_check: bool
+          // This configuration is used to control whether FE performs Decommission of the status of Tablets. default 5000
+          decommission_tablet_check_threshold: int
+          // Valid only when PartitionRebalancer is used default 10
+          partition_rebalance_max_moves_num_per_selection: int
+          // Valid only when PartitionRebalancer is used. If changed, the cache movement will be cleared default 600 (s)
+          partition_rebalance_move_expire_after_access: int
+          // rebalancer (case insensitive) : BeLoad, Partition. If type resolution fails, BeLoad is used by default  default BeLoad
+          tablet_rebalancer_type: string
+          // If the number of balance tablets in the TabletScheduler exceeds max_balancing_tablets, the balance check is not performed default 100
+          max_balancing_tablets: int
+          // If the number of balance tablets in TabletScheduler exceeds max_balancing_tablets, If the number of tablets scheduled by TabletScheduler exceeds max_scheduling_tablets, the balance check is skipped. default 2000
+          max_scheduling_tablets: int
+          // If set to true, the TabletScheduler will not do the balance default false
+          disable_balance: bool
+          // If set to true, TabletScheduler does not balance between disks on a single BE  default true
+          disable_disk_balance: bool
+          // Threshold of the balance percentage of the cluster. default 0.1 (10%)
+          balance_load_score_threshold: float
+          // Percentage of high watermark usage of the disk capacity. default 0.75 (75%)
+          capacity_used_percent_high_water: float
+          // Balance threshold for the number of BE copies. default 0.2
+          clone_distribution_balance_threshold: float
+          // Data size balance threshold in BE. default 0.2
+          clone_capacity_balance_threshold: float
+          // This configuration can be set to true to disable automatic colocate table repositioning and balancing. default false
+          disable_colocate_balance: bool
+          // Number of default slots for each path in balance default 1
+          balance_slot_num_per_path: int
+          // If set to true, the replica repair and balancing logic is turned off. default false
+          disable_tablet_scheduler: bool
+          // If this parameter is set to true, the system deletes redundant copies immediately in the copy scheduling logic. This may cause some import jobs that are writing to the corresponding copy to fail, but it will speed up the balancing and repair of the copy. default false
+          enable_force_drop_redundant_replica: bool
+          // Redistributing a Colocation Group can involve a lot of tablet migration. default 1800
+          colocate_group_relocate_delay_second: int
+          // Whether multiple copies of the same tablet are allowed on the same host. default false
+          allow_replica_on_same_host: bool
+          // If set to true, every slow copy that compacts automatically detects any compaction and migrates to another machine if the version count of the slowest copy exceeds the min_version_count_indicate_replica_compaction_too_slow value default false
+          repair_slow_replica: bool
+          // The versioning threshold used to determine if compaction occurs too slowly default 200
+          min_version_count_indicate_replica_compaction_too_slow: int
+          // If set to true, a copy that compactions slowly skips when a searchable copy is selected default true
+          skip_compaction_slower_replica: bool
+          // The effective ratio threshold of the difference between the version count of the slowest copy and that of the fastest copy. default 0.5
+          valid_version_count_delta_ratio_between_replicas: float
+          // Data size threshold, which is used to determine whether the number of copies is too large default 2 * 1024 * 1024 * 1024 (2G)
+          min_bytes_indicate_replica_too_large: int
+          // The number of default slots per path in the tablet scheduler default 2
+          schedule_slot_num_per_path: int
+          // The delay time factor before deciding to fix the tablet. default 60 (s)
+          tablet_repair_delay_factor_second: int
+          // tablet Status Update Interval All FEs will get tablet statistics from all bes at every interval default 300 (5min)
+          tablet_stat_update_interval_second: int
+          // If the disk capacity reaches storage_flood_stage_usage_percent, the load and restore jobs are rejected default 95 (95%)
+          storage_flood_stage_usage_percent: float
+          // If the disk capacity reaches storage_flood_stage_left_capacity_bytes, the load and restore jobs are rejected default 1*1024*1024*1024 (1GB)
+          storage_flood_stage_left_capacity_bytes: int
+          // storage_high_watermark_usage_percent Specifies the percentage of the maximum capacity used by storage paths on the BE end. default 85 (85%)
+          storage_high_watermark_usage_percent: float
+          // storage_min_left_capacity_bytes Specifies the minimum remaining capacity of the BE storage path. default 2*1024*1024*1024 (2GB)
+          storage_min_left_capacity_bytes: int
+          // After deleting the database (table/partition), you can RECOVER it using RECOVER stmt. This specifies the maximum data retention time. default 86400L (one day)
+          catalog_trash_expire_second: int
+          // When you create a table (or partition), you can specify its storage medium (HDD or SSD). default HDD
+          default_storage_medium: string
+          // Whether to enable the Storage Policy function. This function allows you to separate hot and cold data. default false
+          enable_storage_policy: bool
+          // Default timeout for a single consistency check task. Set it long enough to fit your tablet size. default 600 (10min)
+          check_consistency_default_timeout_second: int
+          // Consistency check start time default 23
+          consistency_check_start_time: int
+          // Consistency check end time default 23
+          consistency_check_end_time: int
+          // The minimum number of seconds of delay between copies failed, and an attempt was made to recover it using cloning. default 0
+          replica_delay_recovery_second: int
+          // Maximum timeout of ALTER TABLE request. Set it long enough to fit your table data size default 86400 * 30 (1 mouth)
+          alter_table_timeout_second: int
+          // OlapTable Specifies the maximum number of copies allowed when schema change is performed. If the number of copies is too large, an FE OOM will occur. default 100000
+          max_replica_count_when_schema_change: int
+          // Maximum retention time for certain jobs. Things like schema changes and Rollup jobs. default 7 * 24 * 3600 (7days)
+          history_job_keep_max_second: int
+          // In order not to wait too long before creating a table (index), set a maximum timeout default 1*3600 (an hour)
+          max_create_table_timeout_second: int
+          // multi catalog Number of concurrent file scanning threads default 128
+          file_scan_node_split_num: int
+          // multi catalog Scan size of concurrent files default 256*1024*1024
+          file_scan_node_split_size: int
+          // Whether to enable the ODBC table. The ODBC table is disabled by default. You need to manually enable it when using the ODBC table. default false
+          enable_odbc_table: bool
+          // Starting with version 1.2, we no longer support the creation of hudi and iceberg looks. Use the multi catalog function instead. default true
+          disable_iceberg_hudi_table: bool
+          // fe creates the iceberg table every iceberg_table_creation_interval_second default 10(s)
+          iceberg_table_creation_interval_second: int
+          // If set to true, the iceberg table and the Doris table must have the same column definitions. default true
+          iceberg_table_creation_strict_mode: bool
+          // The default maximum number of recent iceberg library table creation records that can be stored in memory default 2000
+          max_iceberg_table_creation_record_size: int
+          // Maximum number of caches for the hive partition. default 100000
+          max_hive_partition_cache_num: int
+          // Default timeout period of hive metastore default 10
+          hive_metastore_client_timeout_second: int
+          // The maximum number of threads for the meta cache load thread pool for external external tables. default 10
+          max_external_cache_loader_thread_pool_size: int
+          // Maximum number of file caches used for external external tables. default 100000
+          max_external_file_cache_num: int
+          // The maximum number of schema caches used for external external tables. default 10000
+          max_external_schema_cache_num: int
+          // Sets how long the data in the cache is invalid after the last access. The unit is minute. It applies to External Schema Cache and Hive Partition Cache. default 1440
+          external_cache_expire_time_minutes_after_access: int
+          // FE calls the es api every es_state_sync_interval_secs to get the es index fragment information default 10
+          es_state_sync_interval_second: int
+          // default /lib/hadoop-client/hadoop/bin/hadoop
+          dpp_hadoop_client_path: string
+          // default 100*1024*1024L (100M)
+          dpp_bytes_per_reduce: int
+          // default palo-dpp
+          dpp_default_cluster: string
+          // default { hadoop_configs : 'mapred.job.priority=NORMAL;mapred.job.map.capacity=50;mapred.job.reduce.capacity=50;mapred.hce.replace.streaming=false;abaci.long.stored.job=true;dce.shuffle.enable=false;dfs.client.authserver.force_stop=true;dfs.client.auth.method=0' }
+          dpp_default_config_str: string
+          // default { palo-dpp : { hadoop_palo_path : '/dir', hadoop_configs : 'fs.default.name=hdfs://host:port;mapred.job.tracker=host:port;hadoop.job.ugi=user,password' } }
+          dpp_config_str: string
+          // Default Yarn configuration file directory Each time you run the Yarn command, you need to check whether the config file exists in this path. If it does not exist, create it. default DorisFE.DORIS_HOME_DIR + "/lib/yarn-config"
+          yarn_config_dir: string
+          // Default Yarn client path default DorisFE.DORIS_HOME_DIR + "/lib/yarn-client/hadoop/bin/yarn"
+          yarn_client_path: string
+          // Specifies the Spark initiator log directory default sys_log_dir + "/spark_launcher_log"
+          spark_launcher_log_dir: string
+          // Default Spark dependency path default ""
+          spark_resource_path: string
+          // Default Spark home path default DorisFE.DORIS_HOME_DIR + "/lib/spark2x"
+          spark_home_default_dir: string
+          // The default version of Spark default 1.2-SNAPSHOT
+          spark_dpp_version: string
+          // temp dir is used to save the intermediate results of certain processes, such as backup and restore processes. When these procedures are complete, the files in this directory are cleared. default DorisFE.DORIS_HOME_DIR + "/temp_dir"
+          tmp_dir: string
+          // Plug-in installation directory default DORIS_HOME + "/plugins
+          plugin_dir: string
+          // Whether the plug-in is enabled. The plug-in is enabled by default default true
+          plugin_enable: bool
+          // The directory where the small file is saved default DORIS_HOME_DIR + “/small_files”
+          small_file_dir: string
+          // SmallFileMgr Indicates the maximum size of a single file default 1048576 (1M)
+          max_small_file_size_bytes: int
+          // SmallFileMgr Indicates the maximum number of files stored in SmallFilemgr default 100
+          max_small_file_number: int
+          // If set to true, the metrics collector runs as a daemon timer, collecting metrics at regular intervals default true
+          enable_metric_calculator: bool
+          // This threshold is to avoid piling up too many reporting tasks in FE, which may cause problems such as OOM exceptions. default 100
+          report_queue_size: int
+          // Default timeout period of a backup job default 86400*1000(one day)
+          backup_job_default_timeout_ms: int
+          // This configuration controls the number of backup/restore tasks that can be logged per DB default 10
+          max_backup_restore_job_num_per_db: int
+          // Whether to enable the quantile state data type default false
+          enable_quantile_state_type: bool
+          // If set to true, FE automatically converts Date/Datetime to DateV2/DatetimeV2(0). default false
+          enable_date_conversion: bool
+          // If set to true, FE will automatically convert DecimalV2 to DecimalV3. default false
+          enable_decimal_conversion: bool
+          // default x@8
+          proxy_auth_magic_prefix: string
+          // default false
+          proxy_auth_enable: bool
+          // Whether to push the filtering conditions with functions to MYSQL when querying external tables of ODBC and JDBC default true
+          enable_func_pushdown: bool
+          // Used to store default jdbc drivers default ${DORIS_HOME}/jdbc_drivers;
+          jdbc_drivers_dir: string
+          // The maximum number of failed tablet information saved by the broker load job default 3
+          max_error_tablet_of_broker_load: int
+          // Used to set the default database transaction quota size. The default value set to -1 means that max_running_txn_num_per_db is used instead of default_db_max_running_txn_num. default -1
+          default_db_max_running_txn_num: int
+          // If set to true, queries on external tables are preferentially assigned to compute nodes. The maximum number of compute nodes is controlled by min_backend_num_for_external_table. If set to false, queries on external tables will be assigned to any node. default false
+          prefer_compute_node_for_external_table: bool
+          // This parameter is valid only when prefer_compute_node_for_external_table is true. If the number of compute nodes is less than this value, a query against the external table will try to use some mixed nodes so that the total number of nodes reaches this value. If the number of compute nodes is greater than this value, queries from the external table will only be assigned to compute nodes.default 3
+          min_backend_num_for_external_table: int
+          // When set to false, querying tables in information_schema no longer returns information about tables in the external catalog.default false
+          infodb_support_ext_catalog: bool
+          // Limits the maximum packet length that can be received by the thrift port on fe nodes to prevent OOM from being caused by oversized or incorrect packets default 20000000
+          fe_thrift_max_pkg_bytes: int
+      
+          //dynmaic
+          // Maximum wait time for creating a single copy.default 1(s)
+          tablet_create_timeout_second?: int & >=1 & <=65535 | *2
+          // Maximum wait time for deleting a single copy.default 2
+          tablet_delete_timeout_second?: int & >=1 & <=65535 | *2
+      }
+      
+      configuration: #DorisParameter & {
+      }
+      
+
+  ## define static parameter list
+  staticParameters:
+      - enable_deploy_manager
+      - enable_fqdn_mode
+      - priority_networks
+      - custom_config_dir
+      - drop_backend_after_decommission
+      - CUR_DATE
+      - LOG_DIR
+      - JAVA_OPTS
+      - JAVA_OPTS_FOR_JDK_9
+      - sys_log_level
+      - sys_log_mode
+      - http_port
+      - rpc_port
+      - query_port
+      - edit_log_port
+      - meta_dir
+      - catalog_try_lock_timeout_ms
+      - enable_bdbje_debug_mode
+      - max_bdbje_clock_delta_ms
+      - metadata_failure_recovery
+      - txn_rollback_limit
+      - bdbje_replica_ack_timeout_second
+      - grpc_threadmgr_threads_nums
+      - bdbje_lock_timeout_second
+      - bdbje_heartbeat_timeout_second
+      - replica_ack_policy
+      - replica_sync_policy
+      - master_sync_policy
+      - bdbje_reserved_disk_bytes
+      - ignore_meta_check
+      - meta_delay_toleration_second
+      - edit_log_roll_num
+      - force_do_metadata_checkpoint
+      - metadata_checkpoint_memory_threshold
+      - max_same_name_catalog_trash_num
+      - cluster_id
+      - heartbeat_mgr_blocking_queue_size
+      - heartbeat_mgr_threads_num
+      - disable_cluster_feature
+      - with_k8s_certs
+      - enable_token_check
+      - enable_multi_tags
+      - arrow_flight_sql_port
+      - https_port
+      - enable_https
+      - enable_ssl
+      - qe_max_connection
+      - check_java_version
+      - thrift_server_type
+      - thrift_server_max_worker_threads
+      - thrift_backlog_num
+      - thrift_client_timeout_ms
+      - use_compact_thrift_rpc
+      - grpc_max_message_size_bytes
+      - max_mysql_service_task_threads_num
+      - mysql_service_io_threads_num
+      - mysql_nio_backlog_num
+      - broker_timeout_ms
+      - backend_rpc_timeout_ms
+      - max_backend_down_time_second
+      - disable_backend_black_list
+      - max_backend_heartbeat_failure_tolerance_count
+      - enable_access_file_without_broker
+      - agent_task_resend_wait_time_ms
+      - max_agent_task_threads_num
+      - remote_fragment_exec_timeout_ms
+      - auth_token
+      - enable_http_server_v2
+      - http_api_extra_base_path
+      - jetty_server_acceptors
+      - jetty_server_selectors
+      - jetty_server_workers
+      - jetty_server_max_http_post_size
+      - jetty_server_max_http_header_size
+      - default_max_query_instances
+      - max_query_retry_time
+      - max_dynamic_partition_num
+      - dynamic_partition_enable
+      - dynamic_partition_check_interval_seconds
+      - max_multi_partition_num
+      - multi_partition_name_prefix
+      - partition_in_memory_update_interval_secs
+      - enable_concurrent_update
+      - lower_case_table_names
+      - table_name_length_limit
+      - cache_enable_sql_mode
+      - cache_enable_partition_mode
+      - cache_result_max_row_count
+      - cache_result_max_data_size
+      - cache_last_version_interval_second
+      - enable_batch_delete_by_default
+      - max_allowed_in_element_num_of_delete
+      - max_running_rollup_job_num_per_table
+      - max_distribution_pruner_recursion_depth
+      - enable_local_replica_selection
+      - enable_local_replica_selection_fallback
+      - expr_depth_limit
+      - expr_children_limit
+      - be_exec_version
+      - max_query_profile_num
+      - publish_version_interval_ms
+      - publish_version_timeout_second
+      - query_colocate_join_memory_limit_penalty_factor
+      - rewrite_count_distinct_to_bitmap_hll
+      - enable_vectorized_load
+      - enable_new_load_scan_node
+      - default_max_filter_ratio
+      - max_running_txn_num_per_db
+      - using_old_load_usage_pattern
+      - disable_load_job
+      - commit_timeout_second
+      - max_unfinished_load_job
+      - db_used_data_quota_update_interval_secs
+      - disable_show_stream_load
+      - max_stream_load_record_size
+      - fetch_stream_load_record_interval_second
+      - max_bytes_per_broker_scanner
+      - default_load_parallelism
+      - max_broker_concurrency
+      - min_bytes_per_broker_scanner
+      - period_of_auto_resume_min
+      - max_tolerable_backend_down_num
+      - max_routine_load_task_num_per_be
+      - max_routine_load_task_concurrent_num
+      - max_routine_load_job_num
+      - desired_max_waiting_jobs
+      - disable_hadoop_load
+      - enable_spark_load
+      - spark_load_checker_interval_second
+      - async_loading_load_task_pool_size
+      - async_pending_load_task_pool_size
+      - async_load_task_pool_size
+      - enable_single_replica_load
+      - min_load_timeout_second
+      - max_stream_load_timeout_second
+      - max_load_timeout_second
+      - stream_load_default_timeout_second
+      - stream_load_default_precommit_timeout_second
+      - insert_load_default_timeout_second
+      - mini_load_default_timeout_second
+      - broker_load_default_timeout_second
+      - spark_load_default_timeout_second
+      - hadoop_load_default_timeout_second
+      - load_running_job_num_limit
+      - load_input_size_limit_gb
+      - load_etl_thread_num_normal_priority
+      - load_etl_thread_num_high_priority
+      - load_pending_thread_num_normal_priority
+      - load_pending_thread_num_high_priority
+      - load_checker_interval_second
+      - load_straggler_wait_second
+      - label_keep_max_second
+      - streaming_label_keep_max_second
+      - label_clean_interval_second
+      - transaction_clean_interval_second
+      - sync_commit_interval_second
+      - sync_checker_interval_second
+      - max_sync_task_threads_num
+      - min_sync_commit_size
+      - min_bytes_sync_commit
+      - max_bytes_sync_commit
+      - enable_outfile_to_local
+      - export_tablet_num_per_task
+      - export_task_default_timeout_second
+      - export_running_job_num_limit
+      - export_checker_interval_second
+      - log_roll_size_mb
+      - sys_log_dir
+      - sys_log_roll_num
+      - sys_log_verbose_modules
+      - sys_log_roll_interval
+      - sys_log_delete_age
+      - sys_log_roll_mode
+      - sys_log_enable_compress
+      - audit_log_dir
+      - audit_log_roll_num
+      - audit_log_modules
+      - qe_slow_log_ms
+      - audit_log_roll_interval
+      - audit_log_delete_age
+      - audit_log_enable_compress
+      - min_replication_num_per_tablet
+      - max_replication_num_per_tablet
+      - default_db_replica_quota_size
+      - recover_with_empty_tablet
+      - min_clone_task_timeout_sec
+      - max_clone_task_timeout_sec
+      - disable_storage_medium_check
+      - decommission_tablet_check_threshold
+      - partition_rebalance_max_moves_num_per_selection
+      - partition_rebalance_move_expire_after_access
+      - tablet_rebalancer_type
+      - max_balancing_tablets
+      - max_scheduling_tablets
+      - disable_balance
+      - disable_disk_balance
+      - balance_load_score_threshold
+      - capacity_used_percent_high_water
+      - clone_capacity_balance_threshold
+      - disable_colocate_balance
+      - balance_slot_num_per_path
+      - disable_tablet_scheduler
+      - enable_force_drop_redundant_replica
+      - colocate_group_relocate_delay_second
+      - allow_replica_on_same_host
+      - repair_slow_replica
+      - min_version_count_indicate_replica_compaction_too_slow
+      - skip_compaction_slower_replica
+      - valid_version_count_delta_ratio_between_replicas
+      - min_bytes_indicate_replica_too_large
+      - schedule_slot_num_per_path
+      - tablet_repair_delay_factor_second
+      - tablet_stat_update_interval_second
+      - storage_flood_stage_usage_percent
+      - storage_flood_stage_left_capacity_bytes
+      - storage_high_watermark_usage_percent
+      - storage_min_left_capacity_bytes
+      - catalog_trash_expire_second
+      - default_storage_medium
+      - enable_storage_policy
+      - check_consistency_default_timeout_second
+      - consistency_check_start_time
+      - consistency_check_end_time
+      - replica_delay_recovery_second
+      - alter_table_timeout_second
+      - max_replica_count_when_schema_change
+      - history_job_keep_max_second
+      - max_create_table_timeout_second
+      - file_scan_node_split_num
+      - file_scan_node_split_size
+      - enable_odbc_table
+      - disable_iceberg_hudi_table
+      - iceberg_table_creation_interval_second
+      - iceberg_table_creation_strict_mode
+      - max_iceberg_table_creation_record_size
+      - max_hive_partition_cache_num
+      - hive_metastore_client_timeout_second
+      - max_external_cache_loader_thread_pool_size
+      - max_external_file_cache_num
+      - max_external_schema_cache_num
+      - external_cache_expire_time_minutes_after_access
+      - es_state_sync_interval_second
+      - dpp_hadoop_client_path
+      - dpp_bytes_per_reduce
+      - dpp_default_cluster
+      - dpp_default_config_str
+      - dpp_config_str
+      - yarn_config_dir
+      - yarn_client_path
+      - spark_launcher_log_dir
+      - spark_resource_path
+      - spark_home_default_dir
+      - spark_dpp_version
+      - tmp_dir
+      - plugin_dir
+      - plugin_enable
+      - small_file_dir
+      - max_small_file_size_bytes
+      - max_small_file_number
+      - enable_metric_calculator
+      - report_queue_size
+      - backup_job_default_timeout_ms
+      - max_backup_restore_job_num_per_db
+      - enable_quantile_state_type
+      - enable_date_conversion
+      - enable_decimal_conversion
+      - proxy_auth_magic_prefix
+      - proxy_auth_enable
+      - enable_func_pushdown
+      - jdbc_drivers_dir
+      - max_error_tablet_of_broker_load
+      - default_db_max_running_txn_num
+      - prefer_compute_node_for_external_table
+      - min_backend_num_for_external_table
+      - infodb_support_ext_catalog
+      - fe_thrift_max_pkg_bytes
+
+  ## define dynamic parameter list
+  dynamicParameters:
+      - tablet_create_timeout_second
+      - tablet_delete_timeout_second
+
+  ## define immutable parameter list, this feature is not currently supported.
+
+
+  # mysql configuration file format
+  fileFormatConfig:
+    format: props-plus

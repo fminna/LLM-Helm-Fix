@@ -1,0 +1,138 @@
+---
+# Source: chart/templates/cluster-role-healer.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-admin-healer
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    # Reference to upper's `metadata.name`
+    name: release-name-chart
+    # Reference to upper's `metadata.namespace`
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: chart/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: healer
+  labels:
+    helm.sh/chart: chart-0.0.0
+    app: chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+      #nodePort: 
+  selector:
+    app: chart
+    app.kubernetes.io/instance: release-name
+---
+# Source: chart/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-chart
+  labels:
+    helm.sh/chart: chart-0.0.0
+    app: chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chart
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: chart
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: sqream-ns-admin
+      securityContext:
+        {}
+      containers:
+        - name: chart
+          securityContext:
+            {}
+          image: "nexus.sq.l:16000/repository/container-replace-repo/healer:replace_tag"
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: JAVA_TOOL_OPTIONS
+            value: "-Xmx1524m -Xms512m"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          
+          livenessProbe:
+            
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - curl -X GET http://`hostname -i`:8080/actuator/health/liveness &&  ((ls -d /mnt/sqream/coredump) ||
+                (APISERVER='https://kubernetes.default.svc' &&
+                SERVICEACCOUNT='/var/run/secrets/kubernetes.io/serviceaccount' &&
+                NAMESPACE=$(cat ${SERVICEACCOUNT}/namespace) &&
+                TOKEN=$(cat ${SERVICEACCOUNT}/token) &&
+                CACERT="${SERVICEACCOUNT}/ca.crt" &&
+                header_str="Authorization:"" Bearer ${TOKEN}" &&
+                if [ ! -z $POD_NAME ]; then curl --silent --cacert "${CACERT}" --header "${header_str}" -X DELETE "${APISERVER}/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME/"; fi )
+                )
+            
+            
+            failureThreshold: 10
+            periodSeconds: 5
+            initialDelaySeconds: 60
+            successThreshold: 1
+            timeoutSeconds: 1
+            
+          
+          
+          
+          
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: 2048Mi
+            requests:
+              cpu: "0.5"
+              memory: 512Mi
+          volumeMounts:
+          
+          - mountPath: /mnt/sqream/coredump
+            name: temp
+          
+          - mountPath: replaceme
+            name: config
+          
+      volumes:
+      
+      - name: temp
+        persistentVolumeClaim:
+          claimName: nfs-temp
+      
+      - name: config
+        configMap:
+          name: sqream-db-configmap

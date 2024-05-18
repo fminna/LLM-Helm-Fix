@@ -1,0 +1,93 @@
+---
+# Source: tensorflow-resnet/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-tensorflow-resnet
+  labels:
+    app: tensorflow-resnet
+    chart: "tensorflow-resnet-0.1.2"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8500
+    protocol: TCP
+  selector:
+    app: tensorflow-resnet
+---
+# Source: tensorflow-resnet/templates/deployment.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: release-name-tensorflow-resnet
+  labels:
+    app: tensorflow-resnet
+    chart: "tensorflow-resnet-0.1.2"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  selector:
+    matchLabels:
+      app: tensorflow-resnet
+      release: "release-name"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: tensorflow-resnet
+        chart: "tensorflow-resnet-0.1.2"
+        release: "release-name"
+    spec:      
+      initContainers:
+      - name: seed
+        image: "docker.io/bitnami/tensorflow-resnet:1.13.0"
+        imagePullPolicy: "IfNotPresent"
+        command:
+          - "/bin/sh"
+          - "-c"
+          - |
+            if [ -f /seed/.initialized ];then
+              echo "Already initialized. Skipping"
+            else
+              curl -o /seed/resnet_v2_fp32_savedmodel_NHWC_jpg.tar.gz http://download.tensorflow.org/models/official/20181001_resnet/savedmodels/resnet_v2_fp32_savedmodel_NHWC_jpg.tar.gz
+              cd /seed/ && tar -xzf resnet_v2_fp32_savedmodel_NHWC_jpg.tar.gz --strip-components=2
+              rm resnet_v2_fp32_savedmodel_NHWC_jpg.tar.gz
+              touch /seed/.initialized
+            fi
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+      containers:
+      - name: serving
+        image: "docker.io/bitnami/tensorflow-serving:1.13.0"
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - name: tf-serving
+          containerPort: 8500
+        livenessProbe:
+          tcpSocket:
+            port: tf-serving
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        readinessProbe:
+          tcpSocket:
+            port: tf-serving
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 6
+        env:
+        - name: TENSORFLOW_SERVING_MODEL_NAME
+          value: "resnet"
+        volumeMounts:
+        - name: seed
+          mountPath: "/bitnami/model-data"
+      volumes:
+      - name: seed
+        emptyDir: {}

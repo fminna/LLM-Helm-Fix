@@ -1,0 +1,1672 @@
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: release-name-mariadbcreds
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+stringData:
+  jdbc: jdbc:sqlserver://release-name-mariadb:3306/humhub
+  jdbc-mariadb: jdbc:mariadb://release-name-mariadb:3306/humhub
+  jdbc-mysql: jdbc:mysql://release-name-mariadb:3306/humhub
+  mariadb-password: PLACEHOLDERPASSWORD
+  mariadb-root-password: PLACEHOLDERROOTPASSWORD
+  plainhost: release-name-mariadb
+  plainporthost: release-name-mariadb:3306
+  url: sql://humhub:PLACEHOLDERPASSWORD@release-name-mariadb:3306/humhub
+  urlnossl: sql://humhub:PLACEHOLDERPASSWORD@release-name-mariadb:3306/humhub?sslmode=disable
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: release-name-rediscreds
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+stringData:
+  plain: release-name-redis
+  plainhost: release-name-redis
+  plainhostpass: :PLACEHOLDERPASSWORD@release-name-redis
+  plainporthost: release-name-redis:6379
+  redis-password: PLACEHOLDERPASSWORD
+  url: redis://:PLACEHOLDERPASSWORD@release-name-redis:6379/0
+---
+# Source: humhub/charts/mariadb/templates/common.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mariadb-passinit
+  namespace: default
+  labels:
+    app: "mariadb-14.0.6"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "mariadb"
+    app.kubernetes.io/version: "11.3.2"
+    helm-revision: "1"
+    helm.sh/chart: "mariadb-14.0.6"
+    release: "release-name"
+data:
+  passinit.sql: |
+    ALTER USER root@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD("PLACEHOLDERROOTPASSWORD");
+    ALTER USER humhub@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD("PLACEHOLDERPASSWORD");
+    FLUSH PRIVILEGES;
+---
+# Source: humhub/charts/redis/templates/common.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: default
+  labels:
+    app: "redis-14.0.5"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "redis"
+    app.kubernetes.io/version: "7.2.4"
+    helm-revision: "1"
+    helm.sh/chart: "redis-14.0.5"
+    release: "release-name"
+data:
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ] && [ "$response" != "LOADING Redis is loading the dataset in memory" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "failed to connect using password: $REDIS_PASSWORD response: $response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 3 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+---
+# Source: humhub/charts/mariadb/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-mariadb-data
+  namespace: default
+  labels:
+    app: "mariadb-14.0.6"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "mariadb"
+    app.kubernetes.io/version: "11.3.2"
+    helm-revision: "1"
+    helm.sh/chart: "mariadb-14.0.6"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-humhub-assets
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-humhub-config
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-humhub-modules
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-humhub-themes
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-humhub-uploads
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Source: humhub/charts/mariadb/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-mariadb
+  namespace: default
+  labels:
+    app: "mariadb-14.0.6"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "mariadb"
+    app.kubernetes.io/version: "11.3.2"
+    helm-revision: "1"
+    helm.sh/chart: "mariadb-14.0.6"
+    release: "release-name"
+    service.name: "main"
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: false
+  ports:
+    - name: main
+      port: 3306
+      protocol: TCP
+      targetPort: 3306
+  selector:
+    pod.name: main
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/instance: release-name
+---
+# Source: humhub/charts/redis/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis
+  namespace: default
+  labels:
+    app: "redis-14.0.5"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "redis"
+    app.kubernetes.io/version: "7.2.4"
+    helm-revision: "1"
+    helm.sh/chart: "redis-14.0.5"
+    release: "release-name"
+    service.name: "main"
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: false
+  ports:
+    - name: main
+      port: 6379
+      protocol: TCP
+      targetPort: 6379
+  selector:
+    pod.name: main
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: release-name
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-humhub-backend
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+    service.name: "backend"
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: false
+  ports:
+    - name: backend
+      port: 9000
+      protocol: TCP
+      targetPort: 9000
+  selector:
+    pod.name: main
+    app.kubernetes.io/name: humhub
+    app.kubernetes.io/instance: release-name
+---
+# Source: humhub/templates/common.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-humhub
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+    service.name: "main"
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: false
+  ports:
+    - name: main
+      port: 8080
+      protocol: TCP
+      targetPort: 80
+  selector:
+    pod.name: nginx
+    app.kubernetes.io/name: humhub
+    app.kubernetes.io/instance: release-name
+---
+# Source: humhub/charts/mariadb/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-mariadb
+  namespace: default
+  labels:
+    app: "mariadb-14.0.6"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "mariadb"
+    app.kubernetes.io/version: "11.3.2"
+    helm-revision: "1"
+    helm.sh/chart: "mariadb-14.0.6"
+    release: "release-name"
+spec:  
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      pod.name: main
+      app.kubernetes.io/name: mariadb
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: "mariadb-14.0.6"
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/name: "mariadb"
+        app.kubernetes.io/version: "11.3.2"
+        helm-revision: "1"
+        helm.sh/chart: "mariadb-14.0.6"
+        pod.lifecycle: "permanent"
+        pod.name: "main"
+        release: "release-name"
+      annotations:
+        checksum/cnpg: "b7a79f687bb19d52c4f5fca7e1b1ca0e25ad8b8a53d284062a1b786264472d0f"
+        checksum/configmaps: "2f70d6807f093247fad96153a9c6c0d57b4aa02789e19be1b9c088c65f4e2d07"
+        checksum/mariadb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/mongodb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/persistence: "8ffd0e1ed704294dee132aa12aa878607a18e34eb50683c4740e2587a5b9361b"
+        checksum/redis: "013343a028cbb3f7e08f4ba7522702dd98e52632c688641074b0b1db3df29894"
+        checksum/secrets: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        checksum/services: "3c1dd612ec74ee9e0f9d1999416f52f56037e0b49ff3a1234059de4203563ec5"
+        checksum/solr: "29c14feeaddbf7762052db593898d274941f539cee681ddc613957587686f347"
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      runtimeClassName: 
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      enableServiceLinks: false
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      topologySpreadConstraints:
+        - maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+          topologyKey: "kubernetes.io/hostname"
+          labelSelector:
+            matchLabels:      
+              pod.name: main
+              app.kubernetes.io/name: mariadb
+              app.kubernetes.io/instance: release-name
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 568
+        sysctls: []
+      hostUsers: true
+      containers:
+        - name: release-name-mariadb
+          image: bitnami/mariadb:11.3.2@sha256:6cf603083de0c6aef77f0db37466478ab67b9efd7c55e049e4a838cea9bf6534
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          ports:
+            - name: main
+              containerPort: 3306
+              protocol: TCP
+              hostPort: null
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/mariadb
+              readOnly: false
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: passinit
+              mountPath: /init/passinit.sql
+              readOnly: false
+              subPath: passinit.sql
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          livenessProbe:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-ec"
+                - "until /opt/bitnami/scripts/mariadb/healthcheck.sh; do sleep 2; done"
+            initialDelaySeconds: 12
+            failureThreshold: 5
+            successThreshold: 1
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-ec"
+                - "until /opt/bitnami/scripts/mariadb/healthcheck.sh; do sleep 2; done"
+            initialDelaySeconds: 10
+            failureThreshold: 4
+            successThreshold: 2
+            timeoutSeconds: 5
+            periodSeconds: 12
+          startupProbe:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-ec"
+                - "until /opt/bitnami/scripts/mariadb/healthcheck.sh; do sleep 2; done"
+            initialDelaySeconds: 10
+            failureThreshold: 60
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 4000m 
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 568
+            runAsGroup: 0
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add: []
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "PUID"
+              value: "568"
+            - name: "USER_ID"
+              value: "568"
+            - name: "UID"
+              value: "568"
+            - name: "PGID"
+              value: "568"
+            - name: "GROUP_ID"
+              value: "568"
+            - name: "GID"
+              value: "568"
+            - name: "MARIADB_DATABASE"
+              value: "humhub"
+            - name: "MARIADB_EXTRA_FLAGS"
+              value: "--init-file=/init/passinit.sql"
+            - name: "MARIADB_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "MARIADB_ROOT_PASSWORD"
+              value: "PLACEHOLDERROOTPASSWORD"
+            - name: "MARIADB_USER"
+              value: "humhub"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: release-name-mariadb-data
+        - name: devshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: passinit
+          configMap:
+            name: release-name-mariadb-passinit
+            optional: false
+            items:
+            - key: passinit.sql
+              path: passinit.sql
+        - name: shared
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varlogs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varrun
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-humhub
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:  
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      pod.name: main
+      app.kubernetes.io/name: humhub
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: "humhub-8.2.0"
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/name: "humhub"
+        app.kubernetes.io/version: "1.15.4"
+        helm-revision: "1"
+        helm.sh/chart: "humhub-8.2.0"
+        pod.lifecycle: "permanent"
+        pod.name: "main"
+        release: "release-name"
+      annotations:
+        checksum/cnpg: "ffd338b55cc50a8b366097eec597eeb134dee46563555614453e28233d208d00"
+        checksum/configmaps: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        checksum/mariadb: "0f75ee03adb953c5a4e197782c84ec36b80e31d60c7445530e5c9ae3df5bb6d1"
+        checksum/mongodb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/persistence: "a5029dadd2adf886342cd9043a9b2b4f9cdf3c30f26ee352807000c9e6f176c1"
+        checksum/redis: "83157d6bfcf07939a38ea70eac96d39c6d3acb41c5f2c03968e4050cd79bd6f6"
+        checksum/secrets: "d7c3173229de946e729933b0b1e77aeddf643a496cb9032a0f096d3215841124"
+        checksum/services: "a27cb275e6475d48273ba5ca4d2ae0ff88d5f5a4f6c556e798da994642f4699d"
+        checksum/solr: "29c14feeaddbf7762052db593898d274941f539cee681ddc613957587686f347"
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      runtimeClassName: 
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      enableServiceLinks: false
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      topologySpreadConstraints:
+        - maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+          topologyKey: "kubernetes.io/hostname"
+          labelSelector:
+            matchLabels:      
+              pod.name: main
+              app.kubernetes.io/name: humhub
+              app.kubernetes.io/instance: release-name
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 568
+        sysctls: []
+      hostUsers: true
+      containers:
+        - name: release-name-humhub
+          image: ghcr.io/mriedmann/humhub-phponly:1.15.4@sha256:b3d656bcb60a7b8e5e052ec0bd0f2beecaeb3319fa7ec99af9ca498a0a633bec
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          ports:
+            - name: backend
+              containerPort: 9000
+              protocol: TCP
+              hostPort: null
+          volumeMounts:
+            - name: assets
+              mountPath: /var/www/localhost/htdocs/assets
+              readOnly: false
+            - name: config
+              mountPath: /var/www/localhost/htdocs/protected/config
+              readOnly: false
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: modules
+              mountPath: /var/www/localhost/htdocs/protected/modules
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: themes
+              mountPath: /var/www/localhost/htdocs/themes
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: uploads
+              mountPath: /var/www/localhost/htdocs/uploads
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          livenessProbe:
+            exec:
+              command:
+                - "/usr/local/bin/php-fpm-healthcheck"
+            initialDelaySeconds: 12
+            failureThreshold: 5
+            successThreshold: 1
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - "/usr/local/bin/php-fpm-healthcheck"
+            initialDelaySeconds: 10
+            failureThreshold: 4
+            successThreshold: 2
+            timeoutSeconds: 5
+            periodSeconds: 12
+          startupProbe:
+            exec:
+              command:
+                - "/usr/local/bin/php-fpm-healthcheck"
+            initialDelaySeconds: 10
+            failureThreshold: 60
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 4000m 
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add:
+                - CHOWN
+                - SETUID
+                - SETGID
+                - FOWNER
+                - DAC_OVERRIDE
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "PUID"
+              value: "568"
+            - name: "USER_ID"
+              value: "568"
+            - name: "UID"
+              value: "568"
+            - name: "PGID"
+              value: "568"
+            - name: "GROUP_ID"
+              value: "568"
+            - name: "GID"
+              value: "568"
+            - name: "HUMHUB_ADMIN_EMAIL"
+              value: "humhub@example.com"
+            - name: "HUMHUB_ADMIN_LOGIN"
+              value: "admin"
+            - name: "HUMHUB_ADMIN_PASSWORD"
+              value: "test"
+            - name: "HUMHUB_AUTO_INSTALL"
+              value: "true"
+            - name: "HUMHUB_CACHE_CLASS"
+              value: "yii\\redis\\Cache"
+            - name: "HUMHUB_CACHE_EXPIRE_TIME"
+              value: "3600"
+            - name: "HUMHUB_DB_HOST"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-mariadbcreds"
+            - name: "HUMHUB_DB_NAME"
+              value: "humhub"
+            - name: "HUMHUB_DB_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "HUMHUB_DB_USER"
+              value: "humhub"
+            - name: "HUMHUB_HOST"
+              value: "localhost:8080"
+            - name: "HUMHUB_INTEGRITY_CHECK"
+              value: "true"
+            - name: "HUMHUB_MAILER_ALLOW_SELF_SIGNED_CERTS"
+              value: "false"
+            - name: "HUMHUB_MAILER_ENCRYPTION"
+              value: ""
+            - name: "HUMHUB_MAILER_HOSTNAME"
+              value: ""
+            - name: "HUMHUB_MAILER_PASSWORD"
+              value: ""
+            - name: "HUMHUB_MAILER_PORT"
+              value: "1025"
+            - name: "HUMHUB_MAILER_SYSTEM_EMAIL_ADDRESS"
+              value: "noreply@example.com"
+            - name: "HUMHUB_MAILER_SYSTEM_EMAIL_NAME"
+              value: "HumHub"
+            - name: "HUMHUB_MAILER_TRANSPORT_TYPE"
+              value: "smtp"
+            - name: "HUMHUB_MAILER_USERNAME"
+              value: ""
+            - name: "HUMHUB_PROTO"
+              value: "http"
+            - name: "HUMHUB_QUEUE_CLASS"
+              value: "humhub\\modules\\queue\\driver\\Redis"
+            - name: "HUMHUB_REDIS_HOSTNAME"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-rediscreds"
+            - name: "HUMHUB_REDIS_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "HUMHUB_REDIS_PORT"
+              value: "6379"
+            - name: "WAIT_FOR_DB"
+              value: "true"
+      initContainers:
+        - name: release-name-humhub-system-mariadb-wait
+          image: tccr.io/tccr/db-wait-mariadb:v1.1.0@sha256:62858b8191b662716d84840f8d9b3c86654f175686159c5267a1c860d75f398d
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "/bin/bash <<'EOF'\necho \"Executing DB waits...\"\nuntil\n  mysqladmin -uroot -h\"${MARIADB_HOST}\" -p\"${MARIADB_ROOT_PASSWORD}\" ping \\\n  && mysqladmin -uroot -h\"${MARIADB_HOST}\" -p\"${MARIADB_ROOT_PASSWORD}\" status;\n  do sleep 2;\ndone\nEOF"
+          volumeMounts:
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 500m 
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 568
+            runAsGroup: 568
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add: []
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "S6_READ_ONLY_ROOT"
+              value: "1"
+            - name: "MARIADB_HOST"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-mariadbcreds"
+            - name: "MARIADB_ROOT_PASSWORD"
+              value: "PLACEHOLDERROOTPASSWORD"
+            
+        - name: release-name-humhub-system-redis-wait
+          image: tccr.io/tccr/db-wait-redis:v1.1.0@sha256:e9412891c9b6c96f11143cd88f5d19df352bf7b5570f1825f67b5e1a2ddec176
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "/bin/bash <<'EOF'\necho \"Executing DB waits...\"\n[[ -n \"$REDIS_PASSWORD\" ]] && export REDISCLI_AUTH=\"$REDIS_PASSWORD\";\nexport LIVE=false;\nuntil \"$LIVE\";\ndo\n  response=$(\n      timeout -s 3 2 \\\n      redis-cli \\\n        -h \"$REDIS_HOST\" \\\n        -p \"$REDIS_PORT\" \\\n        ping\n    )\n  if [ \"$response\" == \"PONG\" ] || [ \"$response\" == \"LOADING Redis is loading the dataset in memory\" ]; then\n    LIVE=true\n    echo \"$response\"\n    echo \"Redis Responded, ending initcontainer and starting main container(s)...\"\n  else\n    echo \"$response\"\n    echo \"Redis not responding... Sleeping for 10 sec...\"\n    sleep 10\n  fi;\ndone\nEOF"
+          volumeMounts:
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 500m 
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 568
+            runAsGroup: 568
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add: []
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "S6_READ_ONLY_ROOT"
+              value: "1"
+            - name: "REDIS_HOST"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-rediscreds"
+            - name: "REDIS_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "REDIS_PORT"
+              value: "6379"
+      volumes:
+        - name: assets
+          persistentVolumeClaim:
+            claimName: release-name-humhub-assets
+        - name: config
+          persistentVolumeClaim:
+            claimName: release-name-humhub-config
+        - name: devshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: modules
+          persistentVolumeClaim:
+            claimName: release-name-humhub-modules
+        - name: shared
+          emptyDir: {}
+        - name: themes
+          persistentVolumeClaim:
+            claimName: release-name-humhub-themes
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: release-name-humhub-uploads
+        - name: varlogs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varrun
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+# Source: humhub/templates/common.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-humhub-nginx
+  namespace: default
+  labels:
+    app: "humhub-8.2.0"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "humhub"
+    app.kubernetes.io/version: "1.15.4"
+    helm-revision: "1"
+    helm.sh/chart: "humhub-8.2.0"
+    release: "release-name"
+spec:  
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      pod.name: nginx
+      app.kubernetes.io/name: humhub
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: "humhub-8.2.0"
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/name: "humhub"
+        app.kubernetes.io/version: "1.15.4"
+        helm-revision: "1"
+        helm.sh/chart: "humhub-8.2.0"
+        pod.lifecycle: "permanent"
+        pod.name: "nginx"
+        release: "release-name"
+      annotations:
+        checksum/cnpg: "ffd338b55cc50a8b366097eec597eeb134dee46563555614453e28233d208d00"
+        checksum/configmaps: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        checksum/mariadb: "0f75ee03adb953c5a4e197782c84ec36b80e31d60c7445530e5c9ae3df5bb6d1"
+        checksum/mongodb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/persistence: "a5029dadd2adf886342cd9043a9b2b4f9cdf3c30f26ee352807000c9e6f176c1"
+        checksum/redis: "83157d6bfcf07939a38ea70eac96d39c6d3acb41c5f2c03968e4050cd79bd6f6"
+        checksum/secrets: "d7c3173229de946e729933b0b1e77aeddf643a496cb9032a0f096d3215841124"
+        checksum/services: "a27cb275e6475d48273ba5ca4d2ae0ff88d5f5a4f6c556e798da994642f4699d"
+        checksum/solr: "29c14feeaddbf7762052db593898d274941f539cee681ddc613957587686f347"
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      runtimeClassName: 
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      enableServiceLinks: false
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      topologySpreadConstraints:
+        - maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+          topologyKey: "kubernetes.io/hostname"
+          labelSelector:
+            matchLabels:      
+              pod.name: nginx
+              app.kubernetes.io/name: humhub
+              app.kubernetes.io/instance: release-name
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 568
+        sysctls:
+          - name: "net.ipv4.ip_unprivileged_port_start"
+            value: "80"
+      hostUsers: true
+      containers:
+        - name: release-name-humhub
+          image: ghcr.io/mriedmann/humhub-nginx:1.15.4@sha256:afb417b4161a09ddaafdc2003f074b17099865be22d0547a76a731b213561344
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          ports:
+            - name: main
+              containerPort: 80
+              protocol: TCP
+              hostPort: null
+          volumeMounts:
+            - name: assets
+              mountPath: /var/www/localhost/htdocs/assets
+              readOnly: false
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: modules
+              mountPath: /var/www/localhost/htdocs/protected/modules
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: themes
+              mountPath: /var/www/localhost/htdocs/themes
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: uploads
+              mountPath: /var/www/localhost/htdocs/uploads
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          livenessProbe:
+            httpGet:
+              port: 80
+              path: /ping
+              scheme: HTTP
+            initialDelaySeconds: 12
+            failureThreshold: 5
+            successThreshold: 1
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              port: 80
+              path: /ping
+              scheme: HTTP
+            initialDelaySeconds: 10
+            failureThreshold: 4
+            successThreshold: 2
+            timeoutSeconds: 5
+            periodSeconds: 12
+          startupProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 10
+            failureThreshold: 60
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 4000m 
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add:
+                - NET_BIND_SERVICE
+                - CHOWN
+                - SETUID
+                - SETGID
+                - FOWNER
+                - DAC_OVERRIDE
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "PUID"
+              value: "568"
+            - name: "USER_ID"
+              value: "568"
+            - name: "UID"
+              value: "568"
+            - name: "PGID"
+              value: "568"
+            - name: "GROUP_ID"
+              value: "568"
+            - name: "GID"
+              value: "568"
+            - name: "HUMHUB_REVERSEPROXY_WHITELIST"
+              value: "10.0.0.0/8;172.16.0.0/16;192.168.0.0/24"
+            - name: "NGINX_CLIENT_MAX_BODY_SIZE"
+              value: "10m"
+            - name: "NGINX_KEEPALIVE_TIMEOUT"
+              value: "65"
+            - name: "NGINX_UPSTREAM"
+              value: "release-name-humhub-backend:9000"
+      initContainers:
+        - name: release-name-humhub-system-mariadb-wait
+          image: tccr.io/tccr/db-wait-mariadb:v1.1.0@sha256:62858b8191b662716d84840f8d9b3c86654f175686159c5267a1c860d75f398d
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "/bin/bash <<'EOF'\necho \"Executing DB waits...\"\nuntil\n  mysqladmin -uroot -h\"${MARIADB_HOST}\" -p\"${MARIADB_ROOT_PASSWORD}\" ping \\\n  && mysqladmin -uroot -h\"${MARIADB_HOST}\" -p\"${MARIADB_ROOT_PASSWORD}\" status;\n  do sleep 2;\ndone\nEOF"
+          volumeMounts:
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 500m 
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 568
+            runAsGroup: 568
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add:
+                - NET_BIND_SERVICE
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "S6_READ_ONLY_ROOT"
+              value: "1"
+            - name: "MARIADB_HOST"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-mariadbcreds"
+            - name: "MARIADB_ROOT_PASSWORD"
+              value: "PLACEHOLDERROOTPASSWORD"
+            
+        - name: release-name-humhub-system-redis-wait
+          image: tccr.io/tccr/db-wait-redis:v1.1.0@sha256:e9412891c9b6c96f11143cd88f5d19df352bf7b5570f1825f67b5e1a2ddec176
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "/bin/bash <<'EOF'\necho \"Executing DB waits...\"\n[[ -n \"$REDIS_PASSWORD\" ]] && export REDISCLI_AUTH=\"$REDIS_PASSWORD\";\nexport LIVE=false;\nuntil \"$LIVE\";\ndo\n  response=$(\n      timeout -s 3 2 \\\n      redis-cli \\\n        -h \"$REDIS_HOST\" \\\n        -p \"$REDIS_PORT\" \\\n        ping\n    )\n  if [ \"$response\" == \"PONG\" ] || [ \"$response\" == \"LOADING Redis is loading the dataset in memory\" ]; then\n    LIVE=true\n    echo \"$response\"\n    echo \"Redis Responded, ending initcontainer and starting main container(s)...\"\n  else\n    echo \"$response\"\n    echo \"Redis not responding... Sleeping for 10 sec...\"\n    sleep 10\n  fi;\ndone\nEOF"
+          volumeMounts:
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 500m 
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 568
+            runAsGroup: 568
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add:
+                - NET_BIND_SERVICE
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "S6_READ_ONLY_ROOT"
+              value: "1"
+            - name: "REDIS_HOST"
+              valueFrom:
+                secretKeyRef:
+                  key: "plainhost"
+                  name: "release-name-rediscreds"
+            - name: "REDIS_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "REDIS_PORT"
+              value: "6379"
+      volumes:
+        - name: assets
+          persistentVolumeClaim:
+            claimName: release-name-humhub-assets
+        - name: devshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: modules
+          persistentVolumeClaim:
+            claimName: release-name-humhub-modules
+        - name: shared
+          emptyDir: {}
+        - name: themes
+          persistentVolumeClaim:
+            claimName: release-name-humhub-themes
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: release-name-humhub-uploads
+        - name: varlogs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varrun
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+# Source: humhub/charts/redis/templates/common.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis
+  namespace: default
+  labels:
+    app: "redis-14.0.5"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/name: "redis"
+    app.kubernetes.io/version: "7.2.4"
+    helm-revision: "1"
+    helm.sh/chart: "redis-14.0.5"
+    release: "release-name"
+spec:  
+  replicas: 1
+  revisionHistoryLimit: 3
+  serviceName: release-name-redis
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      pod.name: main
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: "redis-14.0.5"
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/name: "redis"
+        app.kubernetes.io/version: "7.2.4"
+        helm-revision: "1"
+        helm.sh/chart: "redis-14.0.5"
+        pod.lifecycle: "permanent"
+        pod.name: "main"
+        release: "release-name"
+      annotations:
+        checksum/cnpg: "b7a79f687bb19d52c4f5fca7e1b1ca0e25ad8b8a53d284062a1b786264472d0f"
+        checksum/configmaps: "e4ff2990e1b108efb5fc391e633d1bb258a621411ef64149c58626f3a7451ff6"
+        checksum/mariadb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/mongodb: "09c85576cb45b1eecd1467732b11ea8fa3363b0105c465f02a6ad64991521d52"
+        checksum/persistence: "596e0b956bd4bdfb4d70ff2e7dde67dc31cb5475cc00cf96d97522d423c74376"
+        checksum/redis: "013343a028cbb3f7e08f4ba7522702dd98e52632c688641074b0b1db3df29894"
+        checksum/secrets: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        checksum/services: "1fbe77c7cddc2e9997579990c10c46e0224ee9bc92911122de33093d0550ad9f"
+        checksum/solr: "29c14feeaddbf7762052db593898d274941f539cee681ddc613957587686f347"
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      runtimeClassName: 
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      enableServiceLinks: false
+      restartPolicy: Always
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      topologySpreadConstraints:
+        - maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+          topologyKey: "kubernetes.io/hostname"
+          labelSelector:
+            matchLabels:      
+              pod.name: main
+              app.kubernetes.io/name: redis
+              app.kubernetes.io/instance: release-name
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 568
+        sysctls: []
+      hostUsers: true
+      containers:
+        - name: release-name-redis
+          image: bitnami/redis:7.2.4@sha256:c33cfe5511a443bc0a986f25c411e152b29244bdf9b676b7d4c56992467b857c
+          imagePullPolicy: IfNotPresent
+          tty: false
+          stdin: false
+          ports:
+            - name: main
+              containerPort: 6379
+              protocol: TCP
+              hostPort: null
+          volumeMounts:
+            - name: devshm
+              mountPath: /dev/shm
+              readOnly: false
+            - name: redis-health
+              mountPath: /health
+              readOnly: false
+            - name: shared
+              mountPath: /shared
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+              readOnly: false
+            - name: varlogs
+              mountPath: /var/logs
+              readOnly: false
+            - name: varrun
+              mountPath: /var/run
+              readOnly: false
+          livenessProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "/health/ping_liveness_local.sh 2"
+            initialDelaySeconds: 12
+            failureThreshold: 5
+            successThreshold: 1
+            timeoutSeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "/health/ping_readiness_local.sh 2"
+            initialDelaySeconds: 10
+            failureThreshold: 4
+            successThreshold: 2
+            timeoutSeconds: 5
+            periodSeconds: 12
+          startupProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "/health/ping_readiness_local.sh 2"
+            initialDelaySeconds: 10
+            failureThreshold: 60
+            successThreshold: 1
+            timeoutSeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits: 
+              cpu: 4000m 
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 568
+            runAsGroup: 0
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              add: []
+              drop:
+                - ALL
+          env:
+            - name: "TZ"
+              value: "UTC"
+            - name: "UMASK"
+              value: "0022"
+            - name: "UMASK_SET"
+              value: "0022"
+            - name: "NVIDIA_VISIBLE_DEVICES"
+              value: "void"
+            - name: "PUID"
+              value: "568"
+            - name: "USER_ID"
+              value: "568"
+            - name: "UID"
+              value: "568"
+            - name: "PGID"
+              value: "568"
+            - name: "GROUP_ID"
+              value: "568"
+            - name: "GID"
+              value: "568"
+            - name: "ALLOW_EMPTY_PASSWORD"
+              value: "yes"
+            - name: "REDIS_PASSWORD"
+              value: "PLACEHOLDERPASSWORD"
+            - name: "REDIS_PORT"
+              value: "6379"
+            - name: "REDIS_REPLICATION_MODE"
+              value: "master"
+      volumes:
+        - name: devshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: redis-health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+            optional: false
+            items:
+            - key: ping_readiness_local.sh
+              path: ping_readiness_local.sh
+            - key: ping_liveness_local.sh
+              path: ping_liveness_local.sh
+            - key: ping_readiness_master.sh
+              path: ping_readiness_master.sh
+            - key: ping_liveness_master.sh
+              path: ping_liveness_master.sh
+            - key: ping_liveness_local_and_master.sh
+              path: ping_liveness_local_and_master.sh
+            - key: ping_readiness_local_and_master.sh
+              path: ping_readiness_local_and_master.sh
+        - name: shared
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varlogs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: varrun
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

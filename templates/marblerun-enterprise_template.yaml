@@ -1,0 +1,214 @@
+---
+# Source: marblerun-enterprise/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: marblerun-coordinator
+  namespace: default
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: marblerun-coordinator
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+    edgeless.systems/control-plane-component: controller
+    edgeless.systems/control-plane-ns: default
+imagePullSecrets:
+  - name: marblerun-enterprise-access-token
+---
+# Source: marblerun-enterprise/templates/pullSecret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marblerun-enterprise-access-token
+  namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson:
+---
+# Source: marblerun-enterprise/templates/sgx_qcnl.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coordinator-dcap-config
+  namespace: default
+  labels:
+    app.kubernetes.io/component: dcap-config
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: coordinator-dcap-config
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+    edgeless.systems/control-plane-component: dcap-config
+    edgeless.systems/control-plane-ns: default
+data:
+  sgx_default_qcnl.conf: |
+    PCCS_URL=https://localhost:8081/sgx/certification/v3/
+    USE_SECURE_CERT=TRUE
+---
+# Source: marblerun-enterprise/templates/coordinator.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: coordinator-pv-claim
+  namespace: default
+  labels:
+    app.kubernetes.io/component: persistent-storage
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: coordinator-pv-claim
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+spec:
+  storageClassName: 
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Mi
+---
+# Source: marblerun-enterprise/templates/coordinator.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator-client-api
+  namespace: default
+  labels:
+    app.kubernetes.io/component: client-api
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: coordinator-client-api
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+spec:
+  type: ClusterIP
+  selector:
+    edgeless.systems/control-plane-component: coordinator
+    edgeless.systems/control-plane-ns: default
+  ports:
+  - name: http
+    port: 4433
+    targetPort: 4433
+---
+# Source: marblerun-enterprise/templates/coordinator.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator-mesh-api
+  namespace: default
+  labels:
+    app.kubernetes.io/component: mesh-api
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: coordinator-mesh-api
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+spec:
+  type: ClusterIP
+  selector:
+    edgeless.systems/control-plane-component: coordinator
+    edgeless.systems/control-plane-ns: default
+  ports:
+  - name: grcp
+    port: 2001
+    targetPort: 2001
+    appProtocol: tcp
+---
+# Source: marblerun-enterprise/templates/coordinator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marblerun-coordinator
+  namespace: default
+  labels:
+    app.kubernetes.io/component: coordinator
+    app.kubernetes.io/created-by: Helm
+    app.kubernetes.io/name: coordinator
+    app.kubernetes.io/part-of: marblerun
+    app.kubernetes.io/version: eval-2
+    edgeless.systems/control-plane-component: coordinator
+    edgeless.systems/control-plane-ns: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      edgeless.systems/control-plane-component: coordinator
+      edgeless.systems/control-plane-ns: default
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: coordinator
+        app.kubernetes.io/created-by: Helm
+        app.kubernetes.io/name: coordinator
+        app.kubernetes.io/part-of: marblerun
+        app.kubernetes.io/version: eval-2
+        edgeless.systems/control-plane-component: coordinator
+        edgeless.systems/control-plane-ns: default
+    spec:
+      tolerations:
+        - effect: NoSchedule
+          key: sgx.intel.com/epc
+          operator: Exists
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: marblerun-coordinator
+      containers:
+        - env:
+          - name: EDG_COORDINATOR_MESH_ADDR
+            value: "0.0.0.0:2001"
+          - name: EDG_COORDINATOR_CLIENT_ADDR
+            value: "0.0.0.0:4433"
+          - name: EDG_COORDINATOR_DNS_NAMES
+            value: "localhost,coordinator-mesh-api,coordinator-client-api,coordinator-mesh-api.default,coordinator-client-api.default,coordinator-mesh-api.default.svc.cluster.local,coordinator-client-api.default.svc.cluster.local"
+          - name: EDG_COORDINATOR_SEAL_DIR
+            value: "/coordinator/data/"
+          - name: OE_SIMULATION
+            value: "0"
+          
+          - name: DCAP_LIBRARY
+            value: "azure"
+          
+          name: coordinator
+          image: "ghcr.io/edgelesssys/marblerun-enterprise/coordinator:eval-2@sha256:5fd70a9b1d841c363f7d674d17799788c5ddb35f476be9ad19f7914422c21ffe"
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /status
+              scheme: HTTPS
+              port: 4433
+            periodSeconds: 60
+          readinessProbe:
+            failureThreshold: 7
+            periodSeconds: 60
+            httpGet:
+              path: /status
+              scheme: HTTPS
+              port: 4433
+          startupProbe:
+            periodSeconds: 2
+            httpGet:
+              path: /status
+              scheme: HTTPS
+              port: 4433
+          ports:
+            - containerPort: 4433
+              name: http
+            - containerPort: 2001
+              name: grcp
+          resources:
+            limits:
+              sgx.intel.com/enclave: 1
+              sgx.intel.com/epc: 10Mi
+              sgx.intel.com/provision: 1
+          volumeMounts:
+          - name: coordinator-pv-storage
+            mountPath: /coordinator/data
+          
+          - name: dcap-conf
+            mountPath: /etc/sgx_default_qcnl.conf
+            subPath: sgx_default_qcnl.conf
+          
+      volumes:
+        - name: coordinator-pv-storage
+          persistentVolumeClaim:
+            claimName: coordinator-pv-claim
+        
+        - name: dcap-conf
+          configMap:
+            name: coordinator-dcap-config

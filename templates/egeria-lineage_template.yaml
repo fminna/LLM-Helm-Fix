@@ -1,0 +1,397 @@
+---
+# Source: egeria-lineage/templates/serviceAccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-egeria-lineage
+  labels:
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/name: egeria-lineage
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: egeria-lineage/templates/configmap.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-lineage
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: scripts
+  name: egeria-lineage-scripts-configmap
+data:
+  config-lineage1.sh: "#!/usr/bin/env bash\n\n# exit when any command fails\nset -e\n\n#
+    Creates the post data for the event bus according to \n# kafka security (KAFKA_SECURITY_ENABLED)
+    and consumer group id (KAFKA_CONSUMER_GROUP_ID)\n# inspired by https://stackoverflow.com/a/17032673/20379936\ngeneratePostData()
+    {\n  cat << EOF\n{\n  \"class\": \"IntegrationServiceRequestBody\",\n  \"omagserverPlatformRootURL\":
+    \"${EGERIA_ENDPOINT}\",\n  \"omagserverName\": \"${EGERIA_SERVER}\",\n  \"connectorUserId\":
+    \"${EGERIA_USER}\",\n  \"integrationConnectorConfigs\": [\n    {\n      \"class\":
+    \"IntegrationConnectorConfig\",\n      \"connectorId\": \"ba6dc870-2303-48fc-8611-d50b49706f48\",\n
+    \     \"connectorName\": \"LineageIntegrator\",\n      \"metadataSourceQualifiedName\":
+    \"TestMetadataSourceQualifiedName\",\n      \"connection\": {\n        \"class\":
+    \"VirtualConnection\",\n        \"headerVersion\": 0,\n        \"qualifiedName\":
+    \"Egeria:IntegrationConnector:Lineage:OpenLineageEventReceiverConnection\",\n        \"connectorType\":
+    {\n          \"class\": \"ConnectorType\",\n          \"headerVersion\": 0,\n          \"connectorProviderClassName\":
+    \"org.odpi.openmetadata.adapters.connectors.integration.lineage.sample.SampleLineageEventReceiverIntegrationProvider\"\n
+    \       },\n        \"embeddedConnections\": [\n          {\n            \"class\":
+    \"EmbeddedConnection\",\n            \"headerVersion\": 0,\n            \"position\":
+    0,\n            \"embeddedConnection\": {\n              \"class\": \"Connection\",\n
+    \             \"headerVersion\": 0,\n              \"qualifiedName\": \"Kafka Open
+    Metadata Topic Connector for sample lineage\",\n              \"connectorType\":
+    {\n                \"class\": \"ConnectorType\",\n                \"headerVersion\":
+    0,\n                \"connectorProviderClassName\": \"org.odpi.openmetadata.adapters.eventbus.topic.kafka.KafkaOpenMetadataTopicProvider\"\n
+    \             },\n              \"endpoint\": {\n                \"class\": \"Endpoint\",\n
+    \               \"headerVersion\": 0,\n                \"address\": \"${EGERIA_LINEAGE_TOPIC_NAME}\"\n
+    \             },\n              \"configurationProperties\": {\n                \"producer\":
+    {\n                  \"bootstrap.servers\": \"${KAFKA_ENDPOINT}\"\n                },\n
+    \               \"local.server.id\": \"${EGERIA_LINEAGE_CONSUMER_ID}\",\n                \"consumer\":
+    {\n                  \"bootstrap.servers\": \"${KAFKA_ENDPOINT}\"\n                }\n
+    \             }\n            }\n          }\n        ]\n      },\n      \"refreshTimeInterval\":
+    0,\n      \"usesBlockingCalls\": false\n    }\n  ]\n}\nEOF\n}\n\nconsumer=$(jq -n
+    --arg bootstrap.servers \"${KAFKA_ENDPOINT}\" '$ARGS.named')\nproducer=$(jq -n --arg
+    bootstrap.servers \"${KAFKA_ENDPOINT}\" '$ARGS.named')\n\nif [ \"${KAFKA_SECURITY_ENABLED}\"
+    = \"true\" ]; then\n  consumer=$(echo $consumer | \\\n    jq --arg security.protocol
+    \"${KAFKA_SECURITY_PROTOCOL}\" \\\n    --arg ssl.keystore.location \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"
+    \\\n    --arg ssl.keystore.password \"${KAFKA_SECURITY_KEYSTORE_PASSWORD}\" \\\n
+    \   --arg ssl.truststore.location \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\" \\\n
+    \   --arg ssl.truststore.password \"${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\" \\\n
+    \   '. += $ARGS.named')\n  producer=$(echo $producer | \\\n    jq --arg security.protocol
+    \"${KAFKA_SECURITY_PROTOCOL}\" \\\n    --arg ssl.keystore.location \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"
+    \\\n    --arg ssl.keystore.password \"${KAFKA_SECURITY_KEYSTORE_PASSWORD}\" \\\n
+    \   --arg ssl.truststore.location \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\" \\\n
+    \   --arg ssl.truststore.password \"${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\" \\\n
+    \   '. += $ARGS.named')\nfi\n\nif [ ! -z \"${KAFKA_CONSUMER_GROUP_ID}\" ]; then\n
+    \ consumer=$(echo $consumer | jq --arg group.id \"${KAFKA_CONSUMER_GROUP_ID}\" '.
+    += $ARGS.named')\nfi\n\npostData=$(generatePostData | jq --argjson producer \"$producer\"
+    \\\n  --arg \"local.server.id\" \"${EGERIA_LINEAGE_CONSUMER_ID}\" \\\n  --argjson
+    consumer \"$consumer\" \\\n  '.integrationConnectorConfigs[].connection.embeddedConnections[].embeddedConnection.configurationProperties
+    |= $ARGS.named')\n\nprintf -- \"-- Needed environment variables from egeria-base
+    --\\n\"\nprintf \"EGERIA_USER=%s\\n\" \"${EGERIA_USER}\"\nprintf \"EGERIA_ENDPOINT=%s\\n\"
+    \"${EGERIA_ENDPOINT}\"\nprintf \"EGERIA_SERVER=%s\\n\" \"${EGERIA_SERVER}\"\nprintf
+    \"KAFKA_ENDPOINT=%s\\n\" \"${KAFKA_ENDPOINT}\"\nif [ \"${KAFKA_SECURITY_ENABLED}\"
+    = \"true\" ]; then\n  printf \"KAFKA_SECURITY_PROTOCOL=%s\\n\" \"${KAFKA_SECURITY_PROTOCOL}\"\n
+    \ printf \"KAFKA_SECURITY_KEYSTORE_LOCATION=%s\\n\" \"${KAFKA_SECURITY_KEYSTORE_LOCATION}\"\n
+    \ printf \"KAFKA_SECURITY_KEYSTORE_PASSWORD=%s\\n\" \"\\${KAFKA_SECURITY_KEYSTORE_PASSWORD}\"\n
+    \ printf \"KAFKA_SECURITY_TRUSTSTORE_LOCATION=%s\\n\" \"${KAFKA_SECURITY_TRUSTSTORE_LOCATION}\"\n
+    \ printf \"KAFKA_SECURITY_TRUSTSTORE_PASSWORD=%s\\n\" \"\\${KAFKA_SECURITY_TRUSTSTORE_PASSWORD}\"\nfi\nprintf
+    -- \"-- Needed environment variables from egeria-lineage --\\n\"\nprintf \"EGERIA_LINEAGE_SERVER_NAME=%s\\n\"
+    \"${EGERIA_LINEAGE_SERVER_NAME}\"\nprintf \"EGERIA_LINEAGE_TOPIC_NAME=%s\\n\" \"${EGERIA_LINEAGE_TOPIC_NAME}\"\nprintf
+    \"EGERIA_LINEAGE_CONSUMER_ID=%s\\n\" \"${EGERIA_LINEAGE_CONSUMER_ID}\"\nprintf \"EGERIA_LINEAGE_ENDPOINT=%s\\n\"
+    \"${EGERIA_LINEAGE_ENDPOINT}\"\nprintf -- \"-- End of Needed environment variables
+    --\\n\"\n\nprintf -- \"-- Configuring the sample lineage connector\\n\"\n\n# 1.
+    Update the server type name for EGERIA_LINEAGE_SERVER_NAME\nprintf \"\\n\\n > Update
+    the server type name for \\\"%s\\\":\\n\" \"${EGERIA_LINEAGE_SERVER_NAME}\"\nRC=$(curl
+    -k -s -o /dev/null -w \"%{http_code}\" --basic admin:admin -X POST \\\n  \"${EGERIA_LINEAGE_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_LINEAGE_SERVER_NAME}/server-type?typeName=Integration%20Daemon\"
+    --data-raw '' | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Updating
+    the server type name for \\\"%s\\\" successful.\\n\" \"${EGERIA_LINEAGE_SERVER_NAME}\"\n
+    \ unset RC\nelse\n\tprintf \"\\n\\nUpdating the server type name for \\\"%s\\\"
+    failed.\\n\" \"${EGERIA_LINEAGE_SERVER_NAME}\"\n\texit 1\nfi\n\n# 2. Configure the
+    integration services audit log\nprintf \"\\n\\n > Configure the default audit log:\\n\"\nRC=$(curl
+    -k -s -o /dev/null -w \"%{http_code}\" --basic admin:admin -X POST \\\n  \"${EGERIA_LINEAGE_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_LINEAGE_SERVER_NAME}/audit-log-destinations/default\"
+    --header 'Content-Type: application/json' | cut -d \"}\" -f2)\n\nif [ \"${RC}\"
+    -eq 200 ]; then\n  printf \"Configuring the default audit log successful.\\n\"\n
+    \ unset RC\nelse\n\tprintf \"\\n\\nConfiguring the default audit log failed.\\n\"\n\texit
+    1\nfi\n\n# 3. Configure the sample lineage integrator service\nprintf \"\\n\\n >
+    Configure the sample lineage integrator service:\\n\"\nRC=$(curl -k -s -o /dev/null
+    -w \"%{http_code}\" --basic admin:admin \\\n  --header \"Content-Type: application/json\"
+    \\\n  \"${EGERIA_LINEAGE_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_LINEAGE_SERVER_NAME}/integration-services/lineage-integrator\"
+    \\\n  --header 'Content-Type: application/json' \\\n  --data \"$postData\" | cut
+    -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Configuring the sample
+    lineage integrator service successful.\\n\"\n  unset RC\nelse\n\tprintf \"\\n\\nConfiguring
+    the sample lineage integrator service failed.\\n\"\n\texit 1\nfi\n\n# 4. Start the
+    Lineage Integration sample server\nprintf \"\\n\\n > Start the Lineage Integration
+    sample server:\\n\"\nRC=$(curl -k -s -o /dev/null -w \"%{http_code}\" --basic admin:admin
+    -X POST \\\n  \"${EGERIA_LINEAGE_ENDPOINT}/open-metadata/admin-services/users/${EGERIA_USER}/servers/${EGERIA_LINEAGE_SERVER_NAME}/instance\"
+    --data-raw '' | cut -d \"}\" -f2)\n\nif [ \"${RC}\" -eq 200 ]; then\n  printf \"Starting
+    the Lineage Integration sample server successful.\\n\"\n  unset RC\nelse\n\tprintf
+    \"\\n\\nStarting the Lineage Integration sample server failed.\\n\"\n\texit 1\nfi\n\nprintf
+    -- \"-- End of configuration\\n\"\nexit 0\n"
+---
+# Source: egeria-lineage/templates/rbac.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-lineage
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-lineage-api-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints","pods","services","configmaps"]
+    verbs: ["get", "list", "watch","patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get"]
+---
+# Source: egeria-lineage/templates/rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-lineage
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-lineage-strimzi-role
+  namespace: default
+rules:
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["kafkas", "kafkas/status", "kafkatopics", "kafkatopics/status"]
+    verbs: ["get"]
+---
+# Source: egeria-lineage/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-lineage
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-lineage-api-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: release-name-egeria-lineage
+    namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: egeria-lineage-api-role
+---
+# Source: egeria-lineage/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: egeria-lineage
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: egeria-rbac
+  name: egeria-lineage-strimzi-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: release-name-egeria-lineage
+    namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: egeria-lineage-strimzi-role
+---
+# Source: egeria-lineage/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-egeria-lineage
+  labels:
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/name: egeria-lineage
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9443
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: egeria-lineage
+    app.kubernetes.io/instance: release-name
+---
+# Source: egeria-lineage/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-egeria-lineage
+  labels:
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/name: egeria-lineage
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egeria-lineage
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: egeria-lineage
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-egeria-lineage
+      securityContext:
+        {}
+      containers:
+        - name: egeria-lineage
+          securityContext:
+            {}
+          image: "egeria/egeria-lineage:latest"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-env
+          env:
+            - name: EGERIA_LINEAGE_TOPIC_NAME
+              value: eventdriven.metadata
+            - name: EGERIA_LINEAGE_CONSUMER_ID
+              value: metadata.consumer
+            - name: EGERIA_LINEAGE_SERVER_NAME
+              value: cocoMDS1
+            - name: EGERIA_LINEAGE_ENDPOINT
+              value: https://release-name-egeria-lineage:9443
+          ports:
+            - name: http
+              containerPort: 9443
+              protocol: TCP
+          # No other checks until this passes
+          startupProbe:
+            tcpSocket:
+              port: 9443
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 25
+          # Is pod ready to service network requests - it will pause (for replicas, others will take the load)
+          readinessProbe:
+            httpGet:
+              path: /open-metadata/platform-services/users/garygeeke/server-platform/servers//status
+              port: 9443
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          # Is pod doing useful work - if not we will restart it
+          livenessProbe:
+            httpGet:
+              path: /open-metadata/platform-services/users/garygeeke/server-platform/servers//status
+              port: 9443
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {}
+---
+# Source: egeria-lineage/templates/job.yaml
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the Egeria project.
+
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: egeria-lineage-config
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: release-name
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/name: egeria-lineage
+
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: egeria-lineage
+    spec:
+      serviceAccountName: release-name-egeria-lineage
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-egeria-base
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.0-prelease.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE
+              value: release-name-platform
+        - name: wait-for-egeria-lineage
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.0-prelease.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE
+              value: release-name-egeria-lineage
+        - name: wait-for-egeria-base-configuration
+          image: "docker.io/bitnami/kubectl:latest"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              printf "Checking the job \"release-name-config\"...\n"
+              until [ "$(kubectl get job release-name-config -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')" = "True" ]; do
+                printf "Waiting for job \"release-name-config\" to complete...\n"
+                sleep 10
+              done
+      containers:
+        - name: initialize
+          image: "quay.io/\
+                  odpi/\
+                  egeria-configure\
+                  :4.0-prelease.0"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-env
+          env:
+            - name: EGERIA_LINEAGE_TOPIC_NAME
+              value: eventdriven.metadata
+            - name: EGERIA_LINEAGE_CONSUMER_ID
+              value: metadata.consumer
+            - name: EGERIA_LINEAGE_SERVER_NAME
+              value: cocoMDS1
+            - name: EGERIA_LINEAGE_ENDPOINT
+              value: https://release-name-egeria-lineage:9443
+          command: [ "/bin/bash" ]
+          args: [ "/scripts/config-lineage1.sh" ]
+          volumeMounts:
+          - name: scripts-vol
+            mountPath: /scripts
+      volumes:
+        - name: scripts-vol
+          configMap:
+            name: egeria-lineage-scripts-configmap
+  # Keep trying quite a few times to aid in debugging
+  backoffLimit: 60
+---
+# Source: egeria-lineage/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-egeria-lineage-test-connection"
+  labels:
+    helm.sh/chart: egeria-lineage-4.1.0
+    app.kubernetes.io/name: egeria-lineage
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "4.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-egeria-lineage:9443']
+  restartPolicy: Never

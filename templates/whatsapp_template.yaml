@@ -1,0 +1,765 @@
+---
+# Source: whatsapp/templates/monitoring.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-whatsapp-monitoring
+  labels:
+    app: release-name-whatsapp-prometheus
+data:
+---
+# Source: whatsapp/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-whatsapp
+data:
+  WA_DB_USERNAME: cm9vdA==
+  WA_DB_PASSWORD: UEBzc1cwcmQx
+---
+# Source: whatsapp/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-api-key
+data:
+  WA_API_KEY: dmZ0TmJPWmtYVEdXVEF5VHZwaXE=
+---
+# Source: whatsapp/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-whatsapp-admin-password
+data:
+  WA_ADMIN_PASSWORD: bXlOZXdQYXNzd29yZA==
+---
+# Source: whatsapp/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-whatsapp
+data:
+  WA_DB_USERNAME: "root"
+  WA_DB_CONNECTION_IDLE_TIMEOUT: "180000"
+  WA_DB_PORT: "3306"
+  WA_DB_HOSTNAME: release-name-whatsapp-db
+  WA_CONFIG_ON_DB: "1"
+  WA_TCP_LISTEN_ADDRESS: "any"
+  WA_DB_ENGINE: "MYSQL"
+---
+# Source: whatsapp/templates/mysql-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-whatsapp-configuration
+data:
+  mysql.cnf: |-
+    [mysqld]
+    max_connections=300
+---
+# Source: whatsapp/templates/post-install-job.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-whatsapp-register-api
+data:
+  register_api.py: |
+    import requests
+    import sys, os
+    import json
+    from time import sleep
+    from socket import gethostbyname
+
+    class Timer(object):
+        def __init__(self, n=5):
+            assert n > 0
+            self.countdown = n
+            self.delay = 1
+        def __nonzero__(self):
+            if self.countdown <= 0:
+                return False
+            if self.delay > 1:  
+                print(f'Sleeping for {self.delay}...')
+                sleep(self.delay)
+            self.countdown -= 1
+            self.delay *= 2
+            return True
+        __bool__ = __nonzero__
+
+    def api_handler(url, skipssl, admin_password):
+        """Update admin password, creates metrics user."""
+        wa_url = 'https://{}'.format(url)
+        d = Timer(7)
+        while d:
+            try:
+                gethostbyname(wa_url)
+                print("DNS record are resolving.")
+                break
+            except:
+                print("DNS record aren't resolving yet.")  
+                pass
+        else:
+            print("DNS record didn't resolve. Check your config.")
+        k = Timer(7)
+        while k:
+            request = requests.get(wa_url)
+            if request.status_code == 200:
+                print("Web app is working!")
+                break
+            else:
+                print("Web app isn't working yet.")
+        else:
+            print("Web app didn't work. Check your config.")
+        
+        # Check if password already changed
+        test = requests.post(wa_url + '/v1/users/login',
+                             auth=('admin', 'secret'), verify=skipssl)
+        if test.status_code == 401 and not test.content:
+            print("User password already changed.")
+            sys.exit(0)
+        payload1 = {'new_password': admin_password}
+        r1 = requests.post(wa_url + '/v1/users/login', data=payload1,
+                           auth=('admin', 'secret'), verify=skipssl)
+        if r1.status_code != 200:
+            print("Something wrong! Admin pass step")
+            print(r1.reason)
+            sys.exit(1)
+        response = r1.json()
+        #token = response["users"][0]["token"]
+        #header = {'Content-type': 'application/json', 'Authorization': 'Bearer ' + token}
+        #payload2 = {'username': 'metrics', 'password': metrics_password}
+        #r2 = requests.post(wa_url + '/v1/users', data=json.dumps(payload2),
+        #                   headers=header, verify=skipssl)
+        #if r2.status_code != 201:
+        #    print("Something wrong! Metrics user step")
+        #    print(r2.json())
+        #    sys.exit(1)
+        #print("WhatsApp configuration successful!")
+    if __name__ == '__main__':
+        url = os.environ.get('URL')
+        admin_password = os.environ.get('WA_ADMIN_PASSWORD')
+        SKIPSSL = os.environ.get('SKIPSSL', "False")
+        if SKIPSSL == "True":
+            skipssl = True
+        else:
+            skipssl = False
+        api_handler(url, skipssl, admin_password)
+---
+# Source: whatsapp/templates/volumes.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-whatsapp-media-cleanup
+data:
+  media_cleanup.py: |
+    import os
+    import sys
+    import time
+     
+    def remove(path):
+        """
+        Remove the file or directory
+        """
+        if os.path.isdir(path):
+            print(f"Unable to remove folder: {path}")
+        else:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                print(f"Unable to remove file: {path}")
+     
+    def cleanup(number_of_days, path):
+        """
+        Removes files from the passed in path that are older than or equal 
+        to the number_of_days
+        """
+        time_in_secs = time.time() - (number_of_days * 24 * 60 * 60)
+        removed = 0
+        for root, dirs, files in os.walk(path, topdown=False):
+          for file_ in files:
+              full_path = os.path.join(root, file_)
+              stat = os.stat(full_path)
+
+              if stat.st_mtime <= time_in_secs:
+                  remove(full_path)
+                  print(f'{full_path} removed')
+                  removed += 1
+        print(f'Total files removed: {removed}')
+     
+    if __name__ == "__main__":
+        days = int(os.environ.get('KEEP_DAYS', "30"))
+        path = os.environ.get('MEDIA_PATH', "/usr/local/wamedia")
+        cleanup(days, path)
+---
+# Source: whatsapp/templates/mysql.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-whatsapp-mysql-pvc
+  labels:
+    app: release-name-whatsapp-mysql
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: whatsapp/templates/volumes.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-whatsapp
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: efs
+---
+# Source: whatsapp/templates/coreapp.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-whatsapp-coreapp
+  labels:
+    app: release-name-whatsapp-coreapp
+spec:
+  clusterIP: None
+  ports:
+  - port: 6250
+    targetPort: 6250
+    protocol: TCP
+    name: messaging
+  - port: 6251
+    targetPort: 6251
+    protocol: TCP
+    name: contacts
+  - port: 6252
+    targetPort: 6252
+    protocol: TCP
+    name: control
+  - port: 6253
+    targetPort: 6253
+    protocol: TCP
+    name: healthcheck
+  selector:
+    name: release-name-whatsapp-coreapp
+---
+# Source: whatsapp/templates/master.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-whatsapp-master
+  labels:
+    app: release-name-whatsapp-master
+spec:
+  clusterIP: None
+  ports:
+  - port: 6250
+    targetPort: 6250
+    protocol: TCP
+    name: messaging
+  - port: 6251
+    targetPort: 6251
+    protocol: TCP
+    name: contacts
+  - port: 6252
+    targetPort: 6252
+    protocol: TCP
+    name: control
+  - port: 6253
+    targetPort: 6253
+    protocol: TCP
+    name: healthcheck
+  selector:
+    name: release-name-whatsapp-master
+---
+# Source: whatsapp/templates/mysql.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-whatsapp-db
+  labels:
+    app: release-name-whatsapp-mysql
+spec:
+  selector:
+    app: release-name-whatsapp-mysql
+  ports:
+  - protocol: TCP
+    port: 3306
+    targetPort: 3306
+  type: ClusterIP
+---
+# Source: whatsapp/templates/web.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-whatsapp-web
+  labels:
+    app: release-name-whatsapp-web
+spec:
+  type: ClusterIP
+  ports:
+  - port: 443
+    targetPort: 443
+    protocol: TCP
+    name: https
+  selector:
+    name: release-name-whatsapp-web
+---
+# Source: whatsapp/templates/coreapp.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-whatsapp-coreapp
+  labels:
+    app: release-name-whatsapp-coreapp
+spec:
+  replicas: 3
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      name: release-name-whatsapp-coreapp
+  template:
+    metadata:
+      labels:
+        name: release-name-whatsapp-coreapp
+    spec:
+      restartPolicy: 
+      containers:
+      - name: whatsapp-coreapp
+        image: "docker.whatsapp.biz/coreapp:v2.47.3"
+        imagePullPolicy: Always
+        resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+        command: ["/opt/whatsapp/bin/wait_on_mysql.sh", "/opt/whatsapp/bin/launch_within_docker.sh"]
+        ports:
+        - containerPort: 6250
+          protocol: TCP
+          name: messaging
+        - containerPort: 6251
+          protocol: TCP
+          name: contacts
+        - containerPort: 6252
+          protocol: TCP
+          name: control
+        - containerPort: 6253
+          protocol: TCP
+          name: healthcheck
+        env:
+        - name: WA_APP_MULTICONNECT
+          value: '1'
+        - name: COREAPP_EXTERNAL_PORTS
+          value: '6250,6251,6252,6253'
+        - name: WA_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_USERNAME
+        - name: WA_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_PASSWORD
+        - name: COREAPP_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        envFrom:
+        - configMapRef:
+            name: release-name-whatsapp
+        volumeMounts:
+        - name: whatsapp-media
+          mountPath: /usr/local/wamedia
+      volumes:
+      - name: whatsapp-media
+        persistentVolumeClaim:
+          claimName: release-name-whatsapp
+---
+# Source: whatsapp/templates/master.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-whatsapp-master
+  labels:
+    app: release-name-whatsapp-master
+spec:
+  replicas: 3
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      name: release-name-whatsapp-master
+  template:
+    metadata:
+      labels:
+        name: release-name-whatsapp-master
+        release: release-name-whatsapp
+    spec:
+      restartPolicy: 
+      containers:
+      - name: whatsapp-master
+        image: "docker.whatsapp.biz/coreapp:v2.47.3"
+        imagePullPolicy: Always
+        resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+        command: ["/opt/whatsapp/bin/wait_on_mysql.sh", "/opt/whatsapp/bin/launch_within_docker.sh"]
+        ports:
+        - containerPort: 6250
+          protocol: TCP
+          name: messaging
+        - containerPort: 6251
+          protocol: TCP
+          name: contacts
+        - containerPort: 6252
+          protocol: TCP
+          name: control
+        - containerPort: 6253
+          protocol: TCP
+          name: healthcheck
+        env:
+        - name: WA_APP_MULTICONNECT
+          value: '1'
+        - name: COREAPP_EXTERNAL_PORTS
+          value: '6250,6251,6252,6253'
+        - name: WA_MASTER_NODE
+          value: '1'
+        - name: WA_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_USERNAME
+        - name: WA_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_PASSWORD
+        - name: COREAPP_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        envFrom:
+        - configMapRef:
+            name: release-name-whatsapp
+        volumeMounts:
+        - name: whatsapp-media
+          mountPath: /usr/local/wamedia
+      volumes:
+      - name: whatsapp-media
+        persistentVolumeClaim:
+          claimName: release-name-whatsapp
+---
+# Source: whatsapp/templates/mysql.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-whatsapp-mysql
+  labels:
+    app: release-name-whatsapp-mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-whatsapp-mysql
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: release-name-whatsapp-mysql
+    spec:
+      containers:
+      - name: mysql
+        image: "mysql:5.7.21"
+        resources:
+            null
+        args:
+          - "--ignore-db-dir=lost+found"
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_PASSWORD
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+        - name: configurations
+          mountPath: /etc/mysql/conf.d/mysql.cnf
+          subPath: mysql.cnf
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: release-name-whatsapp-mysql-pvc
+      - name: configurations
+        configMap:
+          name: release-name-whatsapp-configuration
+---
+# Source: whatsapp/templates/web.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-whatsapp-web
+  labels:
+    app: release-name-whatsapp-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: release-name-whatsapp-web
+  template:
+    metadata:
+      labels:
+        name: release-name-whatsapp-web
+    spec:
+      restartPolicy: 
+      containers:
+      - name: whatsapp-web
+        image: "docker.whatsapp.biz/web:v2.47.3"
+        imagePullPolicy: Always
+        resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+        ports:
+        - containerPort: 443
+          protocol: TCP
+          name: https
+        command: ["/opt/whatsapp/bin/wait_on_mysql.sh", "/opt/whatsapp/bin/launch_within_docker.sh"]
+        env:
+        - name: WA_APP_MULTICONNECT
+          value: '1'
+        - name: WA_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_USERNAME
+        - name: WA_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_PASSWORD
+        - name: WA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: web-api-key
+              key: WA_API_KEY
+        - name: WA_WEB_SERVERNAME
+          value: release-name-whatsapp-web
+        envFrom:
+        - configMapRef:
+            name: release-name-whatsapp
+        volumeMounts:
+        - name: whatsapp-media
+          mountPath: /usr/local/wamedia
+        livenessProbe:
+          exec:
+            command:
+            - 'bash'
+            - '-c'
+            - 'curl --fail -k https://localhost:443/v1/health --header "Authorization: Apikey ${WA_API_KEY}"'
+          initialDelaySeconds: 30
+          periodSeconds: 15
+      volumes:
+      - name: whatsapp-media
+        persistentVolumeClaim:
+          claimName: release-name-whatsapp
+---
+# Source: whatsapp/templates/coreapp.yaml
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-whatsapp-coreapp-autoscaler
+  labels:
+    app: release-name-whatsapp-coreapp
+spec:
+  maxReplicas: 5
+  minReplicas: 3
+  scaleTargetRef:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+    name: release-name-whatsapp-coreapp
+  targetCPUUtilizationPercentage: 60
+---
+# Source: whatsapp/templates/web.yaml
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-whatsapp-web-autoscaler
+  labels:
+    app: release-name-whatsapp-web
+spec:
+  maxReplicas: 5
+  minReplicas: 2
+  scaleTargetRef:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+    name: release-name-whatsapp-web
+  targetCPUUtilizationPercentage: 60
+---
+# Source: whatsapp/templates/volumes.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-name-whatsapp-media-cleanup-job
+spec:
+  schedule: "0 1 * * *"
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: media-cleanup-job
+            image: "python:3.8-alpine"
+            env:
+            - name: KEEP_DAYS
+              value: "30"
+            - name: MEDIA_PATH
+              value: '/usr/local/wamedia'
+            command: ["sh", "-c", "pip install requests==2.28.2", "&&", "python", "/scripts/media_cleanup.py"]
+            volumeMounts:
+            - name: whatsapp-media
+              mountPath: /usr/local/wamedia
+            - name: processing-scripts
+              mountPath: /scripts
+              readOnly: true
+          volumes:
+          - name: whatsapp-media
+            persistentVolumeClaim:
+              claimName: release-name-whatsapp
+          - name: processing-scripts
+            configMap:
+              name: release-name-whatsapp-media-cleanup
+---
+# Source: whatsapp/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-whatsapp
+  labels:
+    chart: "whatsapp-0.1.8"
+spec:
+  tls:
+    - hosts:
+        - "domain.net"
+      secretName: tls-secret
+  rules:
+  - host: "domain.net"
+    http:
+      paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: release-name-whatsapp
+              port:
+                number: 443
+---
+# Source: whatsapp/templates/post-install-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-whatsapp-register
+  labels:
+    app.kubernetes.io/name: release-name-whatsapp
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: release-name-whatsapp-register
+      labels:
+        app.kubernetes.io/name: release-name-whatsapp
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: register-api-job
+        image: "python:3.8-alpine"
+        env:
+        - name: URL
+          value: release-name-whatsapp-web
+        - name: SKIPSSL
+          value: "True"
+        - name: WA_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp-admin-password
+              key: WA_ADMIN_PASSWORD
+        command: ["sh", "-c", "pip install requests==2.28.2", "&&", "python", "/scripts/register_api.py", "$URL", "$SKIPSSL"]
+        volumeMounts:
+          - name: processing-scripts
+            mountPath: /scripts
+            readOnly: true
+      volumes:
+      - name: processing-scripts
+        configMap:
+          name: release-name-whatsapp-register-api
+---
+# Source: whatsapp/templates/pre-upgrade-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-whatsapp-upgrade-db
+  labels:
+    app.kubernetes.io/name: release-name-whatsapp
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: release-name-whatsapp-upgrade-db
+      labels:
+        #app.kubernetes.io/instance: release-name
+        app.kubernetes.io/name: release-name-whatsapp
+    spec:
+      # This shows how to use a simple value. This will look for a passed-in value
+      # called restartPolicy. If it is not found, it will use the default value.
+      # Never is a slightly optimized version of the
+      # more conventional syntax: Never
+      restartPolicy: OnFailure
+      containers:
+      - name: upgrade-db-job
+        image: "docker.whatsapp.biz/coreapp:v2.47.3"
+        env:
+        - name: WA_DB_UPGRADE
+          value: "1"
+        - name: COREAPP_EXTERNAL_PORTS
+          value: '6250,6251,6252,6253'
+        - name: WA_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_USERNAME
+        - name: WA_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-whatsapp
+              key: WA_DB_PASSWORD
+        envFrom:
+        - configMapRef:
+            name: release-name-whatsapp
+        command: ["/opt/whatsapp/bin/wait_on_mysql.sh", "/opt/whatsapp/bin/launch_within_docker.sh"]

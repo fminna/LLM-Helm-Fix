@@ -1,0 +1,218 @@
+---
+# Source: snark-worker/templates/coordinator-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: snark-coordinator
+  labels:
+    app: snark-coordinator
+spec:
+  type: ClusterIP
+  # We want all pods to have their addresses published for the sake of the
+  # other testnet pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  selector:
+    app: snark-coordinator
+  ports:
+  - name: tcp-p2p
+    port: 10909
+    targetPort: external-port
+  - name: tcp-client
+    port: 8301
+    targetPort: client-port
+---
+# Source: snark-worker/templates/snark-coordinator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: snark-coordinator
+  labels:
+    app: snark-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: snark-coordinator
+  template:
+    metadata:
+      labels:
+        app: snark-coordinator
+        testnet: testnet
+        role: snark-coordinator
+        version: 1.2.0b
+        syncStatus: INIT
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: "10001"
+        prometheus.io/path: '/metrics'
+    spec:
+      initContainers:
+      - name: libp2p-perms
+        image: "gcr.io/o1labs-192920/mina-daemon:1.2.0beta8-5b35b27-devnet"
+        command:
+        - bash
+        - -c
+        - mina libp2p generate-keypair --privkey-path /root/libp2p-keys/key && /bin/chmod -R 0700 /root/libp2p-keys/
+        volumeMounts:
+        - name: actual-libp2p
+          mountPath: /root/libp2p-keys
+        env:
+          - name: MINA_LIBP2P_PASS
+            value: "naughty blue worm"
+      containers:
+      - name: mina
+        resources:
+          limits:
+          requests:
+            memory: 12.0Gi
+            cpu: 6
+        image: gcr.io/o1labs-192920/mina-daemon:1.2.0beta8-5b35b27-devnet
+        
+        args: [ "daemon",
+          "-log-level", "Debug",
+          "-log-json",
+          "-config-directory", "/root/.mina-config",
+          "-log-snark-work-gossip", "true",
+          "-client-port", "$(DAEMON_CLIENT_PORT)",
+          "-rest-port", "$(DAEMON_REST_PORT)",
+          "-external-port", "$(DAEMON_EXTERNAL_PORT)",
+          "-metrics-port", "$(DAEMON_METRICS_PORT)",
+          "-run-snark-coordinator", "$(CODA_SNARK_KEY)",
+          "-snark-worker-fee", "$(CODA_SNARK_FEE)",
+          "-work-selection", "$(WORK_SELECTION)",
+          "-enable-peer-exchange", "true",
+          "-libp2p-keypair", "/root/libp2p-keys/key",
+          "-peer", "/ip4/35.185.66.37/tcp/10105/p2p/12D3KooWQ7Pz3SPizarzx9ZhCJ6jNmQ2iDPgHQxVzRzqYU2SgRSd",
+          "-peer", "/ip4/35.237.214.144/tcp/10120/p2p/12D3KooWGtjWnCcvkaSEbKuNbPivEogxqtLWcsJiQtURydptvrsA",
+          "-generate-genesis-proof", "true",]
+        env:
+        - name: "RAYON_NUM_THREADS"
+          value: "7"
+        - name: DAEMON_REST_PORT
+          value: "3085"
+        - name: DAEMON_CLIENT_PORT
+          value: "8301"
+        - name: DAEMON_METRICS_PORT
+          value: "10001"
+        - name: MINA_CLIENT_TRUSTLIST
+          value: "10.0.0.0/8"
+        - name: CODA_SNARK_KEY
+          value: ""
+        - name: CODA_SNARK_FEE
+          value: "0.025"
+        - name: DAEMON_EXTERNAL_PORT
+          value: "10909"
+        - name: WORK_SELECTION
+          value: "seq"
+        - name: MINA_LIBP2P_PASS
+          value: "naughty blue worm"
+        ports:
+        - name: client-port
+          protocol: TCP 
+          containerPort: 8301
+        - name: graphql-port
+          protocol: TCP 
+          containerPort: 3085
+        - name: metrics-port
+          protocol: TCP 
+          containerPort: 10001
+        - name: external-port
+          protocol: TCP 
+          containerPort: 10909
+          hostPort: 10909
+
+        
+        livenessProbe:
+          tcpSocket:
+            port: external-port  
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command: [
+              "/bin/bash",
+              "-c",
+              "source /healthcheck/utilities.sh && isDaemonSynced && hasSnarkWorker && updateSyncStatusLabel snark-coordinator"
+            ]
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: actual-libp2p
+          mountPath: /root/libp2p-keys
+        - name: config-dir
+          mountPath: /root/.mina-config/
+      volumes:
+      - name: actual-libp2p
+        emptyDir: {}
+      - name: config-dir 
+        emptyDir: {}
+            
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: "cloud.google.com/gke-spot"
+                  operator: In
+                  values: ["true"]
+---
+# Source: snark-worker/templates/snark-worker.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: snark-worker
+  labels:
+    app: snark-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: snark-worker
+  template:
+    metadata:
+      labels:
+        app: snark-worker
+        testnet: testnet
+        role: snark-worker
+        version: 1.2.0b
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '10000'
+        prometheus.io/path: '/metrics'
+    spec:
+      containers:
+      - name: worker
+        resources:
+          limits:
+            memory: 16.0Gi
+          requests:
+            memory: 6.0Gi
+            cpu: 4
+        image: gcr.io/o1labs-192920/mina-daemon:1.2.0beta8-5b35b27-devnet
+        
+        args: [
+          "internal", 
+          "snark-worker", 
+          "-proof-level","full",
+          "-shutdown-on-disconnect", "false", "-daemon-address",
+          ":8301"
+        ]
+        env:
+          - name: "RAYON_NUM_THREADS"
+            value: "4"
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: config-dir
+            mountPath: /root/.mina-config
+      volumes:
+      - name: config-dir
+        emptyDir: {}      
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: "cloud.google.com/gke-spot"
+                  operator: In
+                  values: ["true"]

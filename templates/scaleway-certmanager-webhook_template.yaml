@@ -1,0 +1,314 @@
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-scaleway-certmanager-webhook
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+# Grant cert-manager permission to validate using our apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-scaleway-certmanager-webhook:domain-solver
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups:
+      - acme.scaleway.com
+    resources:
+      - '*'
+    verbs:
+      - 'create'
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+# apiserver gets the auth-delegator role to delegate auth decisions to
+# the core apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-scaleway-certmanager-webhook:auth-delegator
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: release-name-scaleway-certmanager-webhook
+    namespace: default
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-scaleway-certmanager-webhook:domain-solver
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-scaleway-certmanager-webhook:domain-solver
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+# Grant the webhook permission to read the secrets containing the credentials
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-scaleway-certmanager-webhook:secrets-reader
+  namespace: default
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+rules:
+  - apiGroups:
+    - ''
+    resources:
+    - 'secrets'
+    verbs:
+    - 'get'
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+# Grant the webhook permission to read the secrets containing the credentials
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-scaleway-certmanager-webhook:secrets-reader
+  namespace: default
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-name-scaleway-certmanager-webhook:secrets-reader
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: release-name-scaleway-certmanager-webhook
+    namespace: default
+---
+# Source: scaleway-certmanager-webhook/templates/rbac.yaml
+# Grant the webhook permission to read the ConfigMap containing the Kubernetes
+# apiserver's requestheader-ca-certificate.
+# This ConfigMap is automatically created by the Kubernetes apiserver.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-scaleway-certmanager-webhook:webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: release-name-scaleway-certmanager-webhook
+    namespace: default
+---
+# Source: scaleway-certmanager-webhook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-scaleway-certmanager-webhook
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app: scaleway-certmanager-webhook
+    release: release-name
+---
+# Source: scaleway-certmanager-webhook/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-scaleway-certmanager-webhook
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scaleway-certmanager-webhook
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: scaleway-certmanager-webhook
+        release: release-name
+    spec:
+      serviceAccountName: release-name-scaleway-certmanager-webhook
+      containers:
+        - name: scaleway-certmanager-webhook
+          image: "scaleway/cert-manager-webhook-scaleway:v0.1.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: GROUP_NAME
+              value: "acme.scaleway.com"
+          
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          readinessProbe:
+            timeoutSeconds: 5
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources:
+            {}
+      volumes:
+        - name: certs
+          secret:
+            secretName: release-name-scaleway-certmanager-webhook-webhook-tls
+---
+# Source: scaleway-certmanager-webhook/templates/apiservice.yaml
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.scaleway.com
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+  annotations:
+    cert-manager.io/inject-ca-from: "default/release-name-scaleway-certmanager-webhook-webhook-tls"
+spec:
+  group: acme.scaleway.com
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: release-name-scaleway-certmanager-webhook
+    namespace: default
+  version: v1alpha1
+---
+# Source: scaleway-certmanager-webhook/templates/pki.yaml
+# Generate a CA Certificate used to sign certificates for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-scaleway-certmanager-webhook-ca
+  namespace: "default"
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  secretName: release-name-scaleway-certmanager-webhook-ca
+  duration: 43800h
+  issuerRef:
+    name: release-name-scaleway-certmanager-webhook-selfsign
+  commonName: "ca.scaleway-webhook.cert-manager"
+  isCA: true
+---
+# Source: scaleway-certmanager-webhook/templates/pki.yaml
+# Finally, generate a serving certificate for the webhook to use
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: release-name-scaleway-certmanager-webhook-webhook-tls
+  namespace: "default"
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  secretName: release-name-scaleway-certmanager-webhook-webhook-tls
+  duration: 8760h
+  issuerRef:
+    name: release-name-scaleway-certmanager-webhook-ca
+  dnsNames:
+  - release-name-scaleway-certmanager-webhook
+  - release-name-scaleway-certmanager-webhook.default
+  - release-name-scaleway-certmanager-webhook.default.svc
+---
+# Source: scaleway-certmanager-webhook/templates/pki.yaml
+# Create a selfsigned Issuer, in order to create a root CA certificate for
+# signing webhook serving certificates
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: release-name-scaleway-certmanager-webhook-selfsign
+  namespace: "default"
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  selfSigned: {}
+---
+# Source: scaleway-certmanager-webhook/templates/pki.yaml
+# Create an Issuer that uses the above generated CA certificate to issue certs
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: release-name-scaleway-certmanager-webhook-ca
+  namespace: "default"
+  labels:
+    app: scaleway-certmanager-webhook
+    chart: scaleway-certmanager-webhook-0.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  ca:
+    secretName: release-name-scaleway-certmanager-webhook-ca

@@ -1,0 +1,280 @@
+---
+# Source: lxd8s/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-lxd8s
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: lxd8s/templates/configmap-kubelan.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-lxd8s-kubelan
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  kubelan.yaml: |
+    log_level: DEBUG
+    services:
+      - release-name-lxd8s
+    vxlan:
+      interface: lxd-overlay
+      vni: 7331
+---
+# Source: lxd8s/templates/configmap-preseed.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-lxd8s-preseed
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  preseed.yaml: |
+    config:
+      images.auto_update_cached: true
+      images.auto_update_interval: 6
+      images.remote_cache_expiry: 0
+    profiles:
+    - config:
+        boot.autostart: "false"
+        limits.cpu: "1"
+        limits.memory: 256MiB
+        security.nesting: "true"
+      devices:
+        root:
+          size: 8GiB
+      name: default
+---
+# Source: lxd8s/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-lxd8s
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: ['discovery.k8s.io']
+    resources: ['endpointslices']
+    verbs: ['watch', 'list']
+---
+# Source: lxd8s/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-lxd8s
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  kind: ClusterRole
+  name: release-name-lxd8s
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: release-name-lxd8s
+    namespace: default
+---
+# Source: lxd8s/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-lxd8s
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+---
+# Source: lxd8s/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-lxd8s
+  labels:
+    helm.sh/chart: lxd8s-0.5.1
+    app.kubernetes.io/name: lxd8s
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lxd8s
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-lxd8s
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lxd8s
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-lxd8s
+      containers:
+        - name: lxd8s
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+          image: 'ghcr.io/devplayer0/lxd8s:0.3.1'
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FIRECRACKER_GO_SDK_REQUEST_TIMEOUT_MILLISECONDS
+              value: "30000"
+
+            - name: CPUS
+              value: "4"
+            - name: MEM
+              value: "2048"
+            - name: LXD_DATA
+              value: /dev/lxd
+            - name: LXD_STORAGE
+              value: /dev/storage
+
+            - name: INET_HOST
+              value: "192.168.69.1/30"
+            - name: INET_VM
+              value: "192.168.69.2/30"
+            - name: LXD_NET
+              value: "172.24.0.0/16"
+            - name: TRUST_PASSWORD
+              value: "n8W9urNf5L0cvCHI"
+
+            - name: KUBELAN
+              value: 'yes'
+
+            - name: LIVENESS_CLUSTER_LENIENCE
+              value: "5m"
+            - name: OOM_INTERVAL
+              value: "5s"
+            - name: OOM_MIN_FREE
+              value: "64"
+          ports:
+            - name: liveness
+              containerPort: 8080
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /liveness
+              port: liveness
+            failureThreshold: 100
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: liveness
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          resources:
+            limits:
+              cpu: 4000m
+              memory: 3Gi
+              smarter-devices/kvm: 1
+            requests:
+              cpu: 4000m
+              memory: 2Gi
+              smarter-devices/kvm: 1
+          volumeDevices:
+            - name: lxd
+              devicePath: /dev/lxd
+            - name: storage
+              devicePath: /dev/storage
+          volumeMounts:
+            - name: preseed
+              mountPath: /run/config
+            - name: cluster-cert
+              mountPath: /run/cluster_cert
+          stdin: true
+          tty: true
+        - name: kubelan
+          image: 'ghcr.io/devplayer0/kubelan:0.2.3'
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KL_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: KL_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 8181
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+          volumeMounts:
+            - name: kubelan-config
+              mountPath: /run/config
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: preseed
+          configMap:
+            name: release-name-lxd8s-preseed
+        - name: cluster-cert
+          secret:
+            secretName: ""
+        - name: kubelan-config
+          configMap:
+            name: release-name-lxd8s-kubelan
+  volumeClaimTemplates:
+    - metadata:
+        name: lxd
+      spec:
+        accessModes: [ReadWriteOnce]
+        volumeMode: Block
+        resources:
+          requests:
+            storage: "8Gi"
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        volumeMode: Block
+        resources:
+          requests:
+            storage: "64Gi"

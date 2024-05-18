@@ -1,0 +1,267 @@
+---
+# Source: vulcan/templates/vulcan-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saf-vulcan
+  labels:
+    helm.sh/chart: vulcan-0.2.2
+    app.kubernetes.io/name: vulcan
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.6"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: vulcan/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vulcan-config
+data:
+  
+  
+    # Rails Config
+  
+    RACK_ENV: "production"
+  
+    RAILS_ENV: "production"
+  
+    RAILS_LOG_TO_STDOUT: "enabled"
+  
+    RAILS_SERVE_STATIC_FILES: "enabled"
+  
+    # Postgres Config
+  
+    POSTGRES_PORT: "5432"
+  
+    POSTGRES_DB: "vulcan_psql_production"
+  
+    POSTGRES_USER: "vulcanpostgres"
+  
+    PGDATA: "/var/lib/postgresql/data"
+  
+    # Vulcan App config: Configure these variables to your need
+  
+    VULCAN_WELCOME_TEXT: "Thank you for visiting Vulcan. Please sign in to begin"
+  
+    VULCAN_CONTACT_EMAIL: "do_not_reply@vulcan"
+  
+    VULCAN_ENABLE_USER_REGISTRATION: "true"
+  
+    VULCAN_PROJECT_CREATE_PERMISSION_ENABLED: "true"
+  
+    VULCAN_ENABLE_SMTP: "false"
+  
+    VULCAN_SMTP_ADDRESS: ""
+  
+    VULCAN_SMTP_PORT: ""
+  
+    VULCAN_SMTP_DOMAIN: ""
+  
+    VULCAN_SMTP_AUTHENTICATION: ""
+  
+    VULCAN_SMTP_TLS: ""
+  
+    VULCAN_SMTP_OPENSSL_VERIFY_MODE: ""
+  
+    VULCAN_SMTP_ENABLE_STARTTLS_AUTO: ""
+  
+    VULCAN_SMTP_SERVER_USERNAME: ""
+  
+    VULCAN_SMTP_SERVER_PASSWORD: ""
+  
+    VULCAN_ENABLE_LOCAL_LOGIN: "true"
+  
+    VULCAN_ENABLE_EMAIL_CONFIRMATION: "false"
+  
+    VULCAN_SESSION_TIMEOUT: "60"
+  
+    VULCAN_ENABLE_LDAP: "false"
+  
+    VULCAN_LDAP_HOST: "localhost"
+  
+    VULCAN_LDAP_PORT: "389"
+  
+    VULCAN_LDAP_TITLE: "LDAP"
+  
+    VULCAN_LDAP_ATTRIBUTE: "uid"
+  
+    VULCAN_LDAP_ENCRYPTION: "plain"
+  
+    VULCAN_LDAP_BIND_DN: ""
+  
+    VULCAN_LDAP_ADMIN_PASS: ""
+  
+    VULCAN_LDAP_BASE: ""
+  
+    VULCAN_LDAP_CERT_VERIFY: "false"
+---
+# Source: vulcan/templates/postgres-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+  selector:
+    app: postgres
+---
+# Source: vulcan/templates/vulcan-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: saf-vulcan
+  labels:
+    app: saf-vulcan
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: vulcan
+    app.kubernetes.io/instance: release-name
+---
+# Source: vulcan/templates/postgres-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # about the deployment itself. Gives a name of the DEPLOYMENT
+  name: postgres
+  labels:
+      app: postgres
+spec: # of the deployment
+  replicas: 1
+  selector:
+   # the deployment must match all pods with the label "app: postgres"
+    matchLabels:
+      # the label for the POD that the deployment is targeting
+      app: postgres # must match spec.template.labels for the pod
+  template: # blue print of a pod
+    metadata:
+      # label for the POD that the deployment is deploying
+      labels:
+        app: postgres # match spec.selector.matchlabels
+    spec:
+      volumes:
+        - name: saf-vulcan-pv-volume # must match PV
+          emptyDir: {}
+      containers:
+        - name: postgres
+          image: postgres:13.3-alpine
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - containerPort: 5432  # Exposes container port
+          volumeMounts:
+            - mountPath: $(PGDATA)
+              name: saf-vulcan-pv-volume # must match PV
+              readOnly: false
+          envFrom:
+            - configMapRef:
+                name: vulcan-config
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            initialDelaySeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+---
+# Source: vulcan/templates/vulcan-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saf-vulcan
+  labels: # must match the service
+    app: saf-vulcan
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: saf-vulcan
+  strategy:
+    type: RollingUpdate   # Upgrade this application with a rolling strategy
+    rollingUpdate:
+      maxSurge: 1         # maximum number of pods that can be scheduled above the desired number of pods (replicas)
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels: # must match service and replicaset matchlabel
+        app: saf-vulcan
+    spec:
+      initContainers:
+      - name: check-db-ready
+        image: postgres:13.3-alpine
+        command: ['sh', '-c',
+          'until pg_isready -h postgres -p 5432;
+          do echo waiting for database; sleep 5; done;']
+      containers:
+      - name: saf-vulcan
+        image: mitre/vulcan:latest
+        imagePullPolicy: "Always"
+        ports:
+        - containerPort: 3000
+          name: saf-vulcan
+        envFrom:
+        - configMapRef:
+            name: vulcan-config
+---
+# Source: vulcan/templates/db-migrate-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: saf-vulcan-migrate
+  labels:
+    app.kubernetes.io/name: saf-vulcan-migrate
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saf-vulcan-migrate
+    spec:
+      restartPolicy: Never
+      initContainers:
+      - name: check-db-ready
+        image: postgres:13.3-alpine
+        command: ['sh', '-c',
+          'until pg_isready -h postgres -p 5432;
+          do echo waiting for database; sleep 15; done;']
+      containers:
+      - name: saf-vulcan
+        image: mitre/vulcan:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - rails
+        - db:migrate
+        envFrom:
+        - configMapRef:
+            name: vulcan-config
+---
+# Source: vulcan/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "saf-vulcan-test-connection"
+  labels:
+    helm.sh/chart: vulcan-0.2.2
+    app.kubernetes.io/name: vulcan
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.1.6"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['saf-vulcan:3000']
+  restartPolicy: Never

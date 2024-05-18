@@ -1,0 +1,74 @@
+---
+# Source: upgrade-storage/templates/upgrade-storage.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: upgrade-storage
+  namespace: sqream
+  labels:
+    app: upgrade-storage
+spec:
+  template:
+    metadata:
+      labels:
+        app: upgrade-storage
+    spec:
+      securityContext:
+        runAsGroup: 1000
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: upgrade-storage
+        image: ":1.16.0"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: upgrade_storage
+          value: upgrade
+        command:
+            - /bin/bash
+            - -c
+        args:
+            - |-
+              set -x;
+              if [ "$upgrade_storage" = "remove" ]; then
+                echo "Running remove storage!";
+                rm -rf /mnt/sqream/sqreamdb/*;
+                if [ $? -eq 0 ]; then
+                  echo "Storage removed!";
+                else
+                  echo 'Problem removing storage!';
+                fi
+              elif [ "$upgrade_storage" = "upgrade" ]; then
+                echo "Running storage upgrade!";
+                bin/upgrade_storage /mnt/sqream/sqreamdb;
+                if [ $? -eq 0 ]; then
+                  echo "Storage upgrade process done successfully!";
+                else
+                  echo 'Problem upgrading storage!';
+                fi
+              fi
+        resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /mnt/sqream/sqreamdb
+          name: leveldb
+      tolerations:
+        - effect: NoSchedule
+          key: dedicated
+          operator: Equal
+          value: gpuGroup
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Equal
+          value: present
+      nodeSelector:
+        cloud.google.com/gke-nodepool: gpu
+      restartPolicy: OnFailure
+      volumes:
+        - name: leveldb
+          persistentVolumeClaim:
+            claimName: nfs-leveldb-pd
+            readOnly: false

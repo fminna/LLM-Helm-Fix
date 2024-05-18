@@ -1,0 +1,76 @@
+---
+# Source: mysql-backup/templates/secret-gcs.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: release-name-mysql-backup-gcs
+  labels:
+    app.kubernetes.io/name: mysql-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: mysql-backup-2.1.0
+type: Opaque
+data:
+  key.json: |-
+---
+# Source: mysql-backup/templates/secret-mysql.yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: release-name-mysql-backup-mysql
+  labels:
+    app.kubernetes.io/name: mysql-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: mysql-backup-2.1.0
+data:
+  DB_USER: "YWRtaW4="
+  DB_PASS: "ZHVtbXk="
+---
+# Source: mysql-backup/templates/cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-mysql-backup
+  labels:
+    app.kubernetes.io/name: mysql-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: mysql-backup-2.1.0
+data:
+  mysql-backup.sh: "#!/bin/sh -e\n\n# The following variables must be set.\n# DB_HOST=localhost\n#
+    DB_USER=root\n# DB_PASS=password\n# DB_NAME='--all-databases'\n# GSBUCKET=bucketname\n#
+    FILENAME=filename\n#\n# The following line prefixes the backups with the defined
+    directory. it must be blank or end with a /\n# GSPATH=\n#\n# Change this if command
+    is not in $PATH\n# MYSQLDUMPPATH=\n# GSUTILPATH=\n#\n# Change this if you want temporary
+    file to be created in specific path\n# TMP_PATH=\n\nDATESTAMP=$(date +\"_%Y-%m-%d\")\nDAY=$(date
+    +\"%d\")\nDAYOFWEEK=$(date +\"%A\")\n\nif [ \"$DAY\" = \"01\" ]; then\n\tPERIOD=month\nelif
+    [ \"$DAYOFWEEK\" = \"Sunday\" ]; then\n\tPERIOD=week\nelse\n\tPERIOD=day\nfi\n\nprintf
+    \"Selected period: %s\\\\n\" \"$PERIOD\"\ngcloud auth activate-service-account --key-file=/etc/gcloud/key.json\nprintf
+    \"\\\\nStarting backing up the database to a file...\\\\n\"\n\"${MYSQLDUMPPATH}mysqldump\"
+    --quick --default-character-set=\"${DB_CHARSET}\" --host=\"${DB_HOST}\" --user=\"${DB_USER}\"
+    --password=\"${DB_PASS}\" \"${DB_NAME}\" > \"${TMP_PATH}${FILENAME}${DATESTAMP}.sql\"\nprintf
+    \"Done backing up the database to a file.\\\\n\\\\nStarting compression...\\\\n\"\ngzip
+    \"${TMP_PATH}${FILENAME}${DATESTAMP}.sql\"\nprintf \"Done compressing the backup
+    file.\\\\n\\\\nRemoving old backup (2 %ss ago)...\\\\n\" \"$PERIOD\"\n\"${GSUTILPATH}gsutil\"
+    rm -R \"gs://${GSBUCKET}/${GSPATH}previous_${PERIOD}/\" || true\nprintf \"Old backup
+    removed.\\\\n\\\\nMoving the backup from past %s to another folder...\\\\n\" \"$PERIOD\"\n\"${GSUTILPATH}gsutil\"
+    mv \"gs://${GSBUCKET}/${GSPATH}${PERIOD}/\" \"gs://${GSBUCKET}/${GSPATH}previous_${PERIOD}\"
+    || true\nprintf \"Past backup moved.\\\\n\\\\nUploading the new backup...\\\\n\"\n\"${GSUTILPATH}gsutil\"
+    cp \"${TMP_PATH}${FILENAME}${DATESTAMP}.sql.gz\" \"gs://${GSBUCKET}/${GSPATH}${PERIOD}/\"\nprintf
+    \"New backup uploaded.\\\\n\\\\nAll done.\"\n"
+  mysql-restore.sh: "#!/bin/sh -e\n\n# The following variables must be set.\n# DB_HOST=localhost\n#
+    DB_USER=root\n# DB_PASS=password\n# DB_NAME='--all-databases'\n# GSBUCKET=bucketname\n#
+    FILENAME=filename\n#\n# The following line prefixes the backups with the defined
+    directory. it must be blank or end with a /\n# GSPATH=\n#\n# Change this if command
+    is not in $PATH\n# MYSQLPATH=\n# GSUTILPATH=\n#\n# Change this if you want temporary
+    file to be created in specific path\n# TMP_PATH=\n\ngcloud auth activate-service-account
+    --key-file=/etc/gcloud/key.json\nprintf \"\\\\nGetting latest Backup...\"\n\"${GSUTILPATH}gsutil\"
+    cp \"gs://${GSBUCKET}/${GSPATH}day/${FILENAME}_*.sql.gz\" \"${TMP_PATH}${FILENAME}.sql.gz\"\nprintf
+    \"\\\\nUncompressing the SQL-Dump...\"\ngunzip \"${TMP_PATH}${FILENAME}.sql.gz\"\nprintf
+    \"\\\\nImporting the SQL-Dump\"\n\"${MYSQLPATH}mysql\" --host=\"${DB_HOST}\" --user=\"${DB_USER}\"
+    --password=\"${DB_PASS}\" \"${DB_NAME}\" < \"${TMP_PATH}${FILENAME}.sql\"\n\nif
+    [ ! -z \"$SANITIZE_ENABLED\" ]; then\n\tprintf \"\\\\nExecuting sanitize SQL-Commands\"\n\t\"${MYSQLPATH}mysql\"
+    --host=\"${DB_HOST}\" --user=\"${DB_USER}\" --password=\"${DB_PASS}\" \"${DB_NAME}\"
+    < \"/tmp/sanitize.sql\"\n\tprintf \"\\\\nFinished executing Sanitize\"\nelse\n\tprintf
+    \"\\\\nSanitize is disabled\"\nfi\n"

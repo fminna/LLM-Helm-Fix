@@ -1,0 +1,199 @@
+---
+# Source: grpc-app/templates/envoy-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+ name: release-name-envoy-conf
+data:
+  envoy.yaml: |
+    admin:
+      access_log_path: /tmp/admin_access.log
+      address:
+        socket_address:
+          protocol: TCP
+          address: 127.0.0.1
+          port_value: 8090
+    static_resources:
+      listeners:
+      - name: bookstore-listener
+        address:
+          socket_address:
+            protocol: TCP 
+            address: 0.0.0.0
+            port_value: 8000
+        filter_chains:
+        - filters:
+          - name: envoy.http_connection_manager
+            config:
+              codec_type: auto
+              stat_prefix: ingress_https
+              route_config:
+                name: local_route
+                virtual_hosts:
+                - name: https
+                  domains: ["*"]
+                  routes:
+                  - match:
+                      prefix: "/"
+                    route:
+                      cluster: release-name-bookstore-service
+              http_filters:
+              - name: envoy.filters.http.jwt_authn
+                config:
+                  providers:
+                    oidc_provider:
+                      issuer: test@gmail.com
+                      # audiences:
+                      #   - bookstore
+                      local_jwks:
+                        http_uri: 
+                        filename: /etc/jwt/jwt_key.json
+                  rules:
+                  - match: { prefix: "/" }
+                    requires:
+                      provider_name: oidc_provider
+              - name: envoy.filters.http.grpc_web
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb
+              - name: envoy.filters.http.cors
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                alpn_protocols: "h2,http/1.1"
+                tls_certificates:
+                  - certificate_chain:
+                      filename: "/etc/ssl/envoy/tls.crt"
+                    private_key:
+                      filename: "/etc/ssl/envoy/tls.key"
+      clusters:
+      - name: release-name-bookstore-service
+        connect_timeout: 0.5s
+        type: STRICT_DNS
+        dns_lookup_family: V4_ONLY
+        http2_protocol_options: {}
+        lb_policy: ROUND_ROBIN
+        # tls_context: {}
+        load_assignment:
+          cluster_name: release-name-bookstore-service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: release-name-bookstore-service
+                    port_value: 8080
+---
+# Source: grpc-app/templates/jwt-confimap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwt-key
+data:
+  jwt_key.json: | 
+    {
+      "keys": [
+        {
+          "kty": "RSA",
+          "n": "rrwuN5mNNd6y20BSbm-JnqjR6SiQew5qW7E9t9SoyL4prSLJ-MDr0GuF5Zxj5a4EeV5wYDBeB3Xtwcg3ZcQL8k-h19wbLqWmx3Zuag4HZHSqX_MvVLe3oRK4WSLtV9RI0SQHkMFUcB_D1-McO1WYpxTFETyY8_S6yuMPSAY3V9twWz8FjQvRWIb4g6B15PE8NPEECUm5IBCaARtWFsA5DFYBY1QVyMx6AyuGRvY-y3ZMOLu03lKyisNcmfHO2K_qTZpCqk27amozFFbrMB8pln4gz64DL9UfdUFs11vGMwMfpYnVWrsKzU9rEsafbBjfbx_u3Or93XWclTsKpfaUbwXmH2YiErS_4zPgVAmWlhIWVBh02WdiPxTdm-aiufg2Fg8edMlmxA6GwPuYAsGWv9lGgkttJGjTOP6lqY0rX1NxsaAhJkYs8FCeQlk0NbA71Yn1F4tPQ8OmS9FUIHWew2pAMcqqRL9X3mkNfWa7wFXFg3VtnLrvsHayThDTIarM2MiJwaQ5JrfpgEqDrS0CiKnBL94Fppbn_hALsRN6Bie-rkR-o5-BKEw284gaY9S3Mqmt_6shpeRdaWC8g740C1sr9lLwCjYeL7hd_kE1ey6uQcFAZem2LrJy4bh1HtkwXgwgPRNxqhjF_46dBlw3blju9gPF9HPseSoWiR-8UdE",
+          "e": "AQAB",
+          "alg": "RS256",
+          "use": "sig"
+        }
+      ]
+    }
+---
+# Source: grpc-app/templates/bookstore-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+        name: release-name-bookstore-service
+spec:
+        selector:
+                app: release-name-bookstore-app
+        type: ClusterIP
+        clusterIP: None
+        ports:
+        - port: 8080
+---
+# Source: grpc-app/templates/envoy-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+        name: release-name-envoy
+spec:
+        type: NodePort
+        selector:
+                app: release-name-envoy
+        ports:
+        - port: 9080
+          targetPort: 8000
+---
+# Source: grpc-app/templates/deployment-bookstore.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+        name: release-name-bookstore-deployment
+spec:
+        replicas: 3
+        selector:
+                matchLabels:
+                        app: release-name-bookstore-app
+        template:
+                metadata:
+                        labels:
+                                app: release-name-bookstore-app
+                spec:
+                        containers:
+                        - name: bookstore-container
+                          image: "bookstore:latest"
+                          imagePullPolicy: Never
+                          ports:
+                          - containerPort: 8080
+---
+# Source: grpc-app/templates/envoy-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+        name: release-name-envoy
+spec:
+        replicas: 1
+        selector:
+                matchLabels:
+                        app: release-name-envoy
+        template:
+                metadata:
+                        labels:
+                                app: release-name-envoy
+                spec:
+                        containers:
+                        - name: envoy
+                          image: envoyproxy/envoy-alpine:v1.16.0
+                          command: ["envoy"]
+                          args: ["-l", "trace", "-c", "/etc/envoy/envoy.yaml"]
+                          ports:
+                          - name: https
+                            containerPort: 8000
+                          volumeMounts:
+                          - name: config
+                            mountPath: /etc/envoy/
+                          - name: certs
+                            mountPath: /etc/ssl/envoy/
+                          - name: jwt
+                            mountPath: /etc/jwt/
+                        volumes:
+                        - name: config
+                          configMap:
+                                name: release-name-envoy-conf
+                        - name: certs
+                          secret:
+                                secretName: envoy-certs
+                        - name: jwt
+                          configMap:
+                                name: jwt-key

@@ -1,0 +1,200 @@
+---
+# Source: writefreely/templates/secret-config.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-writefreely-config
+type: Opaque
+stringData:
+  config.ini: |
+    [server]
+    hidden_host     = 
+    bind            = 0.0.0.0
+    port            = 80
+
+    [database]
+    type     = mysql
+    username = writefreely
+    password = changeme
+    database = writefreely
+    host     = my.database
+    port     = 3306
+
+    [app]
+    site_name         = Our Community
+    site_description  = A place to write freely.
+    host              = https://writefreely.mydomain.com
+    theme             = write
+    disable_js        = false
+    webfonts          = true
+    single_user       = false
+    open_registration = false
+    min_username_len  = 3
+    max_blogs         = 1
+    federation        = true
+    public_stats      = true
+    private           = false
+---
+# Source: writefreely/templates/pvc-webkeys.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-writefreely-webkeys
+  labels:
+    helm.sh/chart: writefreely-0.1.0
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: "2Gi"
+---
+# Source: writefreely/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-writefreely
+  labels:
+    helm.sh/chart: writefreely-0.1.0
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+---
+# Source: writefreely/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-writefreely
+  labels:
+    helm.sh/chart: writefreely-0.1.0
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: writefreely
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: writefreely
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: default
+      securityContext:
+        {}
+      volumes:
+        - name: release-name-writefreely-webkeys
+          persistentVolumeClaim:
+            claimName: release-name-writefreely-webkeys
+        - name: release-name-writefreely-config
+          secret:
+            secretName: writefreely-config
+      containers:
+        - name: writefreely
+          securityContext:
+            {}
+          image: "writeas/writefreely:0.12.0"
+          imagePullPolicy: IfNotPresent
+          command: ["cmd/writefreely/writefreely", "-c", "/config/config.ini", "serve"]
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /.well-known/host-meta
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /.well-known/host-meta
+              port: http
+          resources:
+            {}         
+          volumeMounts:
+            - name: release-name-writefreely-config
+              readOnly: true
+              mountPath: "/config"
+            - name: release-name-writefreely-webkeys
+              mountPath: /go/keys
+      initContainers:
+        - name: init-keys
+          image: "writeas/writefreely:0.12.0"
+          command: ['sh', '-c', "cmd/writefreely/writefreely -c /config/config.ini --gen-keys"]
+          volumeMounts:
+            - name: release-name-writefreely-config
+              readOnly: true
+              mountPath: "/config"
+            - name: release-name-writefreely-webkeys
+              mountPath: /go/keys
+        - name: init-database
+          image: "writeas/writefreely:0.12.0"
+          command: ['sh', '-c', "cmd/writefreely/writefreely -c /config/config.ini --init-db"]
+          volumeMounts:
+            - name: release-name-writefreely-config
+              readOnly: true
+              mountPath: "/config"
+---
+# Source: writefreely/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: release-name-writefreely
+  labels:
+    helm.sh/chart: writefreely-0.1.0
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+    - host: "writefreely.mydomain.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: release-name-writefreely
+                port:
+                  number: 80
+---
+# Source: writefreely/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-writefreely-test-connection"
+  labels:
+    helm.sh/chart: writefreely-0.1.0
+    app.kubernetes.io/name: writefreely
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.12.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-writefreely:80']
+  restartPolicy: Never

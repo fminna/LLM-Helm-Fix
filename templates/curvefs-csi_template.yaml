@@ -1,0 +1,287 @@
+---
+# Source: curvefs-csi/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: curvefs-csi-service-account
+  namespace: default
+---
+# Source: curvefs-csi/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: curvefs-cs
+provisioner: csi.curvefs.com
+reclaimPolicy: Delete
+allowVolumeExpansion: false
+parameters:
+  fsType: s3
+  mdsAddr: ""
+  s3AccessKey: ""
+  s3Bucket: ""
+  s3Endpoint: ""
+  s3SecretKey: ""
+---
+# Source: curvefs-csi/templates/rbac.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: curvefs-csi-cluster-role
+  namespace: default
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "persistentvolumes" ]
+    verbs: [ "get", "list", "watch", "create", "update", "delete", "patch" ]
+  - apiGroups: [ "" ]
+    resources: [ "persistentvolumeclaims" ]
+    verbs: [ "get", "list", "watch", "update", "patch" ]
+  - apiGroups: [ "storage.k8s.io" ]
+    resources: [ "storageclasses" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "nodes","pods" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "list" ]
+  - apiGroups: [ "" ]
+    resources: [ "events" ]
+    verbs: [ "list", "watch", "create", "update", "patch" ]
+---
+# Source: curvefs-csi/templates/rbac.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: curvefs-csi-cluster-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: curvefs-csi-service-account
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: curvefs-csi-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: curvefs-csi/templates/rbac.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: curvefs-csi-role
+  namespace: default
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "endpoints" ]
+    verbs: [ "get", "watch", "list", "delete", "update", "create" ]
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "get", "list", "create", "delete" ]
+  - apiGroups: [ "coordination.k8s.io" ]
+    resources: [ "leases" ]
+    verbs: [ "get", "watch", "list", "delete", "update", "create" ]
+---
+# Source: curvefs-csi/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: curvefs-csi-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: curvefs-csi-service-account
+    namespace: default
+roleRef:
+  kind: Role
+  name: curvefs-csi-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: curvefs-csi/templates/node.yaml
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: curvefs-csi-node
+  namespace: default
+spec:
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: curvefs-csi-node
+  template:
+    metadata:
+      labels:
+        app: curvefs-csi-node
+    spec:
+      serviceAccount: curvefs-csi-service-account
+      containers:
+        - name: csi-node-driver-registrar
+          image: "quay.io/k8scsi/csi-node-driver-registrar:v1.3.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --csi-address=$(ADDRESS)
+            - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: ADDRESS
+              value: /csi/csi.sock
+            - name: DRIVER_REG_SOCK_PATH
+              value: /var/lib/kubelet/plugins/csi.curvefs.com/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /registration
+              name: registration-dir
+        - name: curvefs-driver
+          image: "harbor.cloud.netease.com/curve/curvefs:csi-v1.0.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --nodeid=$(NODE_NAME)
+            - --alsologtostderr
+            - --v=5
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          lifecycle:
+            preStop:
+              exec:
+                command: [
+                  "/bin/sh", "-c",
+                  "rm -rf /csi/csi.sock"
+                ]
+          resources:
+            limits:
+              cpu: 4000m
+              memory: 4Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+              name: mountpoint-dir
+      volumes:
+        - hostPath:
+            path: /var/lib/kubelet/plugins/csi.curvefs.com
+            type: DirectoryOrCreate
+          name: socket-dir
+        - hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+          name: registration-dir
+        - hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+          name: mountpoint-dir
+---
+# Source: curvefs-csi/templates/controller.yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: curvefs-csi-controller
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: curvefs-csi-controller
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: curvefs-csi-controller
+    spec:
+      serviceAccount: curvefs-csi-service-account
+      containers:
+        - name: csi-provisioner
+          image: "quay.io/k8scsi/csi-provisioner:v1.6.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --provisioner=csi.curvefs.com
+            - --csi-address=$(ADDRESS)
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: ADDRESS
+              value: /csi/csi-controller.sock
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+        - name: curvefs-driver
+          image: "harbor.cloud.netease.com/curve/curvefs:csi-v1.0.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --nodeid=$(NODE_NAME)
+            - --alsologtostderr
+            - --v=5
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi-controller.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          lifecycle:
+            preStop:
+              exec:
+                command: [
+                  "/bin/sh", "-c",
+                  "rm -rf /csi/csi-controller.sock"
+                ]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: "/var/lib/kubelet/pods"
+              mountPropagation: Bidirectional
+              name: mountpoint-dir
+      volumes:
+        - hostPath:
+            path: "/var/lib/kubelet/plugins/csi.curvefs.com"
+            type: DirectoryOrCreate
+          name: socket-dir
+        - hostPath:
+            path: "/var/lib/kubelet/pods"
+            type: Directory
+          name: mountpoint-dir
+---
+# Source: curvefs-csi/templates/driver.yaml
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.curvefs.com
+spec:
+  attachRequired: false
+  podInfoOnMount: false

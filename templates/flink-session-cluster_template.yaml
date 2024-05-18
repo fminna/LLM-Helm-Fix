@@ -1,0 +1,438 @@
+---
+# Source: flink-session-cluster/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flink-session-cluster-release-name-taskmanager
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: flink-session-cluster-taskmanager
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: flink-session-cluster
+            release: release-name
+      ports:
+        - port: 6122
+          protocol: TCP
+        - port: 6121
+          protocol: TCP
+        - port: 6125
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: flink-session-cluster-taskmanager
+              release: release-name
+      ports:
+        - port: 6122
+          protocol: TCP
+        - port: 6121
+          protocol: TCP
+        - port: 6125
+          protocol: TCP
+    - ports:
+      # flink's native prometheus endpoint
+      - port: 9102
+        protocol: TCP
+---
+# Source: flink-session-cluster/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flink-session-cluster-release-name
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app: flink-session-cluster
+      release: release-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: flink-session-cluster-taskmanager
+            release: release-name
+      ports:
+        - port: 6123
+          protocol: TCP
+
+        - port: 6124
+          protocol: TCP
+    - ports:
+      # flink's native prometheus endpoint
+      - port: 9102
+        protocol: TCP
+---
+# Source: flink-session-cluster/templates/service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-session-cluster-release-name
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+---
+# Source: flink-session-cluster/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flink-session-cluster-release-name-secret-config
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  swift_api_key: "c29tZV9zZWNyZXRfa2V5"
+---
+# Source: flink-session-cluster/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-session-cluster-release-name-flink-config
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+data:
+  flink-conf.yaml: |-
+    
+    
+    # We do not set this value, we use --host from the command line to pass the POD IP
+    # we want the job manager to expose itself as its unique ip so that HA leader election
+    # works properly as opposed to the ClusterIP service name
+    #jobmanager.rpc.address: POD_IP
+    
+    taskmanager.numberOfTaskSlots: 2
+    blob.server.port: 6124
+    jobmanager.rpc.port: 6123
+    taskmanager.rpc.port: 6122
+    taskmanager.data.port: 6121
+    queryable-state.proxy.ports: 6125
+    jobmanager.memory.process.size: 600m
+    taskmanager.memory.process.size: 1000m
+    rest.port: 8081
+    parallelism.default: 1
+    metrics.reporters: prom
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+    metrics.reporter.prom.port: 9102
+    swift.service.thanos-swift.auth.url: https://thanos-swift.discovery.wmnet/auth/v1.0
+    swift.service.thanos-swift.username: swift:user
+    swift.service.thanos-swift.apikey: some_secret_key
+    s3.access-key: swift:user
+    s3.secret-key: some_secret_key
+    s3.endpoint: thanos-swift.discovery.wmnet
+    s3.path.style.access: true
+    kubernetes.cluster-id:  flink-cluster
+    kubernetes.namespace: default
+    high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+    high-availability.storageDir: file:///streaming_updater/ha_storage_dir
+    restart-strategy: fixed-delay
+    restart-strategy.fixed-delay.attempts: 10
+    state.backend.rocksdb.metrics.estimate-num-keys: true
+    state.backend.rocksdb.metrics.estimate-live-data-size: true
+    state.backend.rocksdb.metrics.cur-size-active-mem-table: true
+    state.backend.rocksdb.metrics.size-all-mem-tables: true
+    
+    env.java.opts: -Dlog4j2.formatMsgNoLookups=true
+  log4j-console.properties: |-
+    # This affects logging for both user code and Flink
+    rootLogger.level = INFO
+    rootLogger.appenderRef.console.ref = ConsoleAppender
+    
+    # Uncomment this if you want to _only_ change Flink's logging
+    logger.flink.name = org.apache.flink
+    logger.flink.level = INFO
+    
+    # The following lines keep the log level of common libraries/connectors on
+    # log level INFO. The root logger does not override this. You have to manually
+    # change the log levels here.
+    logger.akka.name = akka
+    logger.akka.level = INFO
+    logger.kafka.name= org.apache.kafka
+    logger.kafka.level = INFO
+    logger.hadoop.name = org.apache.hadoop
+    logger.hadoop.level = INFO
+    logger.zookeeper.name = org.apache.zookeeper
+    logger.zookeeper.level = INFO
+    
+    # Log all infos to the console
+    appender.console.name = ConsoleAppender
+    appender.console.type = CONSOLE
+    appender.console.layout.type = EcsLayout
+    appender.console.layout.serviceName = release-name
+    
+    # Suppress the irrelevant (wrong) warnings from the Netty channel handler
+    logger.netty.name = org.apache.flink.shaded.akka.org.jboss.netty.channel.DefaultChannelPipeline
+    logger.netty.level = OFF
+---
+# Source: flink-session-cluster/templates/service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink-session-cluster-release-name
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+# NOTE: Ideally we want to only allow operation on the configmaps created and
+# managed by flink:
+# flink-cluster-dispatcher-leader
+# flink-cluster-resourcemanager-leader
+# flink-cluster-restserver-leader
+# But flink will also create another configmap per job created:
+# flink-cluster-067bbffd59aa3ac690bce6c234e32560-jobmanager-leader
+# where 067bbffd59aa3ac690bce6c234e32560 is the jobid autogenerated at job creation
+# Without having a way to more dynamically apply the rules based on:
+# - a pattern https://github.com/kubernetes/kubernetes/issues/56582
+# - a label selector https://github.com/kubernetes/kubernetes/issues/44703
+# we have to allow these verbs on all configmaps.
+  verbs: ["create", "list", "get", "watch", "delete", "update"]
+---
+# Source: flink-session-cluster/templates/service-account.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink-session-cluster-release-name
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+subjects:
+- kind: ServiceAccount
+  name: flink-session-cluster-release-name
+roleRef:
+  kind: Role
+  name: flink-session-cluster-release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: flink-session-cluster/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-session-cluster-release-name-ui
+  labels:
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: jobmanager-ui
+spec:
+  type: NodePort
+  ports:
+  - name: webui
+    port: 8081
+  selector:
+    app: flink-session-cluster
+    release: release-name
+    component: jobmanager
+    routed_via: release-name
+---
+# Source: flink-session-cluster/templates/jobmanager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-session-cluster-release-name
+  labels:
+    # the tls template will select app=chartname,release=Release.name for the service endpoint
+    app: flink-session-cluster
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: jobmanager
+spec:
+  selector:
+    matchLabels:
+      app: flink-session-cluster
+      release: release-name
+      component: jobmanager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: flink-session-cluster
+        component: jobmanager
+        release: release-name
+        routed_via: release-name
+      annotations:
+        checksum/secrets: c05ef726d33219bf4ec43ce7ada2fba3d55393ca1a8c8af66e1c74e7a0e39fac
+        checksum/log4j-conf: d561b51a5fa0339d1de31ffe5047fde15609bab28cbfdae7d9de19eb2bb5c4e8
+        checksum/flink-conf: b5a85cc664b40a28dd21897bbfd32036f5a028b52421e1daf43c43573ecb8feb
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      serviceAccountName: flink-session-cluster-release-name
+      containers:
+        # The main application container
+        - name: flink-session-cluster-release-name
+          image: "docker-registry.wikimedia.org/wikimedia/wikidata-query-flink-rdf-streaming-updater:latest"
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/flink/bin/jobmanager.sh", "start-foreground", "$(POD_IP)"]
+          ports:
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 6124
+              name: blob-server
+            - containerPort: 8081
+              name: webui
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            tcpSocket:
+              port: 6123
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: SERVICE_IDENTIFIER
+              value: flink-session-cluster-release-name
+            - name: SWIFT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-session-cluster-release-name-secret-config
+                  key: swift_api_key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 700Mi
+            limits:
+              cpu: 200m
+              memory: 800Mi
+          volumeMounts:
+          - name: flink-config-volume
+            mountPath: /opt/flink/conf        
+      volumes:        
+        - name: flink-config-volume
+          configMap:
+            name: flink-session-cluster-release-name-flink-config
+            items:
+            - key: flink-conf.yaml
+              path: flink-conf.yaml
+            - key: log4j-console.properties
+              path: log4j-console.properties
+---
+# Source: flink-session-cluster/templates/taskmanager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-session-cluster-release-name-taskmanager
+  labels:
+    app: flink-session-cluster-taskmanager
+    chart: flink-session-cluster-0.1.16
+    release: release-name
+    heritage: Helm
+    component: taskmanager
+spec:
+  selector:
+    matchLabels:
+      app: flink-session-cluster-taskmanager
+      release: release-name
+      component: taskmanager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: flink-session-cluster-taskmanager
+        component: taskmanager
+        release: release-name
+      annotations:
+        checksum/secrets: c05ef726d33219bf4ec43ce7ada2fba3d55393ca1a8c8af66e1c74e7a0e39fac
+        checksum/log4j-conf: d561b51a5fa0339d1de31ffe5047fde15609bab28cbfdae7d9de19eb2bb5c4e8
+        checksum/flink-conf: b5a85cc664b40a28dd21897bbfd32036f5a028b52421e1daf43c43573ecb8feb
+        prometheus.io/port: "9102"
+        prometheus.io/scrape: "true"        
+    spec:
+      serviceAccountName: flink-session-cluster-release-name
+      containers:
+        # The main application container
+        - name: flink-session-cluster-release-name-taskmanager
+          image: "docker-registry.wikimedia.org/wikimedia/wikidata-query-flink-rdf-streaming-updater:latest"
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/flink/bin/taskmanager.sh", "start-foreground"]
+          ports:
+            - containerPort: 6122
+              name: rpc
+            - containerPort: 6121
+              name: data
+            - containerPort: 6125
+              name: query-state
+          livenessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            tcpSocket:
+              port: 6122
+          env:
+            - name: SERVICE_IDENTIFIER
+              value: flink-session-cluster-release-name
+            - name: SWIFT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-session-cluster-release-name-secret-config
+                  key: swift_api_key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1000Mi
+            limits:
+              cpu: 200m
+              memory: 1100Mi
+          volumeMounts:
+          - name: flink-config-volume
+            mountPath: /opt/flink/conf        
+      volumes:        
+        - name: flink-config-volume
+          configMap:
+            name: flink-session-cluster-release-name-flink-config
+            items:
+            - key: flink-conf.yaml
+              path: flink-conf.yaml
+            - key: log4j-console.properties
+              path: log4j-console.properties
+---
+# Source: flink-session-cluster/templates/tests/curl-ui.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: 'flink-session-cluster-release-name-curl-ui'
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  containers:
+  - name: 'flink-session-cluster-release-name-curl-ui'
+    image: "docker-registry.wikimedia.org/wmfdebug"
+    imagePullPolicy: IfNotPresent
+    args: ["curl", "http://flink-session-cluster-release-name-ui:8081"]
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never

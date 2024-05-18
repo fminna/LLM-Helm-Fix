@@ -1,0 +1,232 @@
+---
+# Source: queryhandler/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: queryhandler
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+---
+# Source: queryhandler/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-configmap
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+
+data:
+  application.yaml: |
+    logging:
+      level:
+        com.sqream: INFO
+---
+# Source: queryhandler/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-queryhandler
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    - appProtocol: null
+      name: tcp-grpc
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+    
+    - name: ambassador-grpc
+      port: 80
+      targetPort: tcp-grpc
+  selector:
+    app: queryhandler
+    instance: release-name
+---
+# Source: queryhandler/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-queryhandler
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: queryhandler
+      instance: release-name
+  template:
+    metadata:
+      labels:
+        app: queryhandler
+        instance: release-name
+    spec:
+      serviceAccountName: queryhandler
+      securityContext:
+        {}
+      containers:
+        - name: queryhandler
+          securityContext:
+            {}
+          image: "nexus.sq.l:16000/repository/container-replace-repo/queryhandler:replace_tag"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: tcp-grpc
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: 'release-name-secret'
+          env:
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1g"
+          command:
+            - /bin/bash
+            - -c
+            - java $JAVA_OPTS -jar app.jar --spring.config.additional-location=file:/app/application.yaml
+          args:
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            failureThreshold: 10
+            httpGet:
+              path: actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: 2048Mi
+            requests:
+              cpu: "0.5"
+              memory: 1024Mi
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-configmap
+---
+# Source: queryhandler/templates/secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-name-secret
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: local-secrets
+    kind: ClusterSecretStore
+  target:
+    name: release-name-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        annotations:
+          {}
+        labels:
+          helm.sh/chart: queryhandler-0.8.0
+          app: queryhandler
+          instance: release-name
+          app.kubernetes.io/version: "1.16.0"
+          app.kubernetes.io/managed-by: Helm
+          monitor: "true"
+      data:
+        REDIS_HOST: '{{ .REDIS_IP_ADDRESS }}'
+        REDIS_PORT: '{{ .REDIS_PORT }}'
+  dataFrom:
+    - extract:
+        key: redis-managed-instance
+---
+# Source: queryhandler/templates/ambassador-mapping.yaml
+apiVersion: getambassador.io/v3alpha1
+kind: Mapping
+metadata:
+  name: release-name-queryhandler-mapping
+spec:
+  host: "*"
+  grpc: true
+  prefix: "/com.sqream.cloud.generated.v1.QueryHandlerService/"
+  resolver: "endpoint"
+  rewrite: "/com.sqream.cloud.generated.v1.QueryHandlerService/"
+  service: queryhandler
+  timeout_ms: 0
+  load_balancer:
+    header: X-SQream-Client-Id
+    policy: maglev
+  retry_policy:
+    num_retries: 10
+    retry_on: 5xx
+---
+# Source: queryhandler/templates/servicePodMonitor.yaml
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: release-name-queryhandler
+  labels:
+    helm.sh/chart: queryhandler-0.8.0
+    app: queryhandler
+    instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+    monitor: "true"
+spec:
+  selector:
+    matchLabels:
+      app: queryhandler
+      instance: release-name
+  endpoints:
+  - port: http
+    path: /actuator/prometheus
+    interval: 30s

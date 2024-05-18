@@ -1,0 +1,126 @@
+---
+# Source: teku-validator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-teku-validator
+  labels:
+    app.kubernetes.io/name: teku-validator
+    helm.sh/chart: teku-validator-4.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: teku-validator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-teku-validator
+  labels:
+    app.kubernetes.io/name: teku-validator
+    helm.sh/chart: teku-validator-4.2.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8008
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: teku-validator
+    app.kubernetes.io/instance: release-name
+---
+# Source: teku-validator/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-teku-validator
+  labels:
+    app.kubernetes.io/name: teku-validator
+    helm.sh/chart: teku-validator
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  podManagementPolicy: "Parallel"
+  serviceName: release-name-teku-validator
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teku-validator
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: teku-validator
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-teku-validator
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      initContainers:
+        - name: init-chown
+          image: "docker.io/busybox:1.36"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          command: ["chown", "-R", "1001:1001", "/data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: teku-validator
+          image: "docker.io/consensys/teku:24.4.0"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ac
+            - >
+              INDEX=$((${HOSTNAME##*-}));
+              exec /opt/teku/bin/teku
+              vc
+              --network=mainnet
+              --data-base-path=/data
+              --beacon-node-api-endpoint=
+              --validator-keys=/keystore-${INDEX}:/keystore-${INDEX}
+              --validators-proposer-default-fee-recipient=
+              --validators-keystore-locking-enabled=false
+              --metrics-enabled=true
+              --metrics-host-allowlist=*
+              --metrics-interface=0.0.0.0
+              --metrics-port=8008
+          ports:
+            - name: metrics
+              containerPort: 8008
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: keystore-0
+              mountPath: /keystore-0
+              readOnly: true
+      volumes:
+        - name: keystore-0
+          secret:
+            secretName: keystore-0
+        - name: password-0
+          secret:
+            secretName: password-0
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: teku-validator
+          helm.sh/chart: teku-validator
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/managed-by: Helm
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: 
+        resources:
+          requests:
+            storage: "5Gi"

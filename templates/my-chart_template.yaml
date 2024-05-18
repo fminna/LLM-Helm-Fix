@@ -1,0 +1,296 @@
+---
+# Source: my-chart/templates/platform-storage.yaml
+# How we want it
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-storage
+  namespace: default
+spec:
+  storageClassName: mylocalstorage
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  # hostPath doc: https://kubernetes.io/docs/concepts/storage/volumes/#hostpath
+  hostPath:
+    path: "/mnt/k8s/exp-002-k8s-microservice-appsys-release3"
+    type: DirectoryOrCreate
+---
+# Source: my-chart/templates/platform-storage.yaml
+# What do we want
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-pvc
+  namespace: default
+spec:
+  storageClassName:  mylocalstorage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: my-chart/templates/domain-position-tracker.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetman-position-tracker
+  namespace: default
+spec:
+  selector:
+    app: position-tracker
+  # ports:
+  #   - name: http
+  #     port: 80
+  #     targetPort: 8080
+  # type: LoadBalancer
+  ports:
+    - name: http
+      port: 8080
+
+  type: ClusterIP
+---
+# Source: my-chart/templates/domain-webapp.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetman-webapp
+  namespace: default
+spec:
+  selector:
+    app: webapp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: NodePort
+---
+# Source: my-chart/templates/platform-apigw.yaml
+# The exposed port has to be 8080 because that is what the web app component is hardcoded to use
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetman-api-gateway
+  namespace: default
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: NodePort
+---
+# Source: my-chart/templates/platform-dbm.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetman-mongodb
+  namespace: default
+spec:
+  selector:
+    app: mongodb
+  ports:
+    - name: http
+      port: 27017
+      targetPort: 27017
+  type: ClusterIP
+---
+# Source: my-chart/templates/platform-messaging.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleetman-queue
+  namespace: default
+spec:
+  selector:
+    app: queue
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8161
+    - name: endpoint
+      port: 61616   
+  type: LoadBalancer
+---
+# Source: my-chart/templates/domain-position-simulator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: position-simulator
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: position-simulator
+  replicas: 2
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: position-simulator
+    spec:
+      containers:
+      - name: position-simulator
+        image: richardchesterwood/k8s-fleetman-position-simulator:release2
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: production-microservice
+---
+# Source: my-chart/templates/domain-position-tracker.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: position-tracker
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: position-tracker
+  replicas: 1
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: position-tracker
+    spec:
+      containers:
+      - name: position-tracker
+        image: richardchesterwood/k8s-fleetman-position-tracker:release3
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: production-microservice
+---
+# Source: my-chart/templates/domain-webapp.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: webapp
+  replicas: 1
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: richardchesterwood/k8s-fleetman-webapp-angular:release2
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: production-microservice
+---
+# Source: my-chart/templates/platform-apigw.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  replicas: 1
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+      - name: api-gateway
+        image: richardchesterwood/k8s-fleetman-api-gateway:release2
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: production-microservice
+---
+# Source: my-chart/templates/platform-dbm.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: mongodb
+  replicas: 1
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:3.6.5-jessie
+          volumeMounts:
+            - name: mongo-persistent-storage
+              # Directory in the container to mount volume
+              mountPath: /data/db
+      # volume doc: https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume/
+      volumes:
+        - name: mongo-persistent-storage
+          persistentVolumeClaim:
+            claimName: mongo-pvc
+---
+# Source: my-chart/templates/platform-messaging.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: queue
+  replicas: 1
+  template:
+    metadata:
+      namespace: default
+      labels:
+        app: queue
+    spec:
+      containers:
+      - name: queue
+        image: richardchesterwood/k8s-fleetman-queue:release2
+---
+# Source: my-chart/templates/domain-webapp.yaml
+# This YAML did not work with MetalLB because the fleetman-queue service had two ports - I am guessing that MetalLB did not know what to do with the 2nd port
+---
+# Source: my-chart/templates/platform-apigw.yaml
+# API Gateway Platform
+---
+# Source: my-chart/templates/platform-dbm.yaml
+# Document Database Management Platform
+---
+# Source: my-chart/templates/platform-messaging.yaml
+# Messaging Platform
+---
+# Source: my-chart/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-my-chart-test-connection"
+  labels:
+    helm.sh/chart: my-chart-0.1.0
+    app.kubernetes.io/name: my-chart
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-my-chart:80']
+  restartPolicy: Never

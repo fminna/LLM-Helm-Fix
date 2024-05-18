@@ -1,0 +1,305 @@
+---
+# Source: intel-gpu-resource-driver/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-intel-gpu-resource-driver
+  namespace: default
+  labels:
+    helm.sh/chart: intel-gpu-resource-driver-0.4.0
+    app.kubernetes.io/name: intel-gpu-resource-driver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: intel-gpu-resource-driver/templates/resource-defaults.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: defaults
+  namespace: default
+data:
+# It is possible to override driver hardcoded defaults:
+# - resourceClaimParameters:
+#     if resource claim did not include any parameters, these will be used
+# - vf-memory
+#     per product amount of local memory, in MiB, the auto-added VFs will get
+  resourceClaimParameters.config: |
+    count=1
+    type=gpu
+    shareable=true
+  vf-memory.config: |
+    {
+      "max1550": 16385,
+      "max1450": 16384,
+      "max1100": 8192,
+      "flex140": 2048,
+      "flex170": 4096,
+    }
+---
+# Source: intel-gpu-resource-driver/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-name-intel-gpu-resource-driver-role
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "events"]
+  verbs: ["get", "list", "create", "watch", "patch"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceclaims", "resourceclasses", "podschedulings","resourceclaims/status", "podschedulings/status", "podschedulingcontexts", "podschedulingcontexts/status"]
+  verbs: ["get", "update", "list", "watch", "patch"]
+- apiGroups: ["gpu.resource.intel.com"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+# Source: intel-gpu-resource-driver/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-name-intel-gpu-resource-driver-rolebinding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: release-name-intel-gpu-resource-driver
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: release-name-intel-gpu-resource-driver-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: intel-gpu-resource-driver/templates/resource-driver.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: intel-gpu-resource-driver-kubelet-plugin
+  namespace: default
+  labels:
+    helm.sh/chart: intel-gpu-resource-driver-0.4.0
+    app.kubernetes.io/name: intel-gpu-resource-driver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: intel-gpu-resource-driver
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: intel-gpu-resource-driver
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccount: intel-gpu-resource-driver-service-account
+      serviceAccountName: release-name-intel-gpu-resource-driver
+      initContainers:
+      - name: init
+        image: intel/intel-gpu-resource-driver:v0.4.0
+        imagePullPolicy: IfNotPresent
+        command: ["/gas-status-updater", "--status", "NotReady"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 10001
+          seccompProfile:
+            type: RuntimeDefault
+      containers:
+      - name: kubelet-plugin
+        image: intel/intel-gpu-resource-driver:v0.4.0
+        imagePullPolicy: IfNotPresent
+        command: ["/kubelet-gpu-plugin"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: SYSFS_ROOT
+          value: "/sysfs"
+        # Use this to tell kubelet-plugin where the DRI devices nodes should be.
+        # This will be prefix for CDI devices, runtime will try to mount devices
+        # with this prefix into workloads.
+        #- name: DEV_DRI_PATH
+        #  value: "/fake/dri"
+        volumeMounts:
+        - name: plugins-registry
+          mountPath: /var/lib/kubelet/plugins_registry
+        - name: plugins
+          mountPath: /var/lib/kubelet/plugins
+        - name: cdi
+          mountPath: /etc/cdi
+        - name: varruncdi
+          mountPath: /var/run/cdi
+        - name: defaults
+          mountPath: "/defaults"
+          readOnly: true
+        - name: sysfs
+          mountPath: "/sysfs"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: plugins-registry
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+      - name: plugins
+        hostPath:
+          path: /var/lib/kubelet/plugins
+      - name: cdi
+        hostPath:
+          path: /etc/cdi
+      - name: varruncdi
+        hostPath:
+          path: /var/run/cdi
+      - name: sysfs
+        hostPath:
+          path: /sys
+      - name: defaults
+        configMap:
+          name: defaults
+---
+# Source: intel-gpu-resource-driver/templates/resource-driver.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intel-gpu-resource-driver-controller
+  namespace: default
+  labels:
+    helm.sh/chart: intel-gpu-resource-driver-0.4.0
+    app.kubernetes.io/name: intel-gpu-resource-driver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: intel-gpu-resource-driver
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: intel-gpu-resource-driver
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccount: intel-gpu-resource-driver-service-account
+      serviceAccountName: release-name-intel-gpu-resource-driver
+      containers:
+      - name: controller
+        image:  intel/intel-gpu-resource-driver:v0.4.0
+        imagePullPolicy: IfNotPresent
+        command: ["/gpu-controller"]
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 10001
+          seccompProfile:
+            type: RuntimeDefault
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: gpu.resource.intel.com/v1alpha2
+kind: GpuClassParameters
+metadata:
+  name: intel-gpu-params-shared
+  labels:
+    helm.sh/chart: intel-gpu-resource-driver-0.4.0
+    app.kubernetes.io/name: intel-gpu-resource-driver
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v0.4.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  shared: true
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: gpu.resource.intel.com/v1alpha2
+kind: GpuClassParameters
+metadata:
+  name: intel-gpu-params
+spec:
+  shared: false
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: gpu.resource.intel.com/v1alpha2
+kind: GpuClassParameters
+metadata:
+  name: intel-gpu-monitor-params
+spec:
+  monitor: true
+  shared: false
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClass
+metadata:
+  name: intel-gpu-shared
+driverName: gpu.resource.intel.com
+parametersRef:
+  apiGroup: gpu.resource.intel.com/v1alpha2
+  kind: GpuClassParameters
+  name: intel-gpu-params-shared
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClass
+metadata:
+  name: intel-gpu
+driverName: gpu.resource.intel.com
+parametersRef:
+  apiGroup: gpu.resource.intel.com/v1alpha2
+  kind: GpuClassParameters
+  name: intel-gpu-params
+---
+# Source: intel-gpu-resource-driver/templates/resource-class.yaml
+apiVersion: resource.k8s.io/v1alpha2
+kind: ResourceClass
+metadata:
+  name: intel-gpu-monitor
+driverName: gpu.resource.intel.com
+parametersRef:
+  apiGroup: gpu.resource.intel.com/v1alpha2
+  kind: GpuClassParameters
+  name: intel-gpu-monitor-params

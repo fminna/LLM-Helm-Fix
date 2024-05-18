@@ -1,0 +1,354 @@
+---
+# Source: spectre/charts/tor-proxy/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tor-proxy
+  labels:
+    helm.sh/chart: tor-proxy-0.0.8
+    app.kubernetes.io/name: tor-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.7.10"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: spectre/templates/serviceaccount-test.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spectre-test
+---
+# Source: spectre/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spectre
+  labels:
+    helm.sh/chart: spectre-0.2.3
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.33.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: spectre/charts/tor-proxy/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tor-proxy-scripts
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    set -e
+
+    mkdir -p "$(dirname $TOR_CONFIG)"
+
+    mkdir -p "$TOR_DATA"
+    chown -R tor "$TOR_DATA"
+    chmod 700 "$TOR_DATA"
+
+    mkdir -p "/var/lib/tor/hidden_services"
+    chown -R tor /var/lib/tor/hidden_services
+    chmod 700 /var/lib/tor/hidden_services
+
+    cat <<-EOF > "$TOR_CONFIG"
+    ${TOR_EXTRA_ARGS}
+    EOF
+
+    if ! [ -z "${TOR_ADDITIONAL_CONFIG}" ]; then
+        echo "%include $TOR_ADDITIONAL_CONFIG" >> "$TOR_CONFIG"
+        echo "" >> "$TOR_ADDITIONAL_CONFIG"
+        echo "Added '%include $TOR_ADDITIONAL_CONFIG' to tor config"
+    fi
+
+    chown -R tor "$(dirname $TOR_CONFIG)"
+
+    if ! [ -z "${TOR_PASSWORD}" ]; then
+        TOR_PASSWORD_HASH="$(gosu tor tor --hash-password "$TOR_PASSWORD")"
+        echo "HashedControlPassword $TOR_PASSWORD_HASH" >> "$TOR_CONFIG"
+        echo "'HashedControlPassword $TOR_PASSWORD_HASH' added to tor config"
+    fi
+
+    exec gosu tor "$@"
+---
+# Source: spectre/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spectre-test
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list"]
+---
+# Source: spectre/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spectre-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spectre-test
+subjects:
+- kind: ServiceAccount
+  name: spectre-test
+---
+# Source: spectre/charts/tor-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: tor-proxy
+  labels:
+    helm.sh/chart: tor-proxy-0.0.8
+    app.kubernetes.io/name: tor-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.7.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9050
+      targetPort: 9050
+      protocol: TCP
+      name: socks
+  selector:
+    app.kubernetes.io/name: tor-proxy
+    app.kubernetes.io/instance: release-name
+---
+# Source: spectre/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: spectre
+  labels:
+    helm.sh/chart: spectre-0.2.3
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.33.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: listen
+  selector:
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+---
+# Source: spectre/charts/tor-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tor-proxy
+  labels:
+    helm.sh/chart: tor-proxy-0.0.8
+    app.kubernetes.io/name: tor-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.7.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tor-proxy
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tor-proxy
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: tor-proxy
+      securityContext:
+        {}
+      containers:
+        - name: tor-proxy
+          securityContext:
+            {}
+          image: "btcpayserver/tor:0.4.7.10"
+          imagePullPolicy: IfNotPresent
+          # command: ["sleep", "3600"]
+          ports:
+            - name: socks
+              containerPort: 9050
+              protocol: TCP
+          # livenessProbe:
+          #   exec:
+          #     command:
+          #     - /bin/sh
+          #     - -c
+          #     - "echo authenticate '""' | nc 127.0.0.1  && echo signal NEWNYM | nc 127.0.0.1 "
+          #   initialDelaySeconds: 30
+          #   periodSeconds: 10
+          # readinessProbe:
+          #   exec:
+          #     command:
+          #     - /bin/sh
+          #     - -c
+          #     - "echo authenticate '""' | nc 127.0.0.1 "
+          resources:
+            {}
+          env:            
+            - name: TOR_EXTRA_ARGS
+              value: "AutomapHostsOnResolve 1\nControlSocketsGroupWritable 1\nCookieAuthentication 1\nCookieAuthFileGroupReadable 1\nSOCKSPort 0.0.0.0:9050\nDNSPort 5353\nExitPolicy reject *:*\nLog notice stderr\nRunAsDaemon 0\nControlSocket /home/tor/.tor/control_socket\nCookieAuthFile /home/tor/.tor/control_socket.authcookie\nDataDirectory /home/tor/.tor\nHiddenServiceDir /var/lib/tor/hidden_services\nHiddenServicePort 8888 spectre:8080\nHiddenServiceVersion 3\n"
+          volumeMounts:
+            - name: tor-hidden-services
+              mountPath: /var/lib/tor/hidden_services
+            - name: scripts-volume
+              mountPath: entrypoint.sh
+              subPath: entrypoint.sh
+
+      volumes:
+        - name: scripts-volume
+          configMap:
+            name: tor-proxy-scripts
+            items:
+            - key: entrypoint.sh
+              path: entrypoint.sh
+              mode: 0755
+        - name: tor-hidden-services
+          emptyDir: {}
+---
+# Source: spectre/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spectre
+  labels:
+    helm.sh/chart: spectre-0.2.3
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.33.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spectre
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spectre
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: spectre
+      securityContext:
+        {}
+      containers:
+        - name: spectre
+          securityContext:
+            {}
+          image: "ghcr.io/chronicleprotocol/spectre:0.33.0"
+          command: ["/usr/local/bin/chronicle-app"]
+          args:
+            - "run"
+            - "-v"
+            - "debug"
+            - "--log.format"
+            - "text"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: listen
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: CFG_ENVIRONMENT
+              value: "stage"
+            - name: CFG_CHAIN_RPC_URLS
+              value: ""
+            - name: CFG_CHAIN_ID
+              value: ""
+            - name: CFG_CHAIN_NAME
+              value: ""
+            - name: CFG_CHAIN_TX_TYPE
+              value: ""            
+            - name: CFG_WEBAPI_ENABLE
+              value: "1"
+            - name: CFG_WEBAPI_ETH_ADDR_BOOK
+              value: ""
+            - name: CFG_WEBAPI_LISTEN_ADDR
+              value: ":8080"
+            - name: CFG_WEBAPI_SOCKS5_PROXY_ADDR
+              value: ""
+            - name: CFG_WEBAPI_STATIC_ADDR_BOOK
+              value: ""
+          resources:
+            {}
+---
+# Source: spectre/charts/tor-proxy/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "tor-proxy-test-connection"
+  labels:
+    helm.sh/chart: tor-proxy-0.0.8
+    app.kubernetes.io/name: tor-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.4.7.10"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: nc-socks
+      image: busybox
+      command: ['nc']
+      args:
+        - '-zv'
+        - '-v'
+        - 'tor-proxy'
+        - '9050'
+  restartPolicy: Never
+---
+# Source: spectre/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "spectre-test-connection"
+  labels:
+    helm.sh/chart: spectre-0.2.3
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.33.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: nc-listen
+      image: busybox
+      command: ['nc']
+      args:
+        - '-zv'
+        - '-v'
+        - 'spectre'
+        - '8080'
+  restartPolicy: Never
+---
+# Source: spectre/templates/tests/test-logs.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "spectre-test-logs"
+  labels:
+    helm.sh/chart: spectre-0.2.3
+    app.kubernetes.io/name: spectre
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.33.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  serviceAccountName: spectre-test
+  containers:
+    - name: test-spectre-logs
+      image: bitnami/kubectl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo 'Running tests';
+          kubectl logs --namespace default $(kubectl get pods --namespace default -l 'app.kubernetes.io/instance=release-name,app.kubernetes.io/name=spectre' -o jsonpath='{.items[0].metadata.name}') | grep 'Starting tag=RELAY'
+  restartPolicy: Never

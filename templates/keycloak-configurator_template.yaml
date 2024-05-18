@@ -1,0 +1,99 @@
+---
+# Source: keycloak-configurator/templates/keycloak-configurator-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name
+---
+# Source: keycloak-configurator/templates/keycloak-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name
+  namespace: default
+data:
+  terraform.tf: |
+    terraform {
+      backend "kubernetes" {
+        secret_suffix     = "state"
+        in_cluster_config = true
+      }
+      required_providers {
+        keycloak = {
+          source = "mrparkers/keycloak"
+        }
+      }
+    }
+
+    provider "keycloak" {
+      client_id                = 
+      url                      = 
+      username                 = 
+      password                 = 
+      tls_insecure_skip_verify = true
+    }
+---
+# Source: keycloak-configurator/templates/keycloak-configurator-sa.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "watch", "get", "list", "create", "update" ]
+  - apiGroups: [ "coordination.k8s.io" ]
+    resources: [ "leases" ]
+    verbs: [ "watch", "get", "list", "create", "update" ]
+---
+# Source: keycloak-configurator/templates/keycloak-configurator-sa.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name
+subjects:
+  - kind: ServiceAccount
+    name: release-name
+roleRef:
+  kind: Role
+  name: release-name
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: keycloak-configurator/templates/keycloak-configurator-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-1
+  namespace: default
+spec:
+  template:
+    spec:
+      serviceAccountName: release-name
+      
+      containers:
+        - name: main
+          image: hashicorp/terraform:1.4
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - |
+              mkdir /tmp/workdir && \
+              cp -r /tmp/src /tmp/workdir && \
+              cd /tmp/workdir/src && \
+              terraform init $TERRAFORM_INIT_EXTRA_ARGS && \
+              terraform apply -auto-approve $TERRAFORM_APPLY_EXTRA_ARGS
+          env:
+            - name: KUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: src
+              mountPath: /tmp/src
+      volumes:
+        - name: src
+          configMap:
+            name: release-name
+      restartPolicy: Never
+  backoffLimit: 1

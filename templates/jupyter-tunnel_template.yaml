@@ -1,0 +1,517 @@
+---
+# Source: jupyter-tunnel/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jupyter-tunnel-svc-acc
+  namespace: default
+---
+# Source: jupyter-tunnel/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jupyter-tunnel-config
+  labels:
+    app: jupyter-tunnel
+    chart: jupyter-tunnel-3.1.4
+    heritage: Helm
+    release: release-name
+data:
+  logging_config.yaml: |-
+    file:
+      enabled: false
+      level: 20
+      formatter: simple
+      filename: /tmp/logs.log
+      when: h
+      interval: 1
+      backupCount: 0
+      encoding: 
+      delay: false
+      utc: false
+      atTime: 
+      errors: 
+    stream:
+      enabled: true
+      level: 20
+      formatter: simple
+      stream: 
+    syslog:
+      enabled: false
+      level: 20
+      formatter: json
+      address: !!python/tuple [134.94.199.3, 5141]
+      socktype: ext://socket.SOCK_DGRAM
+    smtp:
+      enabled: false
+      level: 50
+      formatter: simple
+      mailhost: mail.fz-juelich.de
+      fromaddr: smtphandler@fz-juelich.de
+      toaddrs: []
+      subject: SMTPHandler - Log
+      secure: 
+      timeout: 1
+  authorized_keys: |
+  config: |
+    Host *
+        ServerAliveInterval 15
+        ServerAliveCountMax 3
+        StrictHostKeyChecking no
+        UserKnownHostsFile /dev/null
+        ControlMaster auto
+        ControlPersist yes
+---
+# Source: jupyter-tunnel/templates/configmap_scaledown.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jupyter-tunnel-desired-replicas
+  labels:
+    app: jupyter-tunnel
+    chart: jupyter-tunnel-3.1.4
+    heritage: Helm
+    release: release-name
+data:
+    desired_replicas: all
+---
+# Source: jupyter-tunnel/templates/configmap_scaledown.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jupyter-tunnel-scale-down
+  labels:
+    app: jupyter-tunnel
+    chart: jupyter-tunnel-3.1.4
+    heritage: Helm
+    release: release-name
+data:
+  run.sh: |
+    #!/bin/bash
+
+    if [[ -n ${TUNNEL_USER_PASS} ]]; then
+        export TUNNEL_AUTHENTICATION_TOKEN=${TUNNEL_AUTHENTICATION_TOKEN:-"Basic $(echo -n "${TUNNEL_USERNAME:-tunnel}:${TUNNEL_USER_PASS}" | base64 -w 0)"}
+    fi
+
+    # while true; do sleep 60; done
+    python3 /mnt/volumes_scaledown/..data/scale_down.py
+  scale_down.py: |
+    import logging
+    import os
+    import re
+    import sys
+
+    from itertools import cycle
+    from kubernetes import client, config
+    from time import sleep
+    from tornado import escape, httpclient
+
+
+    http_client = httpclient.HTTPClient()
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    log = logging.getLogger(__name__)
+
+
+    def _k8s_get_api_instance():
+        configuration = config.load_incluster_config()
+        with client.ApiClient(configuration) as api_client:               
+            api_instance = client.AppsV1Api(api_client)
+        return api_instance
+
+
+    def _k8s_get_client_core():
+        return client.CoreV1Api()
+
+
+    def _get_tunnel_sts():
+        api_instance = _k8s_get_api_instance()               
+        sts_name = "jupyter-tunnel"
+        namespace = "default"
+        label = f"app.kubernetes.io/name={sts_name}"
+        tunnel_sts = api_instance.list_namespaced_stateful_set(namespace, label_selector=label)
+        if len(tunnel_sts.items) > 1:
+            log.critical(f"Got more than one stateful set for jupyter-tunnel. Stateful Set: {tunnel_sts}")
+            raise Exception(f"Got more than one stateful set.")
+        return tunnel_sts.items[0]
+
+
+    def get_current_number_of_replicas():
+        tunnel_sts = _get_tunnel_sts()
+        number_of_replicas = tunnel_sts.status.replicas
+        return number_of_replicas
+
+
+    def get_desired_number_of_replicas():
+        with open("/mnt/volumes_replicas/..data/desired_replicas") as f:
+            desired_number_of_replicas = f.read()
+        try:
+            return int(desired_number_of_replicas)
+        except ValueError:
+            return desired_number_of_replicas
+
+
+    def _create_tunnel_request(suffix="", method="GET", **kwargs):
+        depl_name = "jupyter-tunnel"
+        depl_namespace = "default"
+        url = f"http://{depl_name}.{depl_namespace}.svc/api/forwarder/tunnel/"
+        if suffix:
+            url += suffix if suffix.endswith("/") else suffix + "/"
+        service_name = os.environ.get("TUNNEL_USERNAME", "tunnel")
+        authentication_token = os.environ.get(
+            f"{service_name.upper()}_AUTHENTICATION_TOKEN", None
+        )
+        if not authentication_token:
+            log.critical(
+                f"{service_name.upper()}_AUTHENTICATION_TOKEN env variable not defined. Cannot communicate with {service_name}."
+            )
+        headers = {"Authorization": authentication_token}
+
+        request = httpclient.HTTPRequest(
+            url,
+            method=method,
+            headers=headers,
+            **kwargs
+        )
+        return request
+
+    def get_tunnels_exceeding_replicas(desired_replicas):
+        request = _create_tunnel_request()
+        r = http_client.fetch(request)
+
+        tunnels = escape.json_decode(r.body)
+        replace_tunnels = []
+        for tunnel in tunnels:
+            tunnel_number = re.search(r"[0-9]+$", tunnel["tunnel_pod"]).group()
+            if int(tunnel_number) >= desired_replicas:
+                replace_tunnels.append(tunnel)
+        return replace_tunnels
+
+
+    def patch_tunnel(tunnel, new_pod):
+        servername = tunnel["servername"]
+        body = {"new_pod": new_pod}
+        log.info(f"Replacing tunnel {servername} on pod {tunnel['tunnel_pod']} with tunnel on pod {new_pod}.")
+        request = _create_tunnel_request(
+            suffix=servername, 
+            method="PUT", 
+            body=escape.json_encode(body))
+        request.headers.update({'Content-Type': 'application/json; charset=UTF-8'})
+        try:
+            r = http_client.fetch(request)
+        except httpclient.HTTPError as e:
+            log.error(e.response)
+        except Exception as e:
+            log.error(e)
+        log.info(f"Successfully replaced tunnel. New tunnel: {r.body}")
+        return r
+
+
+    def scale_sts(desired_number_of_replicas):
+        api_instance = _k8s_get_api_instance()
+        v1 = _k8s_get_client_core()
+
+        tunnel_sts = _get_tunnel_sts()
+        name = tunnel_sts.metadata.name
+        namespace = "default"
+        log.info(f"Scaling number of tunnel replicas to {desired_number_of_replicas}.")
+        api_instance.patch_namespaced_stateful_set(
+            name, namespace,
+            body={'spec': {'replicas': desired_number_of_replicas}}
+        )
+        while tunnel_sts.status.current_replicas != desired_number_of_replicas:
+            log.info(f"Waiting for pods to terminate. Current replicas: {tunnel_sts.status.current_replicas}")
+            sleep(30)
+            tunnel_sts = _get_tunnel_sts()
+
+        log.info(f"Setting number of desired replicas to 'all'.")
+        app = tunnel_sts.metadata.labels["app.kubernetes.io/name"]
+        v1.patch_namespaced_config_map(
+            f"{app}-desired-replicas", namespace, 
+            body={'data': {'desired_replicas': 'all'}}
+        )
+
+
+    if __name__ == "__main__":
+        number_of_replicas = get_current_number_of_replicas()
+        desired_number_of_replicas = get_desired_number_of_replicas()
+        if desired_number_of_replicas == "all":
+            desired_number_of_replicas = number_of_replicas
+        log.info(f"Current number of replicas: {number_of_replicas}")
+        log.info(f"Desired number of replicas: {desired_number_of_replicas}")
+
+        if number_of_replicas > desired_number_of_replicas:
+            # Get tunnels with pod number > desired number of pods
+            replace_tunnels = get_tunnels_exceeding_replicas(desired_number_of_replicas)
+            log.info(f"Replacing tunnels: {replace_tunnels}")
+
+            # Update services to switch selectors
+            pod_number_iterator = cycle(range(0, desired_number_of_replicas))
+            for tunnel in replace_tunnels:
+                new_pod = f"jupyter-tunnel-{next(pod_number_iterator)}"
+                patch_tunnel(tunnel, new_pod)
+            # Scale down
+            scale_sts(desired_number_of_replicas)
+---
+# Source: jupyter-tunnel/templates/serviceaccount.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: jupyter-tunnel-cluster-role
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["create", "delete", "get", "patch", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["patch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["list", "patch"]
+---
+# Source: jupyter-tunnel/templates/serviceaccount.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: jupyter-tunnel-cluster-role-binding
+subjects:
+- kind: ServiceAccount
+  name: jupyter-tunnel-svc-acc
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: jupyter-tunnel-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: jupyter-tunnel/templates/service-ssh.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    helm.sh/chart-name: jupyter-tunnel
+    helm.sh/chart: jupyter-tunnel-3.1.4
+    app.kubernetes.io/name: jupyter-tunnel
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.1.4"
+    app.kubernetes.io/managed-by: Helm
+  name: jupyter-tunnel-ssh-production
+spec:
+  type: "LoadBalancer"
+  ports:
+    - port: 7002
+      targetPort: 2222
+      protocol: TCP
+      name: ssh
+  selector:
+    app.kubernetes.io/name: jupyter-tunnel
+    app.kubernetes.io/instance: release-name
+    statefulset.kubernetes.io/pod-name: jupyter-tunnel-0
+---
+# Source: jupyter-tunnel/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    helm.sh/chart-name: jupyter-tunnel
+    helm.sh/chart: jupyter-tunnel-3.1.4
+    app.kubernetes.io/name: jupyter-tunnel
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.1.4"
+    app.kubernetes.io/managed-by: Helm
+  name: jupyter-tunnel
+spec:
+  type: "ClusterIP"
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: jupyter-tunnel
+    app.kubernetes.io/instance: release-name
+---
+# Source: jupyter-tunnel/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: jupyter-tunnel
+  labels:
+    helm.sh/chart-name: jupyter-tunnel
+    helm.sh/chart: jupyter-tunnel-3.1.4
+    app.kubernetes.io/name: jupyter-tunnel
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "3.1.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jupyter-tunnel
+      app.kubernetes.io/name: jupyter-tunnel
+      app.kubernetes.io/instance: release-name
+  serviceName: jupyter-tunnel
+  template:
+    metadata:
+      labels:
+        app: jupyter-tunnel
+        app.kubernetes.io/name: jupyter-tunnel
+        app.kubernetes.io/instance: release-name
+    spec:
+      imagePullSecrets:
+        - name: gitlab-registry
+      serviceAccountName: jupyter-tunnel-svc-acc
+      securityContext:
+        fsGroup: 100
+      containers:
+        - name: main
+          securityContext:
+            runAsUser: 0
+          image: "registry.jsc.fz-juelich.de/jupyterjsc/k8s/images/drf-tunnel:3.1.4"
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: jupyter-tunnel-passwds
+            - secretRef:
+                name: jupyter-tunnel-generics
+          env:
+            - name: AUTHORIZED_KEYS_PATH
+              value: "/mnt/volumes_config/authorized_keys"
+            - name: SSHCONFIGFILE
+              value: "/mnt/volumes_config/config"
+            - name: LOGGING_CONFIG_PATH
+              value: "/mnt/volumes_config/logging_config.yaml"
+            - name: GUNICORN_PROCESSES
+              value: "4"
+            - name: GUNICORN_THREADS
+              value: "8"
+            - name: GUNICORN_TIMEOUT
+              value: "30"
+            - name: GUNICORN_MAX_REQUESTS
+              value: "100"
+            - name: GUNICORN_MAX_REQUESTS_JITTER
+              value: "50"
+            - name: SSHTIMEOUT
+              value: "3"
+            - name: REQUEST_PORT
+              value: "8080"
+            - name: DEPLOYMENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: DEPLOYMENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LOGGER_NAME
+              value: "Tunnel"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: ACTIVE_REPLICAS_PATH
+              value: "/mnt/volumes_replicas/desired_replicas"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: ssh
+              containerPort: 2222
+              protocol: TCP
+          resources:
+            {}
+          volumeMounts:
+            - name: config
+              mountPath: /mnt/volumes_config
+            - name: keypairs
+              mountPath: /mnt/volumes_keypairs
+            - name: replicas
+              mountPath: /mnt/volumes_replicas
+            - name: tz-config
+              mountPath: /etc/localtime
+      volumes:
+      - name: replicas
+        configMap:
+          defaultMode: 0444
+          name: jupyter-tunnel-desired-replicas
+      - name: config
+        configMap:
+          defaultMode: 0444
+          name: jupyter-tunnel-config
+      - name: keypairs
+        secret:
+          defaultMode: 0440
+          secretName: jupyter-tunnel-keypairs
+      - name: tz-config
+        hostPath:
+          path: /usr/share/zoneinfo/Europe/Berlin
+---
+# Source: jupyter-tunnel/templates/cronjob_scaledown.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jupyter-tunnel-scale-down
+  labels:
+    app: jupyter-tunnel
+    chart: jupyter-tunnel-3.1.4
+    heritage: Helm
+    release: release-name
+spec:
+  suspend: true
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 1
+  successfulJobsHistoryLimit: 1
+  schedule: "0 0 1 * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: jupyter-tunnel
+            cron: scale-down
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: jupyter-tunnel-svc-acc
+          containers:
+          - name: scale-down
+            image: "python:3.12-alpine3.18"
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: TUNNEL_USER_PASS
+                valueFrom:
+                  secretKeyRef:
+                    name: jupyter-tunnel-passwds
+                    key: TUNNEL_USER_PASS
+                    optional: false
+            command: ["/bin/sh"]
+            args:
+              - -c
+              - >-
+                pip install kubernetes==27.2.0 tornado &&
+                source /mnt/volumes_scaledown/run.sh
+            resources:
+              limits:
+                cpu: 50m
+                memory: 256Mi
+              requests:
+                cpu: 50m
+                memory: 256Mi
+            volumeMounts:
+              - name: scaledown-cm
+                mountPath: /mnt/volumes_scaledown
+              - name: replicas
+                mountPath: /mnt/volumes_replicas
+          nodeSelector:
+            worker: "true"
+          restartPolicy: Never
+          volumes:
+            - name: scaledown-cm
+              configMap:
+                defaultMode: 0444
+                name: jupyter-tunnel-scale-down
+            - name: replicas
+              configMap:
+                defaultMode: 0444
+                name: jupyter-tunnel-desired-replicas

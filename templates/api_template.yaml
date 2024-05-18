@@ -1,0 +1,114 @@
+---
+# Source: api/templates/create-tables.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-init-release-name-api
+data:
+  schema-init.sh: |
+    #!/bin/sh
+    until curl --location --request PUT substreams-sink-clickhouse-service:3000/schema/sql?schema-url=https://raw.githubusercontent.com/pinax-network/substreams-antelope-tokens/main/schema.sql; do
+      echo "Waiting for substreams-sink-clickhouse..."
+      sleep 5
+    done
+    echo "Tables created successfully"
+    exit 0
+---
+# Source: api/templates/env.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-release-name-api
+data:
+  DATABASE: "default"
+  HOST: "http://clickhouse:8123"
+  HOSTNAME: "0.0.0.0"
+  MAX_LIMIT: "100000"
+  PORT: "8080"
+  VERBOSE: "true"
+---
+# Source: api/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-api
+  namespace: default
+  labels:
+    helm.sh/chart: api-1.0.2
+    app.kubernetes.io/name: api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# Source: api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-api
+  namespace: default
+  labels:
+    helm.sh/chart: api-1.0.2
+    app.kubernetes.io/name: api
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      app.kubernetes.io/instance: release-name
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: api-1.0.2
+        app.kubernetes.io/name: api
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      initContainers:
+        - name: schema-init
+          image: curlimages/curl:8.6.0
+          command: ["/bin/sh", "-c", "/scripts/schema-init.sh"]
+          volumeMounts:
+          - name: script-volume
+            mountPath: /scripts
+      containers:
+      - name: release-name-api
+        image: ghcr.io/pinax-network/antelope-token-api:v1.0.0
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: env-release-name-api
+      volumes:
+      - name: script-volume
+        configMap:
+          name: schema-init-release-name-api
+          defaultMode: 0777
+---
+# Source: api/templates/ingress.yaml
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: release-name-api
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Path(`/`)
+      kind: Rule
+      services:
+        - name: release-name-api
+          port: 8080

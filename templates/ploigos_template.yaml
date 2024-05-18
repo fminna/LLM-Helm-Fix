@@ -1,0 +1,183 @@
+---
+# Source: ploigos/templates/catalog-source.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: redhatgov-operators
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  image: quay.io/redhatgov/operator-catalog:latest
+  displayName: Red Hat NAPS Community Operators
+  publisher: RedHatGov
+---
+# Source: ploigos/templates/operatorgroup.yaml
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  annotations:
+    olm.providedAPIs: ""
+  name: devsecops-operatorgroup
+  namespace: devsecops
+spec:
+  targetNamespaces:
+  - devsecops
+---
+# Source: ploigos/templates/subscription.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/ploigos-software-factory-operator.devsecops: ""
+  name: ploigos-software-factory-operator
+  namespace: devsecops
+spec:
+  channel: alpha
+  installPlanApproval: Automatic
+  name: ploigos-software-factory-operator
+  source: redhatgov-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: ploigos-software-factory-operator.v0.2.7
+---
+# Source: ploigos/templates/delete-csv-hook-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: delete-csv-job
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+---
+# Source: ploigos/templates/crd-reader.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crd-reader
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+rules:
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - 'customresourcedefinitions'
+  verbs:
+  - get
+  - list
+---
+# Source: ploigos/templates/crd-reader.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crd-reader-binding
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crd-reader
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+# Source: ploigos/templates/delete-csv-hook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: csv-deleter
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+rules:
+  - apiGroups:
+      - operators.coreos.com
+    resources:
+      - clusterserviceversions
+    verbs:
+      - delete
+      - list
+---
+# Source: ploigos/templates/delete-csv-hook-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: csv-deleters
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: csv-deleter
+subjects:
+  - kind: ServiceAccount
+    name: delete-csv-job
+---
+# Source: ploigos/templates/wait-for-crd.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cluster-check 
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  containers:
+  - name: crd-check 
+    image: quay.io/openshift/origin-cli:4.6
+    imagePullPolicy: IfNotPresent
+    command: ['sh', '-c', 'while [ true ]; do oc get crd tsscplatforms.redhatgov.io; if [ $? -eq 0 ]; then break; fi ; sleep 5s; done']
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  serviceAccount: default
+  serviceAccountName: default
+---
+# Source: ploigos/templates/delete-csv-hook.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: delete-csv
+  annotations:
+    "helm.sh/hook": post-delete
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  template:
+    spec:
+      containers:
+        - image: quay.io/openshift/origin-cli:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              oc delete $(oc get subscription -o name) & oc delete $(oc get csv -l 'olm.copiedFrom notin (openshift-operators)' -o name)
+          imagePullPolicy: Always
+          name: installplan-approver
+      dnsPolicy: ClusterFirst
+      restartPolicy: OnFailure
+      serviceAccount: delete-csv-job
+      serviceAccountName: delete-csv-job
+      terminationGracePeriodSeconds: 10
+---
+# Source: ploigos/templates/tsscplatform-cr.yaml
+apiVersion: redhatgov.io/v1alpha1
+kind: TsscPlatform
+metadata:
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "25"
+  namespace: devsecops
+  name: tsscplatform
+spec:
+  tsscPlatform:
+    pullSecret:
+      name: installation-pull-secrets
+      namespace: openshift-image-registry

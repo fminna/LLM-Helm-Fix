@@ -1,0 +1,153 @@
+---
+# Source: datacube-dashboard/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-datacube-dashboard
+  labels:
+    app: release-name
+    app.kubernetes.io/name: datacube-dashboard
+    helm.sh/chart: datacube-dashboard-0.5.10
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    null
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: release-name
+    app.kubernetes.io/name: datacube-dashboard
+    app.kubernetes.io/instance: release-name
+---
+# Source: datacube-dashboard/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-datacube-dashboard
+  labels:
+    app: release-name
+    app.kubernetes.io/name: datacube-dashboard
+    helm.sh/chart: datacube-dashboard-0.5.10
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name
+      app.kubernetes.io/name: datacube-dashboard
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name
+        app.kubernetes.io/name: datacube-dashboard
+        app.kubernetes.io/instance: release-name
+      annotations:
+        iam.amazonaws.com/role: "dev-eks-datacube-wms"
+    spec:
+      # Turning single-request-reopen option on would fix issue where in two requests from the same port are
+      # not handled correctly it will close the socket and open a new one before sending the second request.
+      dnsConfig:
+        options:
+          - name: single-request-reopen
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: datacube-dashboard
+          image: "opendatacube/dashboard:latest"
+          imagePullPolicy: Always
+          env:
+          - name: DB_HOSTNAME
+            value: "database.local"
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_DATABASE
+            value: "ows"
+          - name: DB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: ows
+                key: postgres-username
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: ows
+                key: postgres-password
+          - name: VIRTUAL_HOST
+            value: localhost,127.0.0.
+          resources:
+            limits:
+              cpu: 300m
+              memory: 1024Mi
+          args: [ "gunicorn",  "-b",  "0.0.0.0:8080",  "-w",  "4",  "--timeout",  "60",  "cubedash:app", ]
+          ports:
+            # All http services
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            null
+          readinessProbe:
+            null
+status: {}
+---
+# Source: datacube-dashboard/templates/install-postgis.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: 'release-name-datacube-dashboard-install-psql-extension'
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "datacube-dashboard-0.5.10"
+  annotations:
+    "helm.sh/hook": "pre-install"
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded,hook-failed"
+spec:
+  template:
+    metadata:
+      name: datacube-dashboard
+      labels:
+        heritage: "Helm"
+        release: "release-name"
+        chart: "datacube-dashboard-0.5.10"
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: install-postgis-extension
+        image: "postgres:latest"
+        args: [ "/bin/bash",  "-c",  "echo 'CREATE EXTENSION IF NOT EXISTS postgis;' | PGPASSWORD=$ADMIN_PASSWORD psql -h $DB_HOSTNAME -p 5432 -U $ADMIN_USERNAME -d $DB_DATABASE", ]
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DB_HOSTNAME
+          value: "database.local"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: "ows"
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ows
+              key: postgres-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ows
+              key: postgres-password
+        - name: ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: dev-eks-datacube
+              key: postgres-username
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: dev-eks-datacube
+              key: postgres-password
+      restartPolicy: Never

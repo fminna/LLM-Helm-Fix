@@ -1,0 +1,184 @@
+---
+# Source: file-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: file-service
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9091
+      targetPort: actuator
+      protocol: TCP
+      name: actuator
+  selector:
+    choerodon.io/release: "release-name"
+---
+# Source: file-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+    choerodon.io/logs-parser: "spring-boot"
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/actuator/prometheus"
+      labels:
+        choerodon.io/version: "0.21.1"
+        choerodon.io/service: "file-service"
+        choerodon.io/metrics-port: "9091"
+        choerodon.io/release: "release-name"
+    spec:
+      initContainers:
+      - name: skywalking-agent
+        image: registry.cn-shanghai.aliyuncs.com/c7n/skywalking-agent:6.5.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - cp -rfp /skywalking/agent/* /agent
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+      containers:
+      - name: release-name
+        image: registry.cn-shanghai.aliyuncs.com/c7n/file-service:0.21.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+          value: "http://register-server:8000/eureka/"
+        - name: "MANAGEMENT_SERVER_PORT"
+          value: "9091"
+        - name: "MINIO_ACCESSKEY"
+          value: "accessKey"
+        - name: "MINIO_ENDPOINT"
+          value: "http://minio.example.com/minio"
+        - name: "MINIO_SECRETKEY"
+          value: "secretKey"
+        - name: "SERVER_PORT"
+          value: "9090"
+        - name: "SPRING_CLOUD_CONFIG_ENABLED"
+          value: "true"
+        - name: "SPRING_CLOUD_CONFIG_URI"
+          value: "http://register-server:8000/"
+        ports:
+        - name: http
+          containerPort: 9090
+          protocol: TCP
+        - name: actuator
+          containerPort: 9091
+          protocol: TCP
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            memory: 2Gi
+        volumeMounts:
+        - name: skywalking-agent
+          mountPath: /agent
+        livenessProbe:
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 9090
+              && curl -s --fail localhost:9091/actuator/health
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+          exec:
+            command: 
+            - /bin/sh
+            - -c
+            - >
+              nc -z localhost 9090
+              && curl -s --fail localhost:9091/actuator/health
+      volumes:
+      - name: skywalking-agent
+        emptyDir: {}
+---
+# Source: file-service/templates/pre-config-config.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-config
+  annotations:
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+    choerodon.io/release: "release-name"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      name: release-name-init-config
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rfp /var/choerodon/* /tools
+        image: registry.cn-shanghai.aliyuncs.com/c7n/dbtool:0.6.7
+        imagePullPolicy: IfNotPresent
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-config
+        image: registry.cn-shanghai.aliyuncs.com/c7n/file-service:0.21.1
+        command:
+        - /bin/sh
+        - -c
+        - >
+          java 
+          -Dconfig.type=k8s
+          -Dconfig.updatePolicy=add
+          -Dspring.datasource.url="jdbc:mysql://localhost:3306/manager_service?useUnicode=true&characterEncoding=utf-8&useSSL=false&useInformationSchema=true&remarks=true&serverTimezone=Asia/Shanghai"
+          -Dspring.datasource.username=username
+          -Dspring.datasource.password=password
+          -Dregister.host="http://register-server:8000"
+          -Dservice.namespace=default
+          -Dservice.name=file-service
+          -Dservice.version=0.21.1
+          -Dconfig.file=application.yml
+          -Dconfig.jar=/choerodon/file-service.jar
+          -jar /var/choerodon/choerodon-tool-config.jar;
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar

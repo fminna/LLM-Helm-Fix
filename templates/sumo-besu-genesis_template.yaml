@@ -1,0 +1,226 @@
+---
+# Source: sumo-besu-genesis/templates/genesis-job.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sumo-besu-genesis-sa
+  namespace: default
+---
+# Source: sumo-besu-genesis/templates/raw-json-config-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sumo-besu-genesis-release-name-raw-json-config
+  labels:
+    app: sumo-besu-genesis
+    chart: sumo-besu-genesis-0.1.75
+    release: release-name
+    heritage: Helm
+    namespace: default
+    app.kubernetes.io/name: sumo-besu-genesis
+    helm.sh/chart: sumo-besu-genesis-0.1.75
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+data:
+  raw-config-genesis.json: |-
+            {"blockchain":{"nodes":{"count":4,"generate":true}},"genesis":{"alloc":{"627306090abaB3A6e1400e9345bC60c78a8BEf57":{"balance":"0x446c3b15f9926687d2c40534fdb564000000000000"},"f17f52151EbEF6C7334FAD080c5704D77216b732":{"balance":"0x446c3b15f9926687d2c40534fdb564000000000000"}},"coinbase":"0x0000000000000000000000000000000000000000","config":{"chainId":1337,"constantinoplefixblock":0,"ibft2":{"blockperiodseconds":10,"epochlength":30000,"requesttimeoutseconds":20}},"difficulty":"0x1","gasLimit":"0x47b760","mixHash":"0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365","nonce":"0x0","timestamp":"0x58ee40ba"}}
+---
+# Source: sumo-besu-genesis/templates/genesis-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sumo-besu-genesis-role
+  namespace: default
+  labels:
+    app.kubernetes.io/name: sumo-besu-genesis
+    helm.sh/chart: sumo-besu-genesis-0.1.75
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["create", "get", "list", "update", "delete" ]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch" ]
+---
+# Source: sumo-besu-genesis/templates/genesis-job.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sumo-besu-genesis-rb
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sumo-besu-genesis-role
+subjects:
+  - kind: ServiceAccount
+    name: sumo-besu-genesis-sa
+    namespace: default
+---
+# Source: sumo-besu-genesis/templates/genesis-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sumo-besu-genesis-init
+  labels:
+    app: sumo-besu-genesis
+    chart: sumo-besu-genesis-0.1.75
+    release: release-name
+    heritage: Helm
+    namespace: default
+    app.kubernetes.io/name: sumo-besu-genesis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: sumo-besu-genesis-0.1.75
+  namespace: default
+  annotations:
+    helm.sh/hook-delete-policy: "hook-succeeded"
+spec:
+  backoffLimit: 3
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sumo-besu-genesis
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: sumo-besu-genesis-sa
+      restartPolicy: "Never"
+      containers:
+        - name: generate-genesis
+          image: "hyperledger/besu:22.4-openjdk-latest"
+          securityContext:
+            runAsUser: 0
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: raw-config
+              mountPath: /raw-config
+            - name: generated-config
+              mountPath: /generated-config
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - |
+              apt-get update && apt-get install -y curl jq
+              curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl && chmod +x ./kubectl
+
+              echo "Creating config ..."
+              /opt/besu/bin/besu operator generate-blockchain-config --config-file=/raw-config/raw-config-genesis.json --to=/generated-config
+              echo "Creating genesis configmap in k8s ..."
+              ./kubectl create configmap --namespace default sumo-besu-genesis-genesis --from-file=genesis.json=/generated-config/genesis.json
+
+              # create the static-nodes with proper dns names for the quorum nodes
+              echo "[" > /generated-config/static-nodes.json
+
+              echo "Creating validator secrets in k8s ..."
+              i=1
+              for f in /generated-config/keys/*; do
+                if [ -d ${f} ]; then
+                  echo $f
+                  # the public key has an extra '0x' in front which isn't accepted by the enode format, this strips that out
+                  sed 's/^0x//' ${f}/key.pub > ${f}/enode
+                  ./kubectl create secret generic besu-node-validator-${i}-keys --namespace default --from-file=private.key=${f}/key.priv --from-file=public.key=${f}/key.pub --from-file=enode=${f}/enode
+
+                  # add to the static-nodes
+                  pubkey=$(cat ${f}/enode )
+                  echo ",\"enode://$pubkey@besu-node-validator-$i-0.besu-node-validator-$i.default.svc.cluster.local:30303?discport=0\"" >> /generated-config/static-nodes.json
+
+                  i=$((i+1))
+                fi
+              done
+
+              echo "Creating bootnode keys ..."
+              for j in {1..2}
+              do
+                /opt/besu/bin/besu public-key export --to=public${j}.key
+                # the public key has an extra '0x' in front which isn't accepted by the enode format, this strips that out
+                sed 's/^0x//' ./public${j}.key > /tmp/enode${j}
+                echo "Creating bootnode ${j} secrets in k8s ..."
+                ./kubectl create secret generic besu-node-bootnode-${j}-keys --namespace default --from-file=private.key=/opt/besu/key --from-file=public.key=./public${j}.key --from-file=enode=/tmp/enode${j}
+
+                # add to the static-nodes
+                pubkey=$(cat /tmp/enode${j} )
+                echo ",\"enode://$pubkey@besu-node-bootnode-$j-0.besu-node-bootnode-$j.default.svc.cluster.local:30303?discport=0\"" >> /generated-config/static-nodes.json
+
+                rm ./public${j}.key ./enode${j}.key /opt/besu/key
+              done
+
+              echo "]" >> /generated-config/static-nodes.json
+              # remove the extra comma to make it valid json
+              sed -i '0,/,/s///' /generated-config/static-nodes.json
+              ./kubectl create configmap --namespace default sumo-besu-genesis-enodes  --from-file=static-nodes.json=/generated-config/static-nodes.json
+
+              echo "Completed ..."
+      volumes:
+        - name: raw-config
+          configMap:
+            name: sumo-besu-genesis-release-name-raw-json-config
+        - name: generated-config
+          emptyDir: {}
+---
+# Source: sumo-besu-genesis/templates/genesis-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sumo-besu-genesis-cleanup
+  labels:
+    app: sumo-besu-genesis
+    chart: sumo-besu-genesis-0.1.75
+    release: release-name
+    heritage: Helm
+    namespace: default
+    app.kubernetes.io/name: sumo-besu-genesis
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: sumo-besu-genesis-0.1.75
+  namespace: default
+  annotations:
+    helm.sh/hook-weight: "0"
+    helm.sh/hook: "pre-delete"
+    helm.sh/hook-delete-policy: "hook-succeeded"
+spec:
+  backoffLimit: 3
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sumo-besu-genesis
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: sumo-besu-genesis-sa
+      restartPolicy: "Never"
+      containers:
+        - name: delete-genesis
+          image: "hyperledger/besu:22.4-openjdk-latest"
+          securityContext:
+            runAsUser: 0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - |
+              apt-get update && apt-get install -y curl
+              curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl && chmod +x ./kubectl
+              echo "Deleting genesis configmap in k8s ..."
+              ./kubectl delete configmap --namespace default sumo-besu-genesis-genesis
+              echo "Deleting validator secrets in k8s ..."
+              for f in `seq 1 4`; do
+                echo $f
+                ./kubectl delete secret besu-node-validator-${f}-keys --namespace default
+              done
+              echo "Deleting bootnode secrets in k8s ..."
+              for j in {1..2}
+              do
+                ./kubectl delete secret besu-node-bootnode-${j}-keys --namespace default
+              done
+
+              echo "Deleting node-enodes configmap in k8s ..."
+              ./kubectl delete configmap --namespace default sumo-besu-genesis-enodes
+
+              echo "Completed ..."

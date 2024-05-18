@@ -1,0 +1,165 @@
+---
+# Source: drone-runner-docker/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-drone-runner-docker
+  labels:
+    release: release-name
+    helm.sh/chart: drone-runner-docker-0.6.2
+    app.kubernetes.io/name: drone-runner-docker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: drone-runner-docker/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-drone-runner-docker
+  labels:
+    release: release-name
+    helm.sh/chart: drone-runner-docker-0.6.2
+    app.kubernetes.io/name: drone-runner-docker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8.1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  
+  DOCKER_HOST: "tcp://localhost:2375"
+  DRONE_RPC_HOST: "drone"
+  DRONE_RPC_PROTO: "http"
+---
+# Source: drone-runner-docker/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-drone-runner-docker
+  labels:
+    release: release-name
+    helm.sh/chart: drone-runner-docker-0.6.2
+    app.kubernetes.io/name: drone-runner-docker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: drone-runner-docker
+    app.kubernetes.io/instance: release-name
+---
+# Source: drone-runner-docker/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-drone-runner-docker
+  labels:
+    release: release-name
+    helm.sh/chart: drone-runner-docker-0.6.2
+    app.kubernetes.io/name: drone-runner-docker
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.8.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: drone-runner-docker
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: drone-runner-docker
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-drone-runner-docker
+      volumes:
+        - emptyDir: {}
+          name: storage
+      containers:
+        - name: dind
+          image: "docker.io/docker:20-dind"
+          imagePullPolicy: IfNotPresent
+          command:
+            - dockerd
+          args:
+            - --host
+            - tcp://localhost:2375
+          securityContext:
+            privileged: true
+          lifecycle:
+            preStop:
+              # wait for all running containers to have stopped, so the last build can finish before the runner is fully stopped.
+              exec:
+                command: ["/bin/sh","-c","while true; do sleep 60; lastEventTime=$(docker -H tcp://localhost:2375 events --since=60s --until=1s | wc -l); containersRunning=$(docker -H tcp://localhost:2375 ps -q | wc -l); if [ $containersRunning -eq 0 ]  && [ $lastEventTime -eq 0 ]; then exit 0; fi; echo 'steps/containers running, retry'; done"]
+          livenessProbe:
+            exec:
+              command:
+              - docker
+              - -H 
+              - tcp://localhost:2375
+              - images
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+              - docker
+              - -H 
+              - tcp://localhost:2375
+              - images
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - mountPath: /var/lib/docker
+              name: storage
+              subPath: docker
+        - name: gc
+          image: "docker.io/drone/gc:1.0.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: GC_CACHE
+              value: "5gb"
+            - name: GC_DEBUG
+              value: "false"
+            - name: GC_DEBUG_COLOR
+              value: "false"
+            - name: GC_DEBUG_PRETTY
+              value: "false"
+            - name: GC_IGNORE_CONTAINERS
+              value: ""
+            - name: GC_IGNORE_IMAGES
+              value: ""
+            - name: GC_INTERVAL
+              value: "5m"
+        - name: drone-runner-docker
+          image: "docker.io/drone/drone-runner-docker:1.8.1"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: release-name-drone-runner-docker
+          env:
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: DRONE_RUNNER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: tcp
+              containerPort: 3000
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: tcp
+          readinessProbe:
+            tcpSocket:
+              port: tcp
+      terminationGracePeriodSeconds: 3600

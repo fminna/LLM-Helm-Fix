@@ -1,0 +1,504 @@
+---
+# Source: llm/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vllm-scripts
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  start.sh: |
+    #!/bin/bash
+    echo "model=${MODEL_NAME}"
+    domain=${MODEL_NAME%%/*}
+    echo "domain=${domain}"
+    if [[ "${domain,,}" == "qwen" ]]; then
+      # install dependencies for qwen
+      pip install tiktoken
+    fi
+    # fix baichuan incompatible with latest transformers
+    if [[ "${domain,,}" == "baichuan-inc" ]]; then
+      pip install transformers==4.33.1 tokenizers==0.13.3
+    fi
+    country=`curl https://ifconfig.io/country_code`
+    if [ "$country" == "CN" ]; then
+      CLONE_MODEL_SCRIPT="git lfs install; git clone https://www.modelscope.cn/${MODEL_NAME}.git"
+      export MODEL_NAME="../${MODEL_NAME##*/}"
+    else
+      curl --max-time 10 https://huggingface.co/${MODEL_NAME} > /dev/null 2>&1
+      code=$?
+      if [ "$code" -ne 0 ]; then 
+        CLONE_MODEL_SCRIPT="git lfs install; git clone https://www.modelscope.cn/${MODEL_NAME}.git"
+        export MODEL_NAME="../${MODEL_NAME##*/}"
+      fi
+    fi 
+    echo "model=${MODEL_NAME}"
+    if [ -n "$CLONE_MODEL_SCRIPT" ]; then
+      bash -c "$CLONE_MODEL_SCRIPT"
+    fi
+    ordinal=${KB_POD_NAME##*-}
+    echo "current pod ordinal: $ordinal"
+    if [ $ordinal -eq 0 ]; then
+      /scripts/vllm-start.sh &
+      /scripts/ray-health-checker.sh &
+      ray start --head --block
+    else 
+      ray start --address="${KB_VLLM_0_HOSTNAME}:6379" --block
+    fi
+  vllm-start.sh: |
+    #!/bin/bash
+    echo "model=${MODEL_NAME}"
+    echo "EXTRA_ARGS=${EXTRA_ARGS}"
+    cd vllm
+    echo "model=${MODEL_NAME}" > log
+    # wait for ray start 
+    sleep 3
+    while true; do
+      node_num=`ray status | grep "1 node" | wc -l`
+      # continue waiting if ray status not ok
+      if [[ "$node_num" -ne "$KB_VLLM_N" ]]; then 
+        sleep 1
+        continue
+      fi
+      python -m vllm.entrypoints.api_server --host 0.0.0.0 --port 8000 --model ${MODEL_NAME} --gpu-memory-utilization 0.95 --max-num-seqs 512 --tensor-parallel-size ${KB_VLLM_N} ${EXTRA_ARGS} 2>&1 > log 
+      code=$?
+      if [ $code -eq 0 ]; then
+        break
+      fi
+      echo "exit with code $code, wait for 1 second and try again..." 2>&1 > log
+      sleep 1
+    done
+  ray-health-checker.sh: |
+    #!/bin/bash
+    # wait ray to start when first run
+    sleep 10 
+    while true; do
+      node_num=`ray status | grep "1 node" | wc -l`
+      if [[ "$node_num" -ne "$KB_VLLM_N" ]]; then 
+        # if ray nodes not healthy, restart vllm
+        vllm_pid=`ps aux | grep "python -m vllm.entrypoints.api_server" | grep -v grep | awk '{print $2}'`
+        if [[ "$vllm_pid" ]]; then 
+          kill -9 "$vllm_pid"
+        fi
+      fi
+      sleep 3
+    done
+---
+# Source: llm/templates/scripts.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ggml-scripts
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  start.sh: |
+    #!/bin/bash
+    if [ -n "$MODEL_URL" ]; then 
+      apt-get install wget -y
+      wget "$MODEL_URL" -O model.gguf
+    fi
+    if [[ -f "$MODEL" ]]; then
+      # if model file already exists, just run the server
+      sh /app/docker/simple/run.sh
+      exit 0
+    fi
+    # download model from remote
+    # if MODEL_URL configured, download model from it
+    if [ -n "$MODEL_URL" ]; then 
+      apt-get install wget -y
+      wget "$MODEL_URL" -O model.gguf
+      sh /app/docker/simple/run.sh
+      exit 0
+    fi
+    # if MODEL_NAME and QUANTIZE configured, try to build a hugging face url from it.
+    if [ -n "$MODEL_NAME" ] && [ -n "$QUANTIZE" ]; then
+      url="https://huggingface.co/$MODEL_NAME/resolve/main/$QUANTIZE.gguf"
+      wget "$url" -O model.gguf
+      sh /app/docker/simple/run.sh
+      exit 0
+    fi
+    echo "Warning: model$MODEL not found"
+    echo "try to download default model vicuna-7b-v1.5.Q2_K.gguf"
+    default_url="https://huggingface.co/TheBloke/vicuna-7B-v1.5-GGUF/resolve/main/vicuna-7b-v1.5.Q2_K.gguf"
+    apt-get install wget -y
+    wget "$default_url" -O model.gguf
+    sh /app/docker/simple/run.sh
+---
+# Source: llm/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: vllm
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  componentDefs:
+    - name: vllm
+      workloadType: Stateful
+      characterType: vllm
+      scriptSpecs:
+        - name: vllm-scripts
+          templateRef: vllm-scripts
+          namespace: default
+          volumeName: scripts
+          defaultMode: 493
+      service:
+        ports:
+          - name: model
+            port: 8000
+            targetPort: model
+      podSpec:
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+          - name: model-store
+            emptyDir: {}
+        containers:
+          - name: vllm
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              runAsUser: 0
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - mountPath: /llm/config/
+                name: config
+              - name: scripts
+                mountPath: /scripts
+              - mountPath: /llm/storage
+                name: model-store
+            command:
+              - /scripts/start.sh
+            ports:
+              - name: model
+                containerPort: 8000
+  connectionCredential:
+    username: root
+    password: ""
+---
+# Source: llm/templates/clusterdefinition.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: ggml
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  componentDefs:
+    - name: ggml
+      workloadType: Stateful
+      characterType: ggml
+      scriptSpecs:
+        - name: ggml-scripts
+          templateRef: ggml-scripts
+          namespace: default
+          volumeName: scripts
+          defaultMode: 493
+      service:
+        ports:
+          - name: model
+            port: 8000
+            targetPort: model
+      podSpec:
+        volumes:
+          - name: models
+            emptyDir: {}
+        containers:
+          - name: ggml
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              runAsUser: 0
+              privileged: true
+              allowPrivilegeEscalation: true
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+            command:
+              - /scripts/start.sh
+            ports:
+              - name: model
+                containerPort: 8000
+  connectionCredential:
+    username: root
+    password: ""
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: vllm-latest
+  annotations:
+    kubeblocks.io/is-default-cluster-version: "true"
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: vllm
+  componentVersions:
+    - componentDefRef: vllm
+      versionsContext:
+        containers:
+          - name: vllm
+            image:  infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/vllm:v0.2.7-amd64
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-default
+  annotations:
+    kubeblocks.io/is-default-cluster-version: "true"
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-new
+            env:
+              - name: MODEL
+                value: /app/model.gguf
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-baichuan-7b-q4
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/baichuan-llama-7b:ggmlv3.q4_0
+            command: ["sh", "-c", "cp /models/baichuan-llama-7b.ggmlv3.q4_0.bin /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest
+            env:
+              - name: MODEL
+                value: /models/baichuan-llama-7b.ggmlv3.q4_0.bin
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-baichuan2-13b-q4
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/baichuan2-13b-gguf:ggml-model-q4
+            command: ["sh", "-c", "cp /models/ggml-model-q4.gguf /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-new
+            env:
+              - name: MODEL
+                value: /models/ggml-model-q4.gguf
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-replit-code-3b-f16
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/replit-code-3b:ggml-model-f16
+            command: ["sh", "-c", "cp /models/ggml-model-f16.gguf /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-new
+            env:
+              - name: MODEL
+                value: /models/ggml-model-f16.gguf
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-codeshell-7b-chat-q4
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/codeshell-7b-chat:codeshell-chat-q4_0
+            command: ["sh", "-c", "cp /models/codeshell-chat-q4_0.gguf /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-codeshell
+            env:
+              - name: MODEL
+                value: /models/codeshell-chat-q4_0.gguf
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-baichuan2-7b-4q
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/baichuan2-7b-gguf:ggml-model-q4
+            command: ["sh", "-c", "cp /models/ggml-model-q4.gguf /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-new
+            env:
+                - name: MODEL
+                  value: /models/ggml-model-q4.gguf
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts
+---
+# Source: llm/templates/clusterversion.yaml
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterVersion
+metadata:
+  name: ggml-zephyr-beta-7b-q4
+  labels:
+    helm.sh/chart: llm-0.9.0
+    app.kubernetes.io/name: llm
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.16.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterDefinitionRef: ggml
+  componentVersions:
+    - componentDefRef: ggml
+      versionsContext:
+        initContainers:
+          - name: download
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/zephyr-7b-beta-gguf:q4_0
+            command: ["sh", "-c", "cp /models/ggml-model-q4.gguf /models-target/"]
+            volumeMounts:
+              - name: models
+                mountPath: /models-target
+        containers:
+          - name: ggml
+            image: infracreate-registry.cn-zhangjiakou.cr.aliyuncs.com/apecloud/llama-cpp-python:latest-new
+            env:
+                - name: MODEL
+                  value: /models/ggml-model-q4.gguf
+            volumeMounts:
+              - name: models
+                mountPath: /models
+              - name: scripts
+                mountPath: /scripts

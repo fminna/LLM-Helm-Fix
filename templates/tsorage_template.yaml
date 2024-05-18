@@ -1,0 +1,1171 @@
+---
+# Source: tsorage/charts/kafka/charts/zookeeper/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-zookeeper
+  labels:
+    app: zookeeper
+    chart: zookeeper-2.1.0
+    release: release-name
+    heritage: Helm
+    component: server
+spec:
+  selector:
+    matchLabels:
+      app: zookeeper
+      release: release-name
+      component: server
+  maxUnavailable: 1
+---
+# Source: tsorage/charts/kafka/charts/zookeeper/templates/config-script.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zookeeper
+  labels:
+    app: zookeeper
+    chart: zookeeper-2.1.0
+    release: release-name
+    heritage: Helm
+    component: server
+data:
+    ok: |
+      #!/bin/sh
+      echo ruok | nc 127.0.0.1 ${1:-2181}
+
+    ready: |
+      #!/bin/sh
+      echo ruok | nc 127.0.0.1 ${1:-2181}
+
+    run: |
+      #!/bin/bash
+
+      set -a
+      ROOT=$(echo /apache-zookeeper-*)
+
+      ZK_USER=${ZK_USER:-"zookeeper"}
+      ZK_LOG_LEVEL=${ZK_LOG_LEVEL:-"INFO"}
+      ZK_DATA_DIR=${ZK_DATA_DIR:-"/data"}
+      ZK_DATA_LOG_DIR=${ZK_DATA_LOG_DIR:-"/data/log"}
+      ZK_CONF_DIR=${ZK_CONF_DIR:-"/conf"}
+      ZK_CLIENT_PORT=${ZK_CLIENT_PORT:-2181}
+      ZK_SERVER_PORT=${ZK_SERVER_PORT:-2888}
+      ZK_ELECTION_PORT=${ZK_ELECTION_PORT:-3888}
+      ZK_TICK_TIME=${ZK_TICK_TIME:-2000}
+      ZK_INIT_LIMIT=${ZK_INIT_LIMIT:-10}
+      ZK_SYNC_LIMIT=${ZK_SYNC_LIMIT:-5}
+      ZK_HEAP_SIZE=${ZK_HEAP_SIZE:-2G}
+      ZK_MAX_CLIENT_CNXNS=${ZK_MAX_CLIENT_CNXNS:-60}
+      ZK_MIN_SESSION_TIMEOUT=${ZK_MIN_SESSION_TIMEOUT:- $((ZK_TICK_TIME*2))}
+      ZK_MAX_SESSION_TIMEOUT=${ZK_MAX_SESSION_TIMEOUT:- $((ZK_TICK_TIME*20))}
+      ZK_SNAP_RETAIN_COUNT=${ZK_SNAP_RETAIN_COUNT:-3}
+      ZK_PURGE_INTERVAL=${ZK_PURGE_INTERVAL:-0}
+      ID_FILE="$ZK_DATA_DIR/myid"
+      ZK_CONFIG_FILE="$ZK_CONF_DIR/zoo.cfg"
+      LOG4J_PROPERTIES="$ZK_CONF_DIR/log4j.properties"
+      HOST=$(hostname)
+      DOMAIN=`hostname -d`
+      ZOOCFG=zoo.cfg
+      ZOOCFGDIR=$ZK_CONF_DIR
+      JVMFLAGS="-Xmx$ZK_HEAP_SIZE -Xms$ZK_HEAP_SIZE"
+
+      APPJAR=$(echo $ROOT/*jar)
+      CLASSPATH="${ROOT}/lib/*:${APPJAR}:${ZK_CONF_DIR}:"
+
+      if [[ $HOST =~ (.*)-([0-9]+)$ ]]; then
+          NAME=${BASH_REMATCH[1]}
+          ORD=${BASH_REMATCH[2]}
+          MY_ID=$((ORD+1))
+      else
+          echo "Failed to extract ordinal from hostname $HOST"
+          exit 1
+      fi
+
+      mkdir -p $ZK_DATA_DIR
+      mkdir -p $ZK_DATA_LOG_DIR
+      echo $MY_ID >> $ID_FILE
+
+      echo "clientPort=$ZK_CLIENT_PORT" >> $ZK_CONFIG_FILE
+      echo "dataDir=$ZK_DATA_DIR" >> $ZK_CONFIG_FILE
+      echo "dataLogDir=$ZK_DATA_LOG_DIR" >> $ZK_CONFIG_FILE
+      echo "tickTime=$ZK_TICK_TIME" >> $ZK_CONFIG_FILE
+      echo "initLimit=$ZK_INIT_LIMIT" >> $ZK_CONFIG_FILE
+      echo "syncLimit=$ZK_SYNC_LIMIT" >> $ZK_CONFIG_FILE
+      echo "maxClientCnxns=$ZK_MAX_CLIENT_CNXNS" >> $ZK_CONFIG_FILE
+      echo "minSessionTimeout=$ZK_MIN_SESSION_TIMEOUT" >> $ZK_CONFIG_FILE
+      echo "maxSessionTimeout=$ZK_MAX_SESSION_TIMEOUT" >> $ZK_CONFIG_FILE
+      echo "autopurge.snapRetainCount=$ZK_SNAP_RETAIN_COUNT" >> $ZK_CONFIG_FILE
+      echo "autopurge.purgeInterval=$ZK_PURGE_INTERVAL" >> $ZK_CONFIG_FILE
+      echo "4lw.commands.whitelist=*" >> $ZK_CONFIG_FILE
+
+      for (( i=1; i<=$ZK_REPLICAS; i++ ))
+      do
+          echo "server.$i=$NAME-$((i-1)).$DOMAIN:$ZK_SERVER_PORT:$ZK_ELECTION_PORT" >> $ZK_CONFIG_FILE
+      done
+
+      rm -f $LOG4J_PROPERTIES
+
+      echo "zookeeper.root.logger=$ZK_LOG_LEVEL, CONSOLE" >> $LOG4J_PROPERTIES
+      echo "zookeeper.console.threshold=$ZK_LOG_LEVEL" >> $LOG4J_PROPERTIES
+      echo "zookeeper.log.threshold=$ZK_LOG_LEVEL" >> $LOG4J_PROPERTIES
+      echo "zookeeper.log.dir=$ZK_DATA_LOG_DIR" >> $LOG4J_PROPERTIES
+      echo "zookeeper.log.file=zookeeper.log" >> $LOG4J_PROPERTIES
+      echo "zookeeper.log.maxfilesize=256MB" >> $LOG4J_PROPERTIES
+      echo "zookeeper.log.maxbackupindex=10" >> $LOG4J_PROPERTIES
+      echo "zookeeper.tracelog.dir=$ZK_DATA_LOG_DIR" >> $LOG4J_PROPERTIES
+      echo "zookeeper.tracelog.file=zookeeper_trace.log" >> $LOG4J_PROPERTIES
+      echo "log4j.rootLogger=\${zookeeper.root.logger}" >> $LOG4J_PROPERTIES
+      echo "log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender" >> $LOG4J_PROPERTIES
+      echo "log4j.appender.CONSOLE.Threshold=\${zookeeper.console.threshold}" >> $LOG4J_PROPERTIES
+      echo "log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout" >> $LOG4J_PROPERTIES
+      echo "log4j.appender.CONSOLE.layout.ConversionPattern=%d{ISO8601} [myid:%X{myid}] - %-5p [%t:%C{1}@%L] - %m%n" >> $LOG4J_PROPERTIES
+
+      if [ -n "$JMXDISABLE" ]
+      then
+          MAIN=org.apache.zookeeper.server.quorum.QuorumPeerMain
+      else
+          MAIN="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=$JMXPORT -Dcom.sun.management.jmxremote.authenticate=$JMXAUTH -Dcom.sun.management.jmxremote.ssl=$JMXSSL -Dzookeeper.jmx.log4j.disable=$JMXLOG4J org.apache.zookeeper.server.quorum.QuorumPeerMain"
+      fi
+
+      set -x
+      exec java -cp "$CLASSPATH" $JVMFLAGS $MAIN $ZK_CONFIG_FILE
+---
+# Source: tsorage/charts/kafka/templates/configmap-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    helm.sh/chart: kafka-0.20.8
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka-config
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+  name: release-name-kafka-config
+data:
+  runtimeConfig.sh: |
+    #!/bin/bash
+    set -e
+    cd /usr/bin
+    until kafka-configs --zookeeper release-name-zookeeper:2181 --entity-type topics --describe || (( count++ >= 6 ))
+    do
+      echo "Waiting for Zookeeper..."
+      sleep 20
+    done
+    until nc -z release-name-kafka 9092 || (( retries++ >= 6 ))
+    do
+      echo "Waiting for Kafka..."
+      sleep 20
+    done
+    echo "Applying runtime configuration using confluentinc/cp-kafka:5.0.1"
+    cat << EOF > raw-increase-replication-factor.json
+      {"version":1, "partitions":[
+          {"topic":"raw","partition":0,"replicas":[0,1,2]},
+          {"topic":"raw","partition":1,"replicas":[0,1,2]},
+          {"topic":"raw","partition":2,"replicas":[0,1,2]},
+          {"topic":"raw","partition":3,"replicas":[0,1,2]},
+          {"topic":"raw","partition":4,"replicas":[0,1,2]},
+          {"topic":"raw","partition":5,"replicas":[0,1,2]},
+          {"topic":"raw","partition":6,"replicas":[0,1,2]},
+          {"topic":"raw","partition":7,"replicas":[0,1,2]},
+          {"topic":"raw","partition":8,"replicas":[0,1,2]},
+          {"topic":"raw","partition":9,"replicas":[0,1,2]},
+          {"topic":"raw","partition":10,"replicas":[0,1,2]},
+          {"topic":"raw","partition":11,"replicas":[0,1,2]},
+          {"topic":"raw","partition":12,"replicas":[0,1,2]},
+          {"topic":"raw","partition":13,"replicas":[0,1,2]},
+          {"topic":"raw","partition":14,"replicas":[0,1,2]},
+          {"topic":"raw","partition":15,"replicas":[0,1,2]},
+          {"topic":"raw","partition":16,"replicas":[0,1,2]},
+          {"topic":"raw","partition":17,"replicas":[0,1,2]},
+          {"topic":"raw","partition":18,"replicas":[0,1,2]},
+          {"topic":"raw","partition":19,"replicas":[0,1,2]},
+          {"topic":"raw","partition":20,"replicas":[0,1,2]},
+          {"topic":"raw","partition":21,"replicas":[0,1,2]},
+          {"topic":"raw","partition":22,"replicas":[0,1,2]},
+          {"topic":"raw","partition":23,"replicas":[0,1,2]},
+          {"topic":"raw","partition":24,"replicas":[0,1,2]},
+          {"topic":"raw","partition":25,"replicas":[0,1,2]},
+          {"topic":"raw","partition":26,"replicas":[0,1,2]},
+          {"topic":"raw","partition":27,"replicas":[0,1,2]},
+          {"topic":"raw","partition":28,"replicas":[0,1,2]},
+          {"topic":"raw","partition":29,"replicas":[0,1,2]},
+          {"topic":"raw","partition":30,"replicas":[0,1,2]},
+          {"topic":"raw","partition":31,"replicas":[0,1,2]}
+      ]}
+    EOF
+    kafka-reassign-partitions --zookeeper release-name-zookeeper:2181 --reassignment-json-file raw-increase-replication-factor.json --execute
+    kafka-reassign-partitions --zookeeper release-name-zookeeper:2181 --reassignment-json-file raw-increase-replication-factor.json --verify
+    kafka-configs --zookeeper release-name-zookeeper:2181 --entity-type topics --entity-name raw --alter --force --add-config cleanup.policy=compact,delete.retention.ms=43200000
+    kafka-configs --zookeeper release-name-zookeeper:2181 --entity-type topics --entity-name raw --describe
+---
+# Source: tsorage/templates/hub.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-tsorage-hub-config
+  labels:
+    app: tsorage
+    chart: tsorage-0.4.11
+    release: "release-name"
+    heritage: "Helm"
+data:
+  hub.conf: |
+    host = 0.0.0.0
+    port = 8081
+    backend {
+      name = "mockup"
+    }
+
+    sharder = "month"
+
+    cassandra {
+        nodes = [
+            {
+                host = tsorage-cassandra.default.svc.cluster.local
+                port = 9042
+            }
+        ]
+
+        security = {
+          type = "password"
+          login = "cassandra"
+          password = "cassandra"
+        }
+
+        keyspaces {
+            raw = "tsorage_ts"
+            other = "tsorage"
+        }
+    }
+
+    api {
+      prefix = "/api/v1"
+      version = "v1"
+    }
+---
+# Source: tsorage/templates/ingestion.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-tsorage-ingestion-config
+  labels:
+    app: tsorage
+    chart: tsorage-0.4.11
+    release: "release-name"
+    heritage: "Helm"
+data:
+  ingestion.conf: |
+    sources = [
+      {
+       type = "flow/http/json"
+       host = 0.0.0.0
+       port = 8081
+      },
+      {
+        type = "flow/mqtt/json"
+        host = 0.0.0.0
+        port = 1883
+        max_connections = 50
+        buffer_size = 1000
+        channel = "inbox-json"
+        security = {"type":"anonymous"}
+      },
+    ]
+    sinks = [
+        {
+          type = "flow/kafka/json",
+          topic = "raw",
+          nodes = [
+              {
+              host = "tsorage-kafka.default.svc.cluster.local"
+              port = 9092
+              }
+          ],
+          security = {
+              type = "anonymous"
+          }
+        }
+    ]
+---
+# Source: tsorage/templates/ingestion.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-tsorage-mosquitto-config
+  labels:
+    app: tsorage
+    chart: tsorage-0.4.11
+    release: "release-name"
+    heritage: "Helm"
+data:
+  mosquitto.conf: |-
+    persistence true
+    persistence_location /mosquitto/data/
+    log_dest stdout
+    log_dest file /mosquitto/log/mosquitto.log
+    listener 1883
+    listener 9001
+    protocol mqtt
+---
+# Source: tsorage/templates/processor.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-tsorage-processor-config
+  labels:
+    app: tsorage
+    chart: tsorage-0.4.11
+    release: "release-name"
+    heritage: "Helm"
+data:
+  processor.conf: |
+    source = {
+      type = "flow/kafka/json",
+      topic = "raw",
+      nodes = [
+          {
+            host = "tsorage-kafka.default.svc.cluster.local"
+            port = 9092
+          }
+      ],
+      security = {
+          type = "anonymous"
+      }
+    }
+    cassandra = {
+      nodes = [
+          {
+            host = "tsorage-cassandra.default.svc.cluster.local"
+            port = 9042
+          }
+      ]
+      keyspaces {
+        raw = "tsorage_ts"
+        aggregated = "tsorage"
+      }
+      security = {
+        type = "password"
+        login = "cassandra"
+        password = "cassandra"
+      }
+    }
+    aggregators = ["1m","1h","1d"]
+    parallelism = 8
+    sharder = month
+    grouper = {"duration":10,"duration_unit":"minutes","size":1000}
+---
+# Source: tsorage/charts/cassandra/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-0.13.4
+    release: release-name
+    heritage: Helm
+spec:
+  clusterIP: None
+  type: ClusterIP
+  ports:
+  - name: intra
+    port: 7000
+    targetPort: 7000
+  - name: tls
+    port: 7001
+    targetPort: 7001
+  - name: jmx
+    port: 7199
+    targetPort: 7199
+  - name: cql
+    port: 9042
+    targetPort: 9042
+  - name: thrift
+    port: 9160
+    targetPort: 9160
+  selector:
+    app: cassandra
+    release: release-name
+---
+# Source: tsorage/charts/kafka/charts/zookeeper/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper-headless
+  labels:
+    app: zookeeper
+    chart: zookeeper-2.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  clusterIP: None
+  ports:
+    - name: client
+      port: 2181
+      targetPort: client
+      protocol: TCP
+    - name: election
+      port: 3888
+      targetPort: election
+      protocol: TCP
+    - name: server
+      port: 2888
+      targetPort: server
+      protocol: TCP
+  selector:
+    app: zookeeper
+    release: release-name
+---
+# Source: tsorage/charts/kafka/charts/zookeeper/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper
+  labels:
+    app: zookeeper
+    chart: zookeeper-2.1.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: client
+      port: 2181
+      protocol: TCP
+      targetPort: client
+  selector:
+    app: zookeeper
+    release: release-name
+---
+# Source: tsorage/charts/kafka/templates/service-brokers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka
+  labels:
+    helm.sh/chart: kafka-0.20.8
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka-broker
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+spec:
+  ports:
+  - name: broker
+    port: 9092
+    targetPort: kafka
+  selector:
+    app.kubernetes.io/component: kafka-broker
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+---
+# Source: tsorage/charts/kafka/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka-headless
+  labels:
+    helm.sh/chart: kafka-0.20.8
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka-broker
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  ports:
+  - name: broker
+    port: 9092
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: kafka-broker
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+---
+# Source: tsorage/templates/hub.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-tsorage-hub
+  labels:
+    app.kubernetes.io/name: tsorage-hub
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: tsorage-hub
+    app.kubernetes.io/instance: release-name
+---
+# Source: tsorage/templates/ingestion.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-tsorage-ingestion-http
+  labels:
+    app.kubernetes.io/name: tsorage-ingestion-http
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8081
+      targetPort: http-8081
+      protocol: TCP
+      name: http-8081
+  selector:
+    app.kubernetes.io/name: tsorage-ingestion
+    app.kubernetes.io/instance: release-name
+---
+# Source: tsorage/templates/ingestion.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-tsorage-ingestion-mqtt
+  labels:
+    app.kubernetes.io/name: tsorage-ingestion-mqtt
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 1883
+      targetPort: mqtt-1883
+      protocol: TCP
+      name: mqtt-1883
+    - port: 9001
+      targetPort: mqtt-websockets
+      protocol: TCP
+      name: mqtt-websockets
+  selector:
+    app.kubernetes.io/name: tsorage-ingestion
+    app.kubernetes.io/instance: release-name
+---
+# Source: tsorage/templates/hub.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-tsorage-hub
+  labels:
+    app.kubernetes.io/name: tsorage-hub
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tsorage-hub
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tsorage-hub
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: tsorage
+          image: "ceticasbl/tsorage-hub:1.0.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          volumeMounts:
+            - name: config-vol
+              mountPath: /var/config/hub/
+          resources:
+            {}
+      initContainers:
+        - name: wait-for-cassandra
+          image: roffe/kubectl:v1.13.2
+          command: ['sh','-c']
+          args:
+            - while [ -z "$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}")" ];
+              do echo Cassandra 0/$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") && sleep 1;
+              done;
+              while [[ $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") ]];
+              do echo Cassandra $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") && sleep 1;
+              done
+          #command: ['sh','-c','while [[ $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") ]];do echo Kafka $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;done']
+      volumes:
+        - name: config-vol
+          configMap:
+            name: release-name-tsorage-hub-config
+            items:
+              - key: hub.conf
+                path: hub.conf
+---
+# Source: tsorage/templates/ingestion.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-tsorage-ingestion
+  labels:
+    app.kubernetes.io/name: tsorage-ingestion
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tsorage-ingestion
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tsorage-ingestion
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: tsorage
+          image: "ceticasbl/tsorage-ingestion:1.0.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-8081
+              containerPort: 8081
+              protocol: TCP
+          volumeMounts:
+            - name: config-vol
+              mountPath: /var/config/ingestion/
+          resources:
+            {}
+        - name: tsorage-mosquitto
+          image: "eclipse-mosquitto:1.6.10"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mqtt-1883
+              containerPort: 1883
+              protocol: TCP
+            - name: mqtt-websockets
+              containerPort: 9001
+              protocol: TCP
+          volumeMounts:
+            - name: mosquitto-config-vol
+              mountPath: /mosquitto/config/mosquitto.conf
+              subPath: mosquitto.conf
+              readOnly: true
+            - name: mosquitto-data-vol
+              mountPath: /mosquitto/data
+              subPath: mosquitto/data
+            - name: mosquitto-log-vol
+              mountPath: /mosquitto/log
+              subPath: mosquitto/log
+          resources:
+            {}
+      initContainers:
+        - name: init-wait-for-kafka
+          image: roffe/kubectl:v1.13.2
+          command: ['sh','-c']
+          args:
+            - while [ -z "$(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")" ];
+              do echo Kafka 0/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;
+              done;
+              while [[ $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") ]];
+              do echo Kafka $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;
+              done
+          #command: ['sh','-c','while [[ $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") ]];do echo Kafka $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;done']
+      volumes:
+        - name: config-vol
+          configMap:
+            name: release-name-tsorage-ingestion-config
+            items:
+              - key: ingestion.conf
+                path: ingestion.conf
+        - name: mosquitto-config-vol
+          configMap:
+            name: release-name-tsorage-mosquitto-config
+            items:
+              - key: mosquitto.conf
+                path: mosquitto.conf
+        - name: mosquitto-data-vol
+          emptyDir: {}
+        - name: mosquitto-log-vol
+          emptyDir: {}
+---
+# Source: tsorage/templates/processor.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-tsorage-processor
+  labels:
+    app.kubernetes.io/name: tsorage-processor
+    helm.sh/chart: tsorage-0.4.11
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tsorage-processor
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tsorage-processor
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+        - name: tsorage
+          image: "ceticasbl/tsorage-processor:1.0.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+          volumeMounts:
+            - name: config-vol
+              mountPath: /var/config/processor/
+          resources:
+            {}
+      initContainers:
+        - name: wait-for-kafka
+          image: roffe/kubectl:v1.13.2
+          command: ['sh','-c']
+          args:
+            - while [ -z "$(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")" ];
+              do echo Kafka 0/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;
+              done;
+              while [[ $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") ]];
+              do echo Kafka $(kubectl get statefulset tsorage-kafka -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-kafka -o "jsonpath={.spec.replicas}") && sleep 1;
+              done
+        - name: wait-for-cassandra
+          image: roffe/kubectl:v1.13.2
+          command: ['sh','-c']
+          args:
+            - while [ -z "$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}")" ];
+              do echo Cassandra 0/$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") && sleep 1;
+              done;
+              while [[ $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}") != $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") ]];
+              do echo Cassandra $(kubectl get statefulset tsorage-cassandra -o "jsonpath={.status.readyReplicas}")/$(kubectl get statefulset tsorage-cassandra -o "jsonpath={.spec.replicas}") && sleep 1;
+              done
+      volumes:
+        - name: config-vol
+          configMap:
+            name: release-name-tsorage-processor-config
+            items:
+              - key: processor.conf
+                path: processor.conf
+---
+# Source: tsorage/charts/cassandra/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-cassandra
+  labels:
+    app: cassandra
+    chart: cassandra-0.13.4
+    release: release-name
+    heritage: Helm
+spec:
+  selector:
+    matchLabels:
+      app: cassandra
+      release: release-name
+  serviceName: release-name-cassandra
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        app: cassandra
+        release: release-name
+    spec:
+      hostNetwork: false
+      containers:
+      - name: release-name-cassandra
+        image: "cassandra:3.11.5"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          {}
+        env:
+        - name: CASSANDRA_SEEDS
+          value: "release-name-cassandra-0.release-name-cassandra.default.svc.cluster.local,release-name-cassandra-1.release-name-cassandra.default.svc.cluster.local"
+        - name: MAX_HEAP_SIZE
+          value: "2048M"
+        - name: HEAP_NEWSIZE
+          value: "512M"
+        - name: CASSANDRA_ENDPOINT_SNITCH
+          value: "SimpleSnitch"
+        - name: CASSANDRA_CLUSTER_NAME
+          value: "cassandra"
+        - name: CASSANDRA_DC
+          value: "DC1"
+        - name: CASSANDRA_RACK
+          value: "RAC1"
+        - name: CASSANDRA_START_RPC
+          value: "false"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        livenessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status" ]
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: [ "/bin/sh", "-c", "nodetool status | grep -E \"^UN\\s+${POD_IP}\"" ]
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        ports:
+        - name: intra
+          containerPort: 7000
+        - name: tls
+          containerPort: 7001
+        - name: jmx
+          containerPort: 7199
+        - name: cql
+          containerPort: 9042
+        - name: thrift
+          containerPort: 9160
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/cassandra
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: cassandra
+        release: release-name
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "80Gi"
+---
+# Source: tsorage/charts/kafka/charts/zookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zookeeper
+  labels:
+    app: zookeeper
+    chart: zookeeper-2.1.0
+    release: release-name
+    heritage: Helm
+    component: server
+spec:
+  serviceName: release-name-zookeeper-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zookeeper
+      release: release-name
+      component: server
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+        release: release-name
+        component: server
+    spec:
+      terminationGracePeriodSeconds: 1800
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      containers:
+
+        - name: zookeeper
+          image: "zookeeper:3.5.5"
+          imagePullPolicy: IfNotPresent
+          command: 
+             - "/bin/bash"
+             - "-xec"
+             - "/config-scripts/run"
+          ports:
+            - name: client
+              containerPort: 2181
+              protocol: TCP
+            - name: election
+              containerPort: 3888
+              protocol: TCP
+            - name: server
+              containerPort: 2888
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - /config-scripts/ok
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - /config-scripts/ready
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+          env:
+            - name: ZK_REPLICAS
+              value: "3"
+            - name: JMXAUTH
+              value: "false"
+            - name: JMXDISABLE
+              value: "false"
+            - name: JMXPORT
+              value: "1099"
+            - name: JMXSSL
+              value: "false"
+            - name: ZK_HEAP_SIZE
+              value: "1G"
+            - name: ZK_SYNC_LIMIT
+              value: "10"
+            - name: ZK_TICK_TIME
+              value: "2000"
+            - name: ZOO_AUTOPURGE_PURGEINTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_SNAPRETAINCOUNT
+              value: "3"
+            - name: ZOO_INIT_LIMIT
+              value: "5"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_PORT
+              value: "2181"
+            - name: ZOO_STANDALONE_ENABLED
+              value: "false"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+          resources:
+            {}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config-scripts
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-zookeeper
+            defaultMode: 0555
+        - name: data
+          emptyDir: {}
+---
+# Source: tsorage/charts/kafka/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-kafka
+  labels:
+    helm.sh/chart: kafka-0.20.8
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka-broker
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: kafka-broker
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-kafka-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: kafka-0.20.8
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: kafka-broker
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/instance: release-name
+    spec:
+      containers:
+      - name: kafka-broker
+        image: "confluentinc/cp-kafka:5.0.1"
+        imagePullPolicy: "IfNotPresent"
+        livenessProbe:
+          exec:
+            command:
+              - sh
+              - -ec
+              - /usr/bin/jps | /bin/grep -q SupportedKafka
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          tcpSocket:
+            port: kafka
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        ports:
+        - containerPort: 9092
+          name: kafka
+        resources:
+          {}
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: KAFKA_HEAP_OPTS
+          value: -Xmx1G -Xms1G
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: "3"
+        - name: KAFKA_ZOOKEEPER_CONNECT
+          value: "release-name-zookeeper:2181"
+        - name: KAFKA_LOG_DIRS
+          value: "/opt/kafka/data/logs"
+        - name: "KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE"
+          value: "false"
+        - name: KAFKA_JMX_PORT
+          value: "5555"
+        # This is required because the Downward API does not yet support identification of
+        # pod numbering in statefulsets. Thus, we are required to specify a command which
+        # allows us to extract the pod ID for usage as the Kafka Broker ID.
+        # See: https://github.com/kubernetes/kubernetes/issues/31218
+        command:
+        - sh
+        - -exc
+        - |
+          unset KAFKA_PORT && \
+          export KAFKA_BROKER_ID=${POD_NAME##*-} && \
+          export KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://${POD_NAME}.release-name-kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9092 && \
+          exec /etc/confluent/docker/run
+        volumeMounts:
+        - name: datadir
+          mountPath: "/opt/kafka/data"
+      volumes:
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+# Source: tsorage/charts/kafka/templates/job-config.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-kafka-config-793b3c0c"
+  labels:
+    helm.sh/chart: kafka-0.20.8
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka-config
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: kafka-config
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/instance: release-name
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: config-volume
+          configMap:
+            name: release-name-kafka-config
+            defaultMode: 0744
+      containers:
+        - name: release-name-kafka-config
+          image: "confluentinc/cp-kafka:5.0.1"
+          command: ["/usr/local/script/runtimeConfig.sh"]
+          volumeMounts:
+            - name: config-volume
+              mountPath: "/usr/local/script"
+---
+# Source: tsorage/templates/ingestion.yaml
+---
+---
+# Source: tsorage/templates/rbac.yaml
+apiVersion: v1
+kind: List
+items:
+  #define the rights
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: release-name-cr
+    rules:
+      - apiGroups:
+          - "apps"
+        resources:
+          - deployments
+          - statefulsets
+        verbs:
+          - get
+          - list
+  #link the ClusterRole to the namespace
+  - apiVersion: rbac.authorization.k8s.io/v1beta1
+    kind: ClusterRoleBinding
+    metadata:
+      name: release-name-crb
+    subjects:
+      - kind: ServiceAccount
+        name: default
+        namespace: default
+    roleRef:
+      kind: ClusterRole
+      name: release-name-cr
+      apiGroup: rbac.authorization.k8s.io
+---
+# Source: tsorage/charts/kafka/templates/tests/test_topic_create_consume_produce.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-test-topic-create-consume-produce"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+  - name: release-name-test-consume
+    image: confluentinc/cp-kafka:5.0.1
+    command:
+    - sh
+    - -c
+    - |
+      # Create the topic
+      kafka-topics --zookeeper release-name-zookeeper:2181 --topic helm-test-topic-create-consume-produce --create --partitions 1 --replication-factor 1 --if-not-exists && \
+      # Create a message
+      MESSAGE="`date -u`" && \
+      # Produce a test message to the topic
+      echo "$MESSAGE" | kafka-console-producer --broker-list release-name-kafka:9092 --topic helm-test-topic-create-consume-produce && \
+      # Consume a test message from the topic
+      kafka-console-consumer --bootstrap-server release-name-kafka-headless:9092 --topic helm-test-topic-create-consume-produce --from-beginning --timeout-ms 2000 --max-messages 1 | grep "$MESSAGE"
+  restartPolicy: Never

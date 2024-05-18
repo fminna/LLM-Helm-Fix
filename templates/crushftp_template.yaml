@@ -1,0 +1,213 @@
+---
+# Source: crushftp/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-crushftp
+  labels:
+    helm.sh/chart: crushftp-0.0.4
+    app.kubernetes.io/name: crushftp
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "11.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: crushftp/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: initial-crushadmin-password
+type: Opaque
+# immutable: true
+data:
+  password: "UVpJall2ZXRFQ2FsdEZkaTJ0azQ="
+---
+# Source: crushftp/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crushftp-configmap
+  labels:
+    app: release-name-crushftp
+data:
+  _logging_provider.txt: crushftp.handlers.log.LoggingProviderSystemOut
+  _log_debug_level.txt: "0"
+---
+# Source: crushftp/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: restart-statefulset-role
+  namespace: default
+rules:
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list", "patch"]
+---
+# Source: crushftp/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-crushftp
+  labels:
+    helm.sh/chart: crushftp-0.0.4
+    app.kubernetes.io/name: crushftp
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "11.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: http-web
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 443
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: crushftp
+    app.kubernetes.io/instance: release-name
+---
+# Source: crushftp/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-crushftp
+  labels:
+    helm.sh/chart: crushftp-0.0.4
+    app.kubernetes.io/name: crushftp
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "11.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1  
+  volumeClaimTemplates:
+    - metadata:
+        name: app-volume
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crushftp
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-crushftp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crushftp
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-crushftp
+      securityContext:
+        fsGroup: 65532
+      volumes:
+      - name: crushftp-configmap
+        configMap:
+          name: crushftp-configmap
+      - name: secret-volume
+        secret:
+          secretName: initial-crushadmin-password
+      initContainers:
+          - name: copy-files
+            image: crushftp/crushftp11:latest-dev
+            command:
+              - sh
+              - -c
+              - |
+                cp -R /app/* /tmp/CrushFTP11
+                mkdir /tmp/CrushFTP11/split_prefs || true
+                cp /tmp/preferences/* /tmp/CrushFTP11/split_prefs
+            volumeMounts:
+              - name: app-volume
+                mountPath: /tmp/CrushFTP11
+              - name: crushftp-configmap
+                mountPath: /tmp/preferences
+      containers:
+        - name: crushftp
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 65532
+          image: "crushftp/crushftp11:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: http-web
+              containerPort: 9090
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          command:
+            - java
+            - -Ddir=/app/
+            - -Xmx512M
+            - -jar
+            - /app/plugins/lib/CrushFTPJarProxy.jar
+            - -ad
+            - crushadmin
+            - passfile
+          resources:
+            limits:
+              cpu: 0.5
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 1Gi
+          env:
+            - name: passfile
+              value: /tmp/passfile
+          volumeMounts:
+            - name: app-volume
+              mountPath: /app
+            - name: secret-volume
+              mountPath: "/tmp/passfile"
+              subPath: "password"
+              readOnly: true
+---
+# Source: crushftp/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-name-restart-statefulset-role-binding
+  namespace: default
+  annotations:
+    "helm.sh/hook": pre-install
+subjects:
+- kind: ServiceAccount
+  name: release-name-crushftp
+  namespace: default
+roleRef:
+  kind: Role
+  name: restart-statefulset-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: crushftp/templates/init-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-restart-statefulset-job
+  annotations:
+    "helm.sh/hook": post-install
+spec:
+  template:
+    metadata:
+      labels:
+        app: release-name-restart-statefulset
+    spec:
+      serviceAccountName: release-name-crushftp
+      containers:
+      - name: restart-pods
+        image: cgr.dev/chainguard/kubectl:latest-dev
+        command: ["/bin/sh", "-c", "sleep 30 && kubectl rollout restart -n default statefulset/release-name-crushftp"]
+      restartPolicy: OnFailure
+  backoffLimit: 1

@@ -1,0 +1,112 @@
+---
+# Source: newrelic-logging/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: newrelic-logging
+    chart: newrelic-logging-1.21.5
+    heritage: "Helm"
+    release: "release-name"
+  name: release-name-newrelic-logging
+  namespace: default
+---
+# Source: newrelic-logging/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: default
+  labels:     
+    app: newrelic-logging
+    chart: newrelic-logging-1.21.5
+    heritage: Helm
+    release: release-name
+    app.kubernetes.io/name: newrelic-logging
+  name: release-name-newrelic-logging-fluent-bit-config
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     ${LOG_LEVEL}
+        Daemon        off
+        Parsers_File  parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+    
+    [INPUT]
+        Name              tail
+        Alias             pod-logs-tailer
+        Tag               kube.*
+        Path              ${PATH}
+        multiline.parser  ${LOG_PARSER}
+        DB                ${FB_DB}
+        Mem_Buf_Limit     7MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+    
+    [FILTER]
+        Name                kubernetes
+        Alias               kubernetes-enricher
+        Match               kube.*
+        # We need the full DNS suffix as Windows only supports resolving names with this suffix
+        # See: https://kubernetes.io/docs/setup/production-environment/windows/intro-windows-in-kubernetes/#dns-limitations
+        Kube_URL            https://kubernetes.default.svc.cluster.local:443
+        Buffer_Size         ${K8S_BUFFER_SIZE}
+        K8S-Logging.Exclude ${K8S_LOGGING_EXCLUDE}
+    
+    [FILTER]
+        Name           record_modifier
+        Alias          node-attributes-enricher
+        Match          *
+        Record         cluster_name "${CLUSTER_NAME}"
+    
+    [OUTPUT]
+        Name           newrelic
+        Match          *
+        Alias          newrelic-logs-forwarder
+        licenseKey     ${LICENSE_KEY}
+        endpoint       ${ENDPOINT}
+        lowDataMode    ${LOW_DATA_MODE}
+        sendMetrics    ${SEND_OUTPUT_PLUGIN_METRICS}
+        Retry_Limit    ${RETRY_LIMIT}
+    
+  parsers.conf: |
+---
+# Source: newrelic-logging/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:     
+    app: newrelic-logging
+    chart: newrelic-logging-1.21.5
+    heritage: Helm
+    release: release-name
+    app.kubernetes.io/name: newrelic-logging
+  name: release-name-newrelic-logging
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - pods
+    verbs: ["get", "list", "watch"]
+---
+# Source: newrelic-logging/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:     
+    app: newrelic-logging
+    chart: newrelic-logging-1.21.5
+    heritage: Helm
+    release: release-name
+    app.kubernetes.io/name: newrelic-logging
+  name: release-name-newrelic-logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: release-name-newrelic-logging
+subjects:
+- kind: ServiceAccount
+  name: release-name-newrelic-logging
+  namespace: default

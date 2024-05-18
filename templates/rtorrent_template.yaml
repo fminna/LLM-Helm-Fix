@@ -1,0 +1,160 @@
+---
+# Source: rtorrent/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rtorrent
+  labels:
+    app: rtorrent
+    chart: rtorrent-0.6.0
+    release: release-name
+    heritage: Helm
+
+data:
+
+  nginx.conf: |
+    server {
+      listen 0.0.0.0:80;
+
+      location /RPC2 {
+        scgi_pass   127.0.0.1:5000;
+        include     scgi_params;
+      }
+    }
+---
+# Source: rtorrent/templates/ingress-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rtorrent-ingress
+  annotations:
+    metallb.universe.tf/allow-shared-ip: rtorrent-ingress
+  labels:
+    app: rtorrent
+    chart: rtorrent-0.6.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  ports:
+    - port: 57778
+      targetPort: rtorrent
+      protocol: TCP
+      name: rtorrent
+
+    - port: 57779
+      targetPort: dht
+      protocol: TCP
+      name: dht
+    - port: 57778
+      targetPort: rtorrent-udp
+      protocol: UDP
+      name: rtorrent-udp
+
+    - port: 57779
+      targetPort: dht-udp
+      protocol: UDP
+      name: dht-udp
+
+  selector:
+    app: rtorrent
+    release: release-name
+---
+# Source: rtorrent/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rtorrent
+  labels:
+    app: rtorrent
+    chart: rtorrent-0.6.0
+    release: release-name
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: scgi
+      protocol: TCP
+      name: scgi
+    - port: 80
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+  selector:
+    app: rtorrent
+    release: release-name
+---
+# Source: rtorrent/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-rtorrent
+  labels:
+    app: rtorrent
+    chart: rtorrent-0.6.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rtorrent
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: rtorrent
+        release: release-name
+    spec:
+      containers:
+        - name: rtorrent-scgi
+          image: nginx:1.13.12
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+          ports:
+            - name: rpc
+              containerPort: 80
+              protocol: TCP
+
+        - name: rtorrent
+          image: "bryanalves/rtorrent:0.4"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          tty: true
+          volumeMounts:
+            - name: rtorrent
+              mountPath: /app/config
+            - name: conf
+              mountPath: /app/rtorrent.rc
+              subPath: rtorrent.rc
+          ports:
+            - name: scgi
+              containerPort: 5000
+              protocol: TCP
+            - name: rtorrent
+              containerPort: 57778
+              protocol: TCP
+            - name: rtorrent-udp
+              containerPort: 57778
+              protocol: UDP
+            - name: dht
+              containerPort: 57779
+              protocol: TCP
+            - name: dht-udp
+              containerPort: 57779
+              protocol: UDP
+          resources:
+            {}
+      volumes:
+        - name: rtorrent
+          emptyDir: {}
+        - name: conf
+          configMap:
+            name: release-name-rtorrent

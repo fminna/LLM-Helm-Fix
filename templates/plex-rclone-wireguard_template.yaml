@@ -1,0 +1,239 @@
+---
+# Source: plex-rclone-wireguard/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-plex-rclone-wireguard
+  labels:
+    helm.sh/chart: plex-rclone-wireguard-1.0.19
+    app.kubernetes.io/name: plex-rclone-wireguard
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: plex-rclone-wireguard/templates/configmap-health.yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: plex-rclone-wireguard-health 
+data:
+  health-script.sh: |
+    #!/bin/bash
+
+    # Punto de comprobación de preparación (readiness)
+    readiness() {
+      # Realizar una llamada GET al puerto 32400
+      response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:32400/identity)
+    
+      # Verificar si la respuesta es 200 (éxito)
+      if [[ $response == "200" ]]; then
+        echo "Plex: OK-IDENTITY"
+        # Verificar si el número de archivos en la carpeta es mayor que 1
+        # file_count=$(ls /media  | wc -l)
+        # if [[ $file_count -gt 1 ]]; then
+        #   echo "Plex: OK-RCLONE"
+        #   exit 0  # Éxito
+        # fi
+        exit 0  # Éxito
+      fi
+    
+      exit 1  # Fallo
+    }
+    
+    # Punto de comprobación de disponibilidad (liveness)
+    liveness() {
+      # Realizar una llamada GET al puerto 32400
+      response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:32400/identity)
+    
+      # Verificar si la respuesta es 200 (éxito)
+      if [[ $response == "200" ]]; then
+        echo "Plex: OK-IDENTITY"
+        # Verificar si el número de archivos en la carpeta es mayor que 1
+        # file_count=$(ls /media  | wc -l)
+        # if [[ $file_count -gt 1 ]]; then
+        #   echo "Plex: OK-RCLONE"
+        #   exit 0  # Éxito
+        # fi    
+        exit 0  # Éxito
+      fi
+  
+      exit 1  # Fallo
+    }
+        
+    # Ejecutar el script según el argumento proporcionado
+    case $1 in
+      readiness)
+        readiness
+        ;;
+      liveness)
+        liveness
+        ;;     
+      *)
+        echo "Comando no válido. Use 'readiness','liveness'."
+        exit 1
+        ;;
+    esac
+---
+# Source: plex-rclone-wireguard/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-plex-rclone-wireguard
+  labels:
+    helm.sh/chart: plex-rclone-wireguard-1.0.19
+    app.kubernetes.io/name: plex-rclone-wireguard
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}  
+spec:
+  type: NodePort
+  ports:
+    - port: 32400
+      targetPort: 32400
+      nodePort: 32400
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: plex-rclone-wireguard
+    app.kubernetes.io/instance: release-name
+---
+# Source: plex-rclone-wireguard/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-plex-rclone-wireguard
+  labels:
+    helm.sh/chart: plex-rclone-wireguard-1.0.19
+    app.kubernetes.io/name: plex-rclone-wireguard
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plex-rclone-wireguard
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-plex-rclone-wireguard 
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plex-rclone-wireguard
+        app.kubernetes.io/instance: release-name
+    spec:
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: release-name-plex-rclone-wireguard
+      securityContext:
+        {}
+      initContainers:           
+        - name: health-script-init
+          image: "busybox"
+          command:
+            - cp
+          args:
+            - -v
+            - /in/health-script.sh
+            - /out/health-script.sh
+          volumeMounts:
+          - name: health-data
+            mountPath: /in
+          - name: health
+            mountPath: /out   
+        - name: permission-fix
+          image: busybox
+          command: ['sh', '-c']
+          args: ['chmod -R 655 /out']
+          volumeMounts:
+          - name: health
+            mountPath: /out                                          
+      containers:
+        - name: plex-rclone-wireguard
+          securityContext:
+            capabilities:
+              add:
+              - NET_ADMIN
+              - SYS_TIME
+              - SYS_ADMIN
+            privileged: true
+          image: "ghcr.io/linuxserver/plex:latest"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 32400
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /config
+              name: plex-rclone-wireguard-config-volume
+            - mountPath: /media
+              name: data     
+              mountPropagation: Bidirectional          
+            - mountPath: /health
+              name: health                    
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: VERSION
+              value: "docker"     
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - /health/health-script.sh
+                - readiness
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - /health/health-script.sh
+                - liveness
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5   
+          resources:
+            null  
+      volumes:
+        - name: data
+          hostPath:
+            path: /mnt/gdrive
+            type: Directory                
+        - name: health-data
+          configMap:
+            name: plex-rclone-wireguard-health  
+            items:
+              - key: health-script.sh
+                path: health-script.sh
+        - name: health
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: plex-rclone-wireguard-config-volume
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: 
+        resources:
+          requests:
+            storage: 70Gi
+---
+# Source: plex-rclone-wireguard/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-plex-rclone-wireguard-test-connection"
+  labels:
+    helm.sh/chart: plex-rclone-wireguard-1.0.19
+    app.kubernetes.io/name: plex-rclone-wireguard
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-plex-rclone-wireguard:32400']
+  restartPolicy: Never

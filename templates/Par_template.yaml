@@ -1,0 +1,211 @@
+---
+# Source: Par/templates/deployment.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: par-manager
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: par
+    app.kubernetes.io/part-of: par
+    helm.sh/chart: Par-0.1.0
+    app.kubernetes.io/name: Par
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: Par/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: par-manager
+  labels:
+    helm.sh/chart: Par-0.1.0
+    app.kubernetes.io/name: Par
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.par.dev
+  resources:
+  - records
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.par.dev
+  resources:
+  - records/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dns.par.dev
+  resources:
+  - records/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+# Source: Par/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: par-manager
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: par
+    app.kubernetes.io/part-of: par
+    helm.sh/chart: Par-0.1.0
+    app.kubernetes.io/name: Par
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'par-manager'
+subjects:
+- kind: ServiceAccount
+  name: 'par-manager'
+  namespace: 'default'
+---
+# Source: Par/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: par-manager
+  labels:
+    par.dev/manager: "true"
+    helm.sh/chart: Par-0.1.0
+    app.kubernetes.io/name: Par
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    par.dev/manager: "true"
+  ports:
+    - name: dns
+      port: 53
+      protocol: UDP
+      targetPort: dns
+---
+# Source: Par/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: par-manager
+  labels:
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: par
+    app.kubernetes.io/part-of: par
+    control-plane: controller-manager
+    par.dev/manager: "true"
+    helm.sh/chart: Par-0.1.0
+    app.kubernetes.io/name: Par
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: Par
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+        par.dev/manager: "true"
+        app.kubernetes.io/name: Par
+        app.kubernetes.io/instance: release-name
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+    spec:
+      containers:
+      - command:
+        - /manager
+        env:
+        - name: KUBERNETES_CLUSTER_DOMAIN
+          value: cluster.local
+        image: ghcr.io/jmcgrath207/par:v0.1.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 9000
+          name: dns
+          protocol: UDP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - CAP_NET_RAW
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsUser: 65532
+      securityContext:
+        runAsNonRoot: true
+      serviceAccountName: par-manager
+      terminationGracePeriodSeconds: 10

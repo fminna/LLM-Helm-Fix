@@ -1,0 +1,668 @@
+---
+# Source: kanister-elasticsearch/templates/client-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "client"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-client
+---
+# Source: kanister-elasticsearch/templates/data-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "data"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-data
+---
+# Source: kanister-elasticsearch/templates/master-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "master"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-master
+---
+# Source: kanister-elasticsearch/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kanister-elasticsearch
+  labels:
+    app: release-name-kanister-elasticsearch
+    chart: "kanister-elasticsearch-0.32.0"
+    release: "release-name"
+    heritage: "Helm"
+data:
+  elasticsearch.yml: |-
+    cluster.name: elasticsearch
+
+    node.data: ${NODE_DATA:true}
+    node.master: ${NODE_MASTER:true}
+    node.ingest: ${NODE_INGEST:true}
+    node.name: ${HOSTNAME}
+
+    network.host: 0.0.0.0
+    # see https://github.com/kubernetes/kubernetes/issues/3595
+    bootstrap.memory_lock: ${BOOTSTRAP_MEMORY_LOCK:false}
+
+    discovery:
+      zen:
+        ping.unicast.hosts: ${DISCOVERY_SERVICE:}
+        minimum_master_nodes: ${MINIMUM_MASTER_NODES:2}
+
+    # see https://github.com/elastic/elasticsearch-definitive-guide/pull/679
+    processors: ${PROCESSORS:}
+
+    # avoid split-brain w/ a minimum consensus of two masters plus a data node
+    gateway.expected_master_nodes: ${EXPECTED_MASTER_NODES:2}
+    gateway.expected_data_nodes: ${EXPECTED_DATA_NODES:1}
+    gateway.recover_after_time: ${RECOVER_AFTER_TIME:5m}
+    gateway.recover_after_master_nodes: ${RECOVER_AFTER_MASTER_NODES:2}
+    gateway.recover_after_data_nodes: ${RECOVER_AFTER_DATA_NODES:1}
+  log4j2.properties: |-
+    status = error
+    appender.console.type = Console
+    appender.console.name = console
+    appender.console.layout.type = PatternLayout
+    appender.console.layout.pattern = [%d{ISO8601}][%-5p][%-25c{1.}] %marker%m%n
+    rootLogger.level = info
+    rootLogger.appenderRef.console.ref = console
+    logger.searchguard.name = com.floragunn
+    logger.searchguard.level = info
+    
+  data-pre-stop-hook.sh: |-
+    #!/bin/bash
+    exec &> >(tee -a "/var/log/elasticsearch-hooks.log")
+    NODE_NAME=${HOSTNAME}
+    echo "Prepare to migrate data of the node ${NODE_NAME}"
+    echo "Move all data from node ${NODE_NAME}"
+    curl -s -XPUT -H 'Content-Type: application/json' 'release-name-kanister-elasticsearch-client:9200/_cluster/settings' -d "{
+      \"transient\" :{
+          \"cluster.routing.allocation.exclude._name\" : \"${NODE_NAME}\"
+      }
+    }"
+    echo ""
+
+    while true ; do
+      echo -e "Wait for node ${NODE_NAME} to become empty"
+      SHARDS_ALLOCATION=$(curl -s -XGET 'http://release-name-kanister-elasticsearch-client:9200/_cat/shards')
+      if ! echo "${SHARDS_ALLOCATION}" | grep -E "${NODE_NAME}"; then
+        break
+      fi
+      sleep 1
+    done
+    echo "Node ${NODE_NAME} is ready to shutdown"
+  data-post-start-hook.sh: |-
+    #!/bin/bash
+    exec &> >(tee -a "/var/log/elasticsearch-hooks.log")
+    NODE_NAME=${HOSTNAME}
+    CLUSTER_SETTINGS=$(curl -s -XGET "http://release-name-kanister-elasticsearch-client:9200/_cluster/settings")
+    if echo "${CLUSTER_SETTINGS}" | grep -E "${NODE_NAME}"; then
+      echo "Activate node ${NODE_NAME}"
+      curl -s -XPUT -H 'Content-Type: application/json' "http://release-name-kanister-elasticsearch-client:9200/_cluster/settings" -d "{
+        \"transient\" :{
+            \"cluster.routing.allocation.exclude._name\" : null
+        }
+      }"
+    fi
+    echo "Node ${NODE_NAME} is ready to be used"
+---
+# Source: kanister-elasticsearch/templates/tests/test-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kanister-elasticsearch-test
+  labels:
+    app: release-name-kanister-elasticsearch
+    chart: "kanister-elasticsearch-0.32.0"
+    heritage: "Helm"
+    release: "release-name"
+data:
+  run.sh: |-
+    @test "Test Access and Health" {
+      curl -D - http://release-name-kanister-elasticsearch-client:9200
+      curl -D - http://release-name-kanister-elasticsearch-client:9200/_cluster/health?wait_for_status=green
+    }
+---
+# Source: kanister-elasticsearch/templates/client-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "client"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-client
+
+spec:
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+  selector:
+    app: kanister-elasticsearch
+    component: "client"
+    release: release-name
+  type: ClusterIP
+---
+# Source: kanister-elasticsearch/templates/master-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "master"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-discovery
+spec:
+  clusterIP: None
+  ports:
+    - port: 9300
+      targetPort: transport
+  selector:
+    app: kanister-elasticsearch
+    component: "master"
+    release: release-name
+---
+# Source: kanister-elasticsearch/templates/client-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "client"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-client
+  annotations:
+    kanister.kasten.io/blueprint: release-name-kanister-elasticsearch-blueprint
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: kanister-elasticsearch
+        component: "client"
+        release: release-name
+      annotations:
+        checksum/config: 1ffdbd2bdf0102c28034019b32ebda8a8d6c1ef120373dfbd30cf15b9eb2a8bb
+    spec:
+      serviceAccountName: release-name-kanister-elasticsearch-client
+      securityContext:
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: "kanister-elasticsearch"
+                  release: "release-name"
+                  component: "client"
+      initContainers:
+      # see https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html
+      # and https://www.elastic.co/guide/en/elasticsearch/reference/current/setup-configuration-memory.html#mlockall
+      - name: "sysctl"
+        image: "busybox:latest"
+        imagePullPolicy: "Always"
+        resources:
+            {}
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      containers:
+      - name: elasticsearch
+        env:
+        - name: NODE_DATA
+          value: "false"
+        - name: NODE_MASTER
+          value: "false"
+        - name: DISCOVERY_SERVICE
+          value: release-name-kanister-elasticsearch-discovery
+        - name: PROCESSORS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        - name: ES_JAVA_OPTS
+          value: "-Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m  "
+        - name: MINIMUM_MASTER_NODES
+          value: "2"
+        resources:
+            limits:
+              cpu: "1"
+            requests:
+              cpu: 25m
+              memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+          initialDelaySeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health?local=true
+            port: 9200
+          initialDelaySeconds: 90
+        image: "docker.elastic.co/elasticsearch/elasticsearch-oss:6.8.2"
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: config
+          subPath: elasticsearch.yml
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-kanister-elasticsearch
+---
+# Source: kanister-elasticsearch/templates/data-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "data"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-data
+  annotations:
+    kanister.kasten.io/blueprint: release-name-kanister-elasticsearch-blueprint
+spec:
+  serviceName: release-name-kanister-elasticsearch-data
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: kanister-elasticsearch
+        component: "data"
+        release: release-name
+        role: data
+    spec:
+      serviceAccountName: release-name-kanister-elasticsearch-data
+      securityContext:
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: "kanister-elasticsearch"
+                  release: "release-name"
+                  component: "data"
+      initContainers:
+      # see https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html
+      # and https://www.elastic.co/guide/en/elasticsearch/reference/current/setup-configuration-memory.html#mlockall
+      - name: "sysctl"
+        image: "busybox:latest"
+        imagePullPolicy: "Always"
+        resources:
+            {}
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      - name: "chown"
+        image: "docker.elastic.co/elasticsearch/elasticsearch-oss:6.8.2"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            {}
+        command:
+        - /bin/bash
+        - -c
+        - >
+          set -e;
+          set -x;
+          chown elasticsearch:elasticsearch /usr/share/elasticsearch/data;
+          for datadir in $(find /usr/share/elasticsearch/data -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $datadir;
+          done;
+          chown elasticsearch:elasticsearch /usr/share/elasticsearch/logs;
+          for logfile in $(find /usr/share/elasticsearch/logs -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $logfile;
+          done
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+      containers:
+      - name: elasticsearch
+        env:
+        - name: DISCOVERY_SERVICE
+          value: release-name-kanister-elasticsearch-discovery
+        - name: NODE_MASTER
+          value: "false"
+        - name: PROCESSORS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        - name: ES_JAVA_OPTS
+          value: "-Djava.net.preferIPv4Stack=true -Xms1536m -Xmx1536m  "
+        - name: MINIMUM_MASTER_NODES
+          value: "2"
+        image: "docker.elastic.co/elasticsearch/elasticsearch-oss:6.8.2"
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 9300
+          name: transport
+
+        resources:
+            limits:
+              cpu: "1"
+            requests:
+              cpu: 25m
+              memory: 1536Mi
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?local=true
+            port: 9200
+          initialDelaySeconds: 5
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: config
+          subPath: elasticsearch.yml
+        - name: config
+          mountPath: /data-pre-stop-hook.sh
+          subPath: data-pre-stop-hook.sh
+        - name: config
+          mountPath: /data-post-start-hook.sh
+          subPath: data-post-start-hook.sh
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/bash","/data-pre-stop-hook.sh"]
+          postStart:
+            exec:
+              command: ["/bin/bash","/data-post-start-hook.sh"]
+      terminationGracePeriodSeconds: 3600
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-kanister-elasticsearch
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "30Gi"
+---
+# Source: kanister-elasticsearch/templates/master-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: kanister-elasticsearch
+    chart: kanister-elasticsearch-0.32.0
+    component: "master"
+    heritage: Helm
+    release: release-name
+  name: release-name-kanister-elasticsearch-master
+  annotations:
+    kanister.kasten.io/blueprint: release-name-kanister-elasticsearch-blueprint
+spec:
+  serviceName: release-name-kanister-elasticsearch-master
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: kanister-elasticsearch
+        component: "master"
+        release: release-name
+        role: master
+    spec:
+      serviceAccountName: release-name-kanister-elasticsearch-master
+      securityContext:
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: "kanister-elasticsearch"
+                  release: "release-name"
+                  component: "master"
+      initContainers:
+      # see https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html
+      # and https://www.elastic.co/guide/en/elasticsearch/reference/current/setup-configuration-memory.html#mlockall
+      - name: "sysctl"
+        image: "busybox:latest"
+        imagePullPolicy: "Always"
+        resources:
+            {}
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      - name: "chown"
+        image: "docker.elastic.co/elasticsearch/elasticsearch-oss:6.8.2"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+            {}
+        command:
+        - /bin/bash
+        - -c
+        - >
+          set -e;
+          set -x;
+          chown elasticsearch:elasticsearch /usr/share/elasticsearch/data;
+          for datadir in $(find /usr/share/elasticsearch/data -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $datadir;
+          done;
+          chown elasticsearch:elasticsearch /usr/share/elasticsearch/logs;
+          for logfile in $(find /usr/share/elasticsearch/logs -mindepth 1 -maxdepth 1 -not -name ".snapshot"); do
+            chown -R elasticsearch:elasticsearch $logfile;
+          done
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+      containers:
+      - name: elasticsearch
+        env:
+        - name: NODE_DATA
+          value: "false"
+        - name: DISCOVERY_SERVICE
+          value: release-name-kanister-elasticsearch-discovery
+        - name: PROCESSORS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        - name: ES_JAVA_OPTS
+          value: "-Djava.net.preferIPv4Stack=true -Xms512m -Xmx512m  "
+        - name: MINIMUM_MASTER_NODES
+          value: "2"
+        resources:
+            limits:
+              cpu: "1"
+            requests:
+              cpu: 25m
+              memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?local=true
+            port: 9200
+          initialDelaySeconds: 5
+        image: "docker.elastic.co/elasticsearch/elasticsearch-oss:6.8.2"
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 9300
+          name: transport
+
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data
+          name: data
+        - mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          name: config
+          subPath: elasticsearch.yml
+      volumes:
+      - name: config
+        configMap:
+          name: release-name-kanister-elasticsearch
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "4Gi"
+---
+# Source: kanister-elasticsearch/templates/blueprint.yaml
+apiVersion: cr.kanister.io/v1alpha1
+kind: Blueprint
+metadata:
+  name: release-name-kanister-elasticsearch-blueprint
+  namespace: kasten-io
+actions:
+  backup:
+    type: StatefulSet
+    outputArtifacts:
+      cloudObject:
+        keyValue:
+          backupLocation: "{{ .Phases.backupToObjectStore.Output.backupLocation }}"
+    phases:
+    - func: KubeTask
+      name: backupToObjectStore
+      args:
+        namespace: "{{ .StatefulSet.Namespace }}"
+        image: "kanisterio/es-sidecar:0.32.0"
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          host_name="{{ .Object.metadata.labels.release }}-kanister-elasticsearch-client.{{ .StatefulSet.Namespace }}.svc.cluster.local"
+          echo $host_name
+          BACKUP_LOCATION=es_backups/{{ .StatefulSet.Namespace }}/{{ .StatefulSet.Name }}/{{ toDate "2006-01-02T15:04:05.999999999Z07:00" .Time | date "2006-01-02T15:04:05Z07:00" }}/backup.gz
+          echo $BACKUP_LOCATION
+          elasticdump --bulk=true --input=http://${host_name}:9200 --output=$ | gzip | kando location push --profile '{{ toJson .Profile }}' --path $BACKUP_LOCATION -
+          kando output backupLocation $BACKUP_LOCATION
+          echo "exiting from backup"
+  restore:
+    type: StatefulSet
+    inputArtifactNames:
+    - cloudObject
+    phases:
+    - func: KubeTask
+      name: restoreFromObjectStore
+      args:
+        namespace: "{{ .StatefulSet.Namespace }}"
+        image: "kanisterio/es-sidecar:0.32.0"
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          host_name="{{ .Object.metadata.labels.release }}-kanister-elasticsearch-client.{{ .StatefulSet.Namespace }}.svc.cluster.local"
+          kando location pull --profile '{{ toJson .Profile }}' --path '{{ .ArtifactsIn.cloudObject.KeyValue.backupLocation }}' - | gunzip | elasticdump --bulk=true --input=$ --output=http://${host_name}:9200
+  delete:
+    type: Namespace
+    inputArtifactNames:
+    - cloudObject
+    phases:
+    - func: KubeTask
+      name: deleteFromObjectStore
+      args:
+        namespace: "{{ .Namespace.Name }}"
+        image: kanisterio/kanister-tools:0.32.0
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          kando location delete --profile '{{ toJson .Profile }}' --path '{{ .ArtifactsIn.cloudObject.KeyValue.backupLocation }}'
+---
+# Source: kanister-elasticsearch/templates/tests/test.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-kanister-elasticsearch-test
+  labels:
+    app: release-name-kanister-elasticsearch
+    chart: "kanister-elasticsearch-0.32.0"
+    heritage: "Helm"
+    release: "release-name"
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  initContainers:
+    - name: test-framework
+      image: "dduportal/bats:0.4.0"
+      command:
+      - "bash"
+      - "-c"
+      - |
+        set -ex
+        # copy bats to tools dir
+        cp -R /usr/local/libexec/ /tools/bats/
+      volumeMounts:
+      - mountPath: /tools
+        name: tools
+  containers:
+    - name: release-name-test
+      image: "dduportal/bats:0.4.0"
+      command: ["/tools/bats/bats", "-t", "/tests/run.sh"]
+      volumeMounts:
+      - mountPath: /tests
+        name: tests
+        readOnly: true
+      - mountPath: /tools
+        name: tools
+  volumes:
+  - name: tests
+    configMap:
+      name: release-name-kanister-elasticsearch-test
+  - name: tools
+    emptyDir: {}
+  restartPolicy: Never

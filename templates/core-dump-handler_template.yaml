@@ -1,0 +1,255 @@
+---
+# Source: core-dump-handler/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: core-dump-admin
+  labels:
+
+    helm.sh/chart: core-dump-handler-v8.10.0
+    app.kubernetes.io/name: core-dump-handler
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v8.10.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: core-dump-handler/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3config
+type: Opaque
+stringData:
+  s3Secret: XXX
+  s3AccessKey: XXX
+  s3BucketName: XXX
+  s3Region: XXX
+---
+# Source: core-dump-handler/templates/core-storage-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: core-volume
+  labels:
+    type: local
+spec:
+  storageClassName: hostclass
+  claimRef:
+    name: core-storage-pvc
+    namespace: default
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /var/mnt/core-dump-handler/cores
+---
+# Source: core-dump-handler/templates/host-storage-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: host-volume
+  labels:
+    type: local
+spec:
+  storageClassName: hostclass
+  claimRef:
+    name: host-storage-pvc
+    namespace: default
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /var/mnt/core-dump-handler
+---
+# Source: core-dump-handler/templates/core-storage-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core-storage-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: hostclass
+---
+# Source: core-dump-handler/templates/host-storage-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: host-storage-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: hostclass
+---
+# Source: core-dump-handler/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: core-dump-event-reporter
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs:     ['use']
+  resourceNames:
+  - privileged
+---
+# Source: core-dump-handler/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: core-dump-event-report
+subjects:
+- kind: ServiceAccount
+  name: core-dump-admin
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: core-dump-event-reporter
+---
+# Source: core-dump-handler/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: core-dump-handler
+spec:
+  selector:
+    matchLabels:
+      name: core-dump-ds
+  template:
+    metadata:
+      labels:
+        name: core-dump-ds
+    spec:
+      containers:
+      - name: coredump-container
+        image: quay.io/icdh/core-dump-handler:v8.10.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 250m
+          limits:
+            memory: 128Mi
+            cpu: 500m
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-volume
+          mountPath:  /var/mnt/core-dump-handler
+          mountPropagation: Bidirectional
+        - name: core-volume
+          mountPath:  /var/mnt/core-dump-handler/cores
+          mountPropagation: Bidirectional
+        env:
+          - name: COMP_FILENAME_TEMPLATE
+            value: "{uuid}-dump-{timestamp}-{hostname}-{exe_name}-{pid}-{signal}"
+          - name: COMP_LOG_LENGTH
+            value: "500"
+          - name: COMP_LOG_LEVEL
+            value: Warn
+          - name: COMP_IGNORE_CRIO
+            value: "false"
+          - name: COMP_CRIO_IMAGE_CMD
+            value:  img
+          - name: COMP_POD_SELECTOR_LABEL
+            value:  
+          - name: COMP_TIMEOUT
+            value:  "600"
+          - name: COMP_COMPRESSION
+            value:  "true"
+          - name: COMP_CORE_EVENTS
+            value: "false"
+          - name: COMP_CORE_EVENT_DIR
+            value: "/var/mnt/core-dump-handler/events"
+          - name: DEPLOY_CRIO_CONFIG
+            value:  "false"
+          - name: CRIO_ENDPOINT
+            value:  "unix:///run/containerd/containerd.sock"
+          - name: HOST_DIR
+            value: /var/mnt/core-dump-handler
+          - name: CORE_DIR
+            value: /var/mnt/core-dump-handler/cores
+          - name: EVENT_DIR
+            value: /var/mnt/core-dump-handler/events
+          - name: SUID_DUMPABLE
+            value: "2"
+          - name: DEPLOY_CRIO_EXE
+            value: "false"
+          - name: S3_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: s3config
+                key: s3AccessKey
+                optional: true
+          - name: S3_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: s3config
+                key: s3Secret
+                optional: true
+          - name: S3_BUCKET_NAME
+            valueFrom:
+              secretKeyRef:
+                name: s3config
+                key: s3BucketName
+          - name: S3_REGION
+            valueFrom:
+              secretKeyRef:
+                name: s3config
+                key: s3Region
+          - name: VENDOR
+            value: default
+          - name: INTERVAL
+            value: 
+          - name: SCHEDULE
+            value: 
+          - name: USE_INOTIFY
+            value: "true"
+        command: ["/app/core-dump-agent"]
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/app/core-dump-agent", "remove"]
+      serviceAccountName: core-dump-admin
+      volumes:
+      - name: host-volume
+        persistentVolumeClaim:
+          claimName:  host-storage-pvc
+      - name: core-volume
+        persistentVolumeClaim:
+          claimName:  core-storage-pvc
+---
+# Source: core-dump-handler/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-core-dump-handler-test-connection"
+  labels:
+
+    helm.sh/chart: core-dump-handler-v8.10.0
+    app.kubernetes.io/name: core-dump-handler
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v8.10.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['https://google.com']
+  restartPolicy: Never

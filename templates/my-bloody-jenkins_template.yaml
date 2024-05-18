@@ -1,0 +1,230 @@
+---
+# Source: my-bloody-jenkins/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-my-bloody-jenkins
+---
+# Source: my-bloody-jenkins/templates/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-my-bloody-jenkins
+  labels:
+    app: my-bloody-jenkins
+    chart: my-bloody-jenkins-0.1.216
+    release: release-name
+    heritage: Helm
+data:
+  jenkins-config.yml: |-
+
+  k8s-default-cloud.yml: |-
+    clouds:
+      k8s:
+        type: kubernetes
+        jenkinsUrl: http://release-name-my-bloody-jenkins:8080
+        namespace: default
+        templates:
+          - name: kubeslave
+            image: odavid/jenkins-jnlp-slave:latest
+            labels:
+              - generic
+            remoteFs: /home/jenkins
+            jvmArgs: -Xmx1g
+            volumes:
+              - '/var/run/docker.sock:/var/run/docker.sock'
+---
+# Source: my-bloody-jenkins/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: release-name-my-bloody-jenkins-jenkins-home
+  labels:
+    app: release-name-my-bloody-jenkins
+    chart: "my-bloody-jenkins-0.1.216"
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "20Gi"
+---
+# Source: my-bloody-jenkins/templates/rbac.yaml
+kind: "Role"
+apiVersion: rbac.authorization.k8s.io/v1
+
+metadata:
+  name: release-name-my-bloody-jenkins
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get","list","watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+---
+# Source: my-bloody-jenkins/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+
+kind: "RoleBinding"
+metadata:
+  name: release-name-my-bloody-jenkins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: "Role"
+  name: release-name-my-bloody-jenkins
+subjects:
+- kind: ServiceAccount
+  name: release-name-my-bloody-jenkins
+  namespace: "default"
+---
+# Source: my-bloody-jenkins/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-my-bloody-jenkins
+  labels:
+    app: my-bloody-jenkins
+    chart: my-bloody-jenkins-0.1.216
+    release: release-name
+    heritage: Helm
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-bloody-jenkins
+    release: release-name
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 50000
+      targetPort: jnlp
+      protocol: TCP
+      name: jnlp
+    - port: 16022
+      targetPort: sshd
+      protocol: TCP
+      name: sshd
+  loadBalancerSourceRanges:
+---
+# Source: my-bloody-jenkins/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-my-bloody-jenkins
+  labels:
+    app: my-bloody-jenkins
+    chart: my-bloody-jenkins-0.1.216
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      app: my-bloody-jenkins
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: my-bloody-jenkins
+        release: release-name
+    spec:
+      serviceAccountName: "release-name-my-bloody-jenkins"
+      containers:
+        - name: my-bloody-jenkins
+          image: "odavid/my-bloody-jenkins:2.426.3-305"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: jnlp
+              containerPort: 50000
+              protocol: TCP
+            - name: sshd
+              containerPort: 16022
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 600
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          env:
+            - name: K8S_NAMESPACE
+              value: "default"
+            - name: JAVA_OPTS_MEMORY
+              value: "-Xmx256m"
+            - name: JENKINS_ENV_ADMIN_USER
+              value: "admin"
+            - name: JENKINS_ENV_CONFIG_YML_URL
+              value: file:///var/jenkins_managed_config/k8s-default-cloud.yml,file:///var/jenkins_managed_config/jenkins-config.yml
+            - name: ENVVARS_DIRS
+              value: /var/jenkins_secrets/JENKINS_SECRET
+            - name: JENKINS_ENV_HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+          volumeMounts:
+            - mountPath: /var/jenkins_home
+              name: jenkins-home
+              readOnly: false
+
+            - mountPath: /jenkins-workspace-home
+              name: jenkins-workspace-home
+              readOnly: false
+
+            - mountPath: /var/run/docker.sock
+              name: docker-socket
+              readOnly: false
+
+            
+
+            
+
+            - mountPath: /var/jenkins_managed_config
+              name: "release-name-my-bloody-jenkins"
+              readOnly: true
+
+
+
+      volumes:
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: release-name-my-bloody-jenkins-jenkins-home
+
+        - name: jenkins-workspace-home
+          emptyDir: {}
+        - name: "release-name-my-bloody-jenkins"
+          configMap:
+            name: "release-name-my-bloody-jenkins"

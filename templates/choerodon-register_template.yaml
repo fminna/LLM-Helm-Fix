@@ -1,0 +1,182 @@
+---
+# Source: choerodon-register/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-choerodon-register-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: choerodon-register
+    helm.sh/chart: choerodon-register-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  clusterIP: None
+  
+  ports:
+    - name: server
+      port: 8000
+      targetPort: server
+      nodePort: null
+    - name: actuator
+      port: 8001
+      targetPort: actuator
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: choerodon-register
+    app.kubernetes.io/instance: release-name
+---
+# Source: choerodon-register/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-choerodon-register
+  namespace: default
+  labels:
+    app.kubernetes.io/name: choerodon-register
+    helm.sh/chart: choerodon-register-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  
+  ports:
+    - name: server
+      port: 8000
+      targetPort: server
+      nodePort: null
+    - name: actuator
+      port: 8001
+      targetPort: actuator
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: choerodon-register
+    app.kubernetes.io/instance: release-name
+---
+# Source: choerodon-register/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-choerodon-register
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: choerodon-register
+    helm.sh/chart: choerodon-register-2.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: choerodon-register
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-choerodon-register-headless
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: choerodon-register
+        helm.sh/chart: choerodon-register-2.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      serviceAccountName: default
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: choerodon-register
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 33
+      initContainers:
+        - name: server-volume
+          image:  registry.cn-shanghai.aliyuncs.com/c7n/choerodon-register:2.0.0
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /bin/sh
+            - -ecx
+            - |
+              cp -rfp /choerodon/* /opt/choerodon
+          securityContext:
+            runAsUser: 33
+          volumeMounts:
+            - name: volume
+              mountPath: /opt/choerodon
+      containers:
+        - name: "choerodon-register"
+          image: registry.cn-shanghai.aliyuncs.com/c7n/javabase:jdk8u282-b08
+          imagePullPolicy: "IfNotPresent"
+          workingDir: /opt/choerodon
+          securityContext:
+            runAsUser: 33
+          args:
+            - "/bin/sh"
+            - "-ecx"
+            - "java $SKYWALKING_OPTS $JAVA_OPTS -jar /opt/choerodon/choerodon-register.jar"
+          env:
+            - name: SERVER_PORT
+              value: "8000"
+            - name: MANAGEMENT_SERVER_PORT
+              value: "8001"
+            - name: CHART_VERSION
+              value: "2.0.0"
+            
+            - name: "EUREKA_CLIENT_FETCH_REGISTRY"
+              value: "false"
+            - name: "EUREKA_CLIENT_REGISTER_WITH_EUREKA"
+              value: "false"
+            - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+              value: "http://choerodon-register:8000/eureka/"
+          envFrom:
+          ports:
+            - name: server
+              containerPort: 8000
+              protocol: TCP
+            - name: actuator
+              containerPort: 8001
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: server
+            initialDelaySeconds: 480
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: actuator
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              memory: 2Gi
+          volumeMounts:
+            - name: volume
+              mountPath: /opt/choerodon
+      volumes:
+        - name: volume
+          emptyDir: {}

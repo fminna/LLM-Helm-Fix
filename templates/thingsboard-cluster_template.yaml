@@ -1,0 +1,2155 @@
+---
+# Source: thingsboard-cluster/charts/internalKafka/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: internalKafka-23.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.5.0"
+    app.kubernetes.io/component: kafka
+  annotations:
+automountServiceAccountToken: true
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+---
+# Source: thingsboard-cluster/charts/internalPostgresql/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.0.0
+    helm.sh/chart: internalPostgresql-13.0.0
+type: Opaque
+data:
+  postgres-password: "RlVWNmd6eTJrag=="
+  password: "cm9vdA=="
+  # We don't auto-generate LDAP password when it's not provided as we do for other passwords
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-redis
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+type: Opaque
+data:
+  redis-password: "dGVzdFBhc3N3b3Jk"
+---
+# Source: thingsboard-cluster/templates/cache/redis-secret.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-redis-secret
+  namespace: default
+type: Opaque
+data:
+  REDIS_PASSWORD: dGVzdFBhc3N3b3Jk
+---
+# Source: thingsboard-cluster/templates/database/psql/postgres-secret.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgres-secret
+  namespace: default
+type: Opaque
+data:
+  SPRING_DATASOURCE_PASSWORD: cm9vdA==
+---
+# Source: thingsboard-cluster/templates/regcred.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred
+  namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: eyJhdXRocyI6IHsiaHR0cHM6Ly9pbmRleC5kb2NrZXIuaW8vdjEvIjogeyJhdXRoIjogIk9nPT0ifX19
+---
+# Source: thingsboard-cluster/charts/internalKafka/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kafka-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: internalKafka-23.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.5.0"
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    ID="${MY_POD_NAME#"release-name-kafka-"}"
+    # If process.roles is not set at all, it is assumed to be in ZooKeeper mode.
+    # https://kafka.apache.org/documentation/#kraft_role
+
+    if [[ -f "/bitnami/kafka/data/meta.properties" ]]; then
+        if [[ $KAFKA_CFG_PROCESS_ROLES == "" ]]; then
+            export KAFKA_CFG_BROKER_ID="$(grep "broker.id" "/bitnami/kafka/data/meta.properties" | awk -F '=' '{print $2}')"
+        else
+            export KAFKA_CFG_NODE_ID="$(grep "node.id" "/bitnami/kafka/data/meta.properties" | awk -F '=' '{print $2}')"
+        fi
+    else
+        if [[ $KAFKA_CFG_PROCESS_ROLES == "" ]]; then
+            export KAFKA_CFG_BROKER_ID="$((ID + 0))"
+        else
+            export KAFKA_CFG_NODE_ID="$((ID + 0))"
+        fi
+    fi
+
+    if [[ $KAFKA_CFG_PROCESS_ROLES == *"controller"* && -z $KAFKA_CFG_CONTROLLER_QUORUM_VOTERS ]]; then
+        node_id=0
+        pod_id=0
+        while :
+        do
+            VOTERS="${VOTERS}$node_id@release-name-kafka-$pod_id.release-name-kafka-headless.default.svc.cluster.local:9093"
+            node_id=$(( $node_id + 1 ))
+            pod_id=$(( $pod_id + 1 ))
+            if [[ $pod_id -ge 1 ]]; then
+                break
+            else
+                VOTERS="$VOTERS,"
+            fi
+        done
+        export KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=$VOTERS
+    fi
+
+    # Configure zookeeper client
+
+    exec /entrypoint.sh /run.sh
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-configuration
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+data:
+  redis.conf: |-
+    # User-supplied common configuration:
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    # End of common configuration
+  master.conf: |-
+    dir /data
+    # User-supplied master configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of master configuration
+  replica.conf: |-
+    dir /data
+    # User-supplied replica configuration:
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    # End of replica configuration
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/health-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-health
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+data:
+  ping_readiness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_local.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    [[ -n "$REDIS_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h localhost \
+        -p $REDIS_PORT \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ] && [ "$responseFirstWord" != "MASTERDOWN" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    if [ "$response" != "PONG" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_liveness_master.sh: |-
+    #!/bin/bash
+
+    [[ -f $REDIS_MASTER_PASSWORD_FILE ]] && export REDIS_MASTER_PASSWORD="$(< "${REDIS_MASTER_PASSWORD_FILE}")"
+    [[ -n "$REDIS_MASTER_PASSWORD" ]] && export REDISCLI_AUTH="$REDIS_MASTER_PASSWORD"
+    response=$(
+      timeout -s 15 $1 \
+      redis-cli \
+        -h $REDIS_MASTER_HOST \
+        -p $REDIS_MASTER_PORT_NUMBER \
+        ping
+    )
+    if [ "$?" -eq "124" ]; then
+      echo "Timed out"
+      exit 1
+    fi
+    responseFirstWord=$(echo $response | head -n1 | awk '{print $1;}')
+    if [ "$response" != "PONG" ] && [ "$responseFirstWord" != "LOADING" ]; then
+      echo "$response"
+      exit 1
+    fi
+  ping_readiness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_readiness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_readiness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+  ping_liveness_local_and_master.sh: |-
+    script_dir="$(dirname "$0")"
+    exit_status=0
+    "$script_dir/ping_liveness_local.sh" $1 || exit_status=$?
+    "$script_dir/ping_liveness_master.sh" $1 || exit_status=$?
+    exit $exit_status
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+data:
+  start-master.sh: |
+    #!/bin/bash
+
+    [[ -f $REDIS_PASSWORD_FILE ]] && export REDIS_PASSWORD="$(< "${REDIS_PASSWORD_FILE}")"
+    if [[ -f /opt/bitnami/redis/mounted-etc/master.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/master.conf /opt/bitnami/redis/etc/master.conf
+    fi
+    if [[ -f /opt/bitnami/redis/mounted-etc/redis.conf ]];then
+        cp /opt/bitnami/redis/mounted-etc/redis.conf /opt/bitnami/redis/etc/redis.conf
+    fi
+    ARGS=("--port" "${REDIS_PORT}")
+    ARGS+=("--requirepass" "${REDIS_PASSWORD}")
+    ARGS+=("--masterauth" "${REDIS_PASSWORD}")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/redis.conf")
+    ARGS+=("--include" "/opt/bitnami/redis/etc/master.conf")
+    exec redis-server "${ARGS[@]}"
+---
+# Source: thingsboard-cluster/charts/internalZookeeper/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zookeeper-scripts
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/version: 3.9.0
+    helm.sh/chart: internalZookeeper-12.1.3
+    app.kubernetes.io/component: zookeeper
+data:
+  init-certs.sh: |-
+    #!/bin/bash
+  setup.sh: |-
+    #!/bin/bash
+
+    # Execute entrypoint as usual after obtaining ZOO_SERVER_ID
+    # check ZOO_SERVER_ID in persistent volume via myid
+    # if not present, set based on POD hostname
+    if [[ -f "/bitnami/zookeeper/data/myid" ]]; then
+        export ZOO_SERVER_ID="$(cat /bitnami/zookeeper/data/myid)"
+    else
+        HOSTNAME="$(hostname -s)"
+        if [[ $HOSTNAME =~ (.*)-([0-9]+)$ ]]; then
+            ORD=${BASH_REMATCH[2]}
+            export ZOO_SERVER_ID="$((ORD + 1 ))"
+        else
+            echo "Failed to get index from hostname $HOSTNAME"
+            exit 1
+        fi
+    fi
+    exec /entrypoint.sh /run.sh
+---
+# Source: thingsboard-cluster/templates/cache/redis-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-redis-config
+  namespace: default
+  labels:
+    name: release-name-redis-config
+data:
+  # Make sure that the value does not contain the port (:6379).
+  CACHE_TYPE: redis
+  REDIS_CONNECTION_TYPE: "standalone"
+  REDIS_HOST: release-name-redis-headless
+---
+# Source: thingsboard-cluster/templates/coordinator/zookeeper-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zookeeper-config
+  namespace: default
+  labels:
+    name: release-name-zookeeper-config
+data:
+  ZOOKEEPER_ENABLED: "true"
+  ZOOKEEPER_URL: release-name-zookeeper:2181
+---
+# Source: thingsboard-cluster/templates/database/psql/postgres-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-postgres-config
+  namespace: default
+  labels:
+    name: release-name-postgres-config
+data:
+  SPRING_DRIVER_CLASS_NAME: "org.postgresql.Driver"
+  SPRING_DATASOURCE_URL: jdbc:postgresql://release-name-postgresql:5432/thingsboard
+  SPRING_DATASOURCE_USERNAME: root
+---
+# Source: thingsboard-cluster/templates/install/install-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-install-config
+  namespace: default
+  labels:
+    name: release-name-install-config
+data:
+  conf: |
+      export JAVA_OPTS="$JAVA_OPTS -Dplatform=deb -Dinstall.data_dir=/usr/share/thingsboard/data"
+      export JAVA_OPTS="$JAVA_OPTS -Xlog:gc*,heap*,age*,safepoint=debug:file=/var/log/thingsboard/gc.log:time,uptime,level,tags:filecount=10,filesize=10M"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+IgnoreUnrecognizedVMOptions -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/thingsboard/heapdump.bin"
+      export JAVA_OPTS="$JAVA_OPTS -XX:-UseBiasedLocking -XX:+UseTLAB -XX:+ResizeTLAB -XX:+PerfDisableSharedMem -XX:+UseCondCardMark"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=500 -XX:+UseStringDeduplication -XX:+ParallelRefProcEnabled -XX:MaxTenuringThreshold=10"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+ExitOnOutOfMemoryError"
+      export LOG_FILENAME=thingsboard.out
+      export LOADER_PATH=/usr/share/thingsboard/conf
+  logback: |
+      <!DOCTYPE configuration>
+      <configuration scan="true" scanPeriod="10 seconds">
+
+          <appender name="fileLogAppender"
+                    class="ch.qos.logback.core.rolling.RollingFileAppender">
+              <file>/var/log/thingsboard/thingsboard.log</file>
+              <rollingPolicy
+                      class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                  <fileNamePattern>/var/log/thingsboard/thingsboard.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+                  <maxFileSize>100MB</maxFileSize>
+                  <maxHistory>30</maxHistory>
+                  <totalSizeCap>3GB</totalSizeCap>
+              </rollingPolicy>
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <logger name="org.thingsboard.server" level="INFO" />
+          <logger name="com.google.common.util.concurrent.AggregateFuture" level="OFF" />
+
+          <root level="INFO">
+              <appender-ref ref="fileLogAppender"/>
+              <appender-ref ref="STDOUT"/>
+          </root>
+
+      </configuration>
+---
+# Source: thingsboard-cluster/templates/node/msa/core-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-core-config
+  namespace: default
+  labels:
+    name: release-name-core-config
+data:
+  conf: |
+      export JAVA_OPTS="$JAVA_OPTS -Dplatform=deb -Dinstall.data_dir=/usr/share/thingsboard/data"
+      export JAVA_OPTS="$JAVA_OPTS -Xlog:gc*,heap*,age*,safepoint=debug:file=/var/log/thingsboard/gc.log:time,uptime,level,tags:filecount=10,filesize=10M"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+IgnoreUnrecognizedVMOptions -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/thingsboard/heapdump.bin"
+      export JAVA_OPTS="$JAVA_OPTS -XX:-UseBiasedLocking -XX:+UseTLAB -XX:+ResizeTLAB -XX:+PerfDisableSharedMem -XX:+UseCondCardMark"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=500 -XX:+UseStringDeduplication -XX:+ParallelRefProcEnabled -XX:MaxTenuringThreshold=10"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+ExitOnOutOfMemoryError"
+      export LOG_FILENAME=thingsboard.out
+      export LOADER_PATH=/usr/share/thingsboard/conf,/usr/share/thingsboard/extensions
+  logback: |
+      <!DOCTYPE configuration>
+      <configuration scan="true" scanPeriod="10 seconds">
+
+          <appender name="fileLogAppender"
+                    class="ch.qos.logback.core.rolling.RollingFileAppender">
+              <file>/var/log/thingsboard/thingsboard.log</file>
+              <rollingPolicy
+                      class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                  <fileNamePattern>/var/log/thingsboard/thingsboard.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+                  <maxFileSize>100MB</maxFileSize>
+                  <maxHistory>30</maxHistory>
+                  <totalSizeCap>3GB</totalSizeCap>
+              </rollingPolicy>
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <logger name="org.thingsboard.server" level="INFO" />
+          <logger name="com.google.common.util.concurrent.AggregateFuture" level="OFF" />
+
+          <root level="INFO">
+              <appender-ref ref="fileLogAppender"/>
+              <appender-ref ref="STDOUT"/>
+          </root>
+
+      </configuration>
+---
+# Source: thingsboard-cluster/templates/node/msa/rule-engine-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rule-engine-config
+  namespace: default
+  labels:
+    name: release-name-rule-engine-config
+data:
+  conf: |
+      export JAVA_OPTS="$JAVA_OPTS -Dplatform=deb -Dinstall.data_dir=/usr/share/thingsboard/data"
+      export JAVA_OPTS="$JAVA_OPTS -Xlog:gc*,heap*,age*,safepoint=debug:file=/var/log/thingsboard/gc.log:time,uptime,level,tags:filecount=10,filesize=10M"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+IgnoreUnrecognizedVMOptions -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/thingsboard/heapdump.bin"
+      export JAVA_OPTS="$JAVA_OPTS -XX:-UseBiasedLocking -XX:+UseTLAB -XX:+ResizeTLAB -XX:+PerfDisableSharedMem -XX:+UseCondCardMark"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+UseG1GC -XX:MaxGCPauseMillis=500 -XX:+UseStringDeduplication -XX:+ParallelRefProcEnabled -XX:MaxTenuringThreshold=10"
+      export JAVA_OPTS="$JAVA_OPTS -XX:+ExitOnOutOfMemoryError"
+      export LOG_FILENAME=thingsboard.out
+      export LOADER_PATH=/usr/share/thingsboard/conf,/usr/share/thingsboard/extensions
+  logback: |
+      <!DOCTYPE configuration>
+      <configuration scan="true" scanPeriod="10 seconds">
+
+          <appender name="fileLogAppender"
+                    class="ch.qos.logback.core.rolling.RollingFileAppender">
+              <file>/var/log/thingsboard/thingsboard.log</file>
+              <rollingPolicy
+                      class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                  <fileNamePattern>/var/log/thingsboard/thingsboard.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+                  <maxFileSize>100MB</maxFileSize>
+                  <maxHistory>30</maxHistory>
+                  <totalSizeCap>3GB</totalSizeCap>
+              </rollingPolicy>
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+              <encoder>
+                  <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+              </encoder>
+          </appender>
+
+          <logger name="org.thingsboard.server" level="INFO" />
+          <logger name="com.google.common.util.concurrent.AggregateFuture" level="OFF" />
+
+          <root level="INFO">
+              <appender-ref ref="fileLogAppender"/>
+              <appender-ref ref="STDOUT"/>
+          </root>
+
+      </configuration>
+---
+# Source: thingsboard-cluster/templates/node/node-custom-env.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-node-custom-env
+  namespace: default
+  labels:
+    name: release-name-node-custom-env
+data:
+---
+# Source: thingsboard-cluster/templates/queue/kafka-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kafka-config
+  namespace: default
+  labels:
+    name: release-name-kafka-config
+data:
+  TB_QUEUE_TYPE: kafka
+  TB_KAFKA_SERVERS: "release-name-kafka-headless:9092"
+  TB_QUEUE_KAFKA_REPLICATION_FACTOR: "1"
+  TB_KAFKA_ACKS: "1"
+---
+# Source: thingsboard-cluster/templates/tests/helm-test-configmap.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-helm-test-configmap
+data:
+  helm-test.http: |-
+    ### Get sysadmin token
+    POST {{TB_HOST}}/api/auth/login
+    Content-Type: application/json
+    
+    {"username":"{{SYSADMIN_LOGIN}}", "password":"{{SYSADMIN_PASSWORD}}"}
+    
+    > {%
+        client.test("Get Sysadmin token", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("sysadmin_token", response.body['token'])
+        client.log("Sysadmin authorized")
+    %}
+    
+    ### Create Test Tenant
+    POST {{TB_HOST}}/api/tenant
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    {"title":"{{TEST_TENANT_NAME}}","additionalInfo":{"description":"Tenant for testing install","allowWhiteLabeling":true,"allowCustomerWhiteLabeling":true,"homeDashboardId":null,"homeDashboardHideToolbar":true}}
+    
+    > {%
+        client.test("Create test tenant", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_tenant_id", response.body['id']['id'])
+        client.log("Create test tenant finished : " + response['title'])
+    %}
+    
+    
+    ### Create Test Tenant Admin
+    POST {{TB_HOST}}/api/user?sendActivationMail=false
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    {
+      "email": "{{TEST_TENANT_ADMIN_EMAIL}}",
+      "additionalInfo": {
+        "description": "",
+        "defaultDashboardId": null,
+        "defaultDashboardFullscreen": false,
+        "homeDashboardId": null,
+        "homeDashboardHideToolbar": true
+      },
+      "authority": "TENANT_ADMIN",
+      "tenantId": {
+        "entityType": "TENANT",
+        "id": "{{test_tenant_id}}"
+      },
+      "customerId": {
+        "entityType": "CUSTOMER",
+        "id": "13814000-1dd2-11b2-8080-808080808080"
+      }
+    }
+    
+    > {%
+        client.test("Create test tenant admin", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_tenant_admin_id", response.body['id']['id'])
+        client.log("Create test tenant admin finished : " + response['email'])
+    %}
+    
+    
+    ### Get Test Tenant Admin Activation Link
+    GET {{TB_HOST}}/api/user/{{test_tenant_admin_id}}/activationLink
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    
+    > {%
+        client.test("Get test tenant admin activation link", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_tenant_admin_activation_link", response.body.split('activateToken=')[1])
+        client.log("Get test tenant admin activation link finished : " + response.body.split('activateToken=')[1])
+    %}
+    
+    
+    
+    ### Activate Test Tenant Admin
+    POST {{TB_HOST}}/api/noauth/activate?sendActivationMail=false
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    {"activateToken":"{{test_tenant_admin_activation_link}}","password":"{{TEST_TENANT_ADMIN_PASSWORD}}"}
+    
+    > {%
+        client.test("Activate test tenant admin user", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_tenant_admin_token", response.body['token'])
+        client.log("Activate test tenant admin user finished")
+    %}
+    
+    
+    
+    ### Create Device For Test Tenant
+    POST {{TB_HOST}}/api/device
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    {"name":"{{TEST_DEVICE_NAME}}","label":"{{TEST_DEVICE_NAME}}","additionalInfo":{"gateway":false,"overwriteActivityTime":false,"description":""}}
+    
+    > {%
+        client.test("Activate test tenant admin user", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_device_id", response.body['id']['id'])
+        client.log("Test device created")
+    %}
+    
+    
+    ### Get Device Credentials
+    GET {{TB_HOST}}/api/device/{{test_device_id}}/credentials
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    > {%
+        client.test("Activate test tenant admin user", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.global.set("test_device_access_token", response.body['credentialsId'])
+        client.log("Test device get access token ok")
+    %}
+    
+    
+    
+    ### Push Test Telemetry To Device
+    POST {{TB_TS_HOST}}/api/v1/{{test_device_access_token}}/telemetry
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    {"test_telemetry_key":"test_telemetry_value"}
+    
+    > {%
+        client.test("Push test telemetry", function() {
+            client.assert(response.status === 200 , "Response status is not 200", response.status);
+        });
+        client.log("Telemetry pushed for device ")
+        function wait(seconds) {
+            const now = new Date().getTime()
+            const waitUntil = now + seconds * 1000
+            while (new Date().getTime() < waitUntil) {
+                // tic or maybe tac?!
+            }
+        }
+        wait(4)
+    %}
+    
+    ### Get Telemetry From Device And Validate It
+    GET {{TB_HOST}}/api/plugins/telemetry/DEVICE/{{test_device_id}}/values/timeseries?keys=test_telemetry_key
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    > {%
+        client.test("Get test telemetry", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.test("Validate test telemetry", function() {
+            let hasKey = response.body.hasOwnProperty('test_telemetry_key');
+            let sameValue = response.body['test_telemetry_key'][0]['value'] === 'test_telemetry_value';
+            client.assert(hasKey && sameValue, "Telemetry value missing or not match");
+        });
+        client.log("Telemetry has got for device ")
+    %}
+    
+    
+    ### Delete Test Telemetry For Device
+    DELETE {{TB_HOST}}/api/plugins/telemetry/DEVICE/{{test_device_id}}/timeseries/delete?keys=test_telemetry_key&deleteAllDataForKeys=true
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    > {%
+        client.test("Get test telemetry", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.log("Telemetry has deleted ")
+    %}
+    
+    <> 2023-08-16T134346.404.json
+    
+    ### Delete Test Device
+    DELETE {{TB_HOST}}/api/device/{{test_device_id}}
+    Content-Type: application/json
+    X-Authorization: Baerer {{test_tenant_admin_token}}
+    
+    > {%
+        client.test("Get test telemetry", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.log("Device has deleted ")
+    %}
+    
+    ### Delete Test Tenant Admin
+    DELETE {{TB_HOST}}/api/user/{{test_tenant_admin_id}}
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    > {%
+        client.test("Get test telemetry", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.log("Tenant Admin has deleted ")
+    %}
+    
+    ### Delete Test Tenant
+    DELETE {{TB_HOST}}/api/tenant/{{test_tenant_id}}
+    Content-Type: application/json
+    X-Authorization: Baerer {{sysadmin_token}}
+    
+    > {%
+        client.test("Get test telemetry", function() {
+            client.assert(response.status === 200, "Response status is not 200");
+        });
+        client.log("Test tenant has deleted ")
+    %}
+    
+  env.json: |-
+      {
+        "test": {
+          "TB_HOST": "http://release-name-core:8080/",
+          "TB_TS_HOST": "http://release-name-core:8080/",
+          "SYSADMIN_LOGIN": "sysadmin@thingsboard.org",
+          "SYSADMIN_PASSWORD": "sysadmin",
+          "TEST_TENANT_NAME": "Helm Test Tenant",
+          "TEST_TENANT_ADMIN_EMAIL": "test_tenant_admin@thingsboard.org",
+          "TEST_TENANT_ADMIN_PASSWORD": "qwerty123",
+          "TEST_DEVICE_NAME": "testDevice"
+        }
+      }
+---
+# Source: thingsboard-cluster/charts/internalKafka/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: internalKafka-23.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.5.0"
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+    - name: tcp-internal
+      port: 9094
+      protocol: TCP
+      targetPort: kafka-internal
+    - name: tcp-controller
+      protocol: TCP
+      port: 9093
+      targetPort: kafka-ctlr
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: thingsboard-cluster/charts/internalKafka/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: internalKafka-23.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.5.0"
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: thingsboard-cluster/charts/internalPostgresql/templates/primary/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql-hl
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.0.0
+    helm.sh/chart: internalPostgresql-13.0.0
+    app.kubernetes.io/component: primary
+  annotations:
+    # Use this annotation in addition to the actual publishNotReadyAddresses
+    # field below because the annotation will stop being respected soon but the
+    # field is broken in some versions of Kubernetes:
+    # https://github.com/kubernetes/kubernetes/issues/58662
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # We want all pods in the StatefulSet to have their addresses published for
+  # the sake of the other Postgresql pods even before they're ready, since they
+  # have to be able to talk to each other in order to become ready.
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: thingsboard-cluster/charts/internalPostgresql/templates/primary/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.0.0
+    helm.sh/chart: internalPostgresql-13.0.0
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: tcp-postgresql
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: primary
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/headless-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+  annotations:
+    
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/master/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Cluster
+  sessionAffinity: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+      nodePort: null
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: master
+---
+# Source: thingsboard-cluster/charts/internalZookeeper/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/version: 3.9.0
+    helm.sh/chart: internalZookeeper-12.1.3
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/component: zookeeper
+---
+# Source: thingsboard-cluster/charts/internalZookeeper/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/version: 3.9.0
+    helm.sh/chart: internalZookeeper-12.1.3
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+      nodePort: null
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/component: zookeeper
+---
+# Source: thingsboard-cluster/templates/node/msa/core-service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-core
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-core
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+    - port: 7070
+      name: edge
+      protocol: TCP
+    - port: 9090
+      name: grpc
+      protocol: TCP
+---
+# Source: thingsboard-cluster/templates/node/msa/rule-engine-service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rule-engine
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-rule-engine
+  ports:
+    - port: 8080
+      name: http
+      protocol: TCP
+---
+# Source: thingsboard-cluster/templates/web/tb-web-ui-service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-web-ui
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-web-ui
+  ports:
+    - port: 8080
+      name: http
+---
+# Source: thingsboard-cluster/templates/web/tb-web-ui-deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-web-ui
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-web-ui
+  template:
+    metadata:
+      labels:
+        app: release-name-web-ui
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      affinity:
+        {}
+      containers:
+        - name: server
+          imagePullPolicy: Always
+          image: thingsboard/tb-web-ui:3.6.0
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            limits:
+              cpu: 100m
+              memory: 100Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          env:
+            - name: HTTP_BIND_ADDRESS
+              value: "0.0.0.0"
+            - name: HTTP_BIND_PORT
+              value: "8080"
+            - name: TB_ENABLE_PROXY
+              value: "false"
+            - name: LOGGER_LEVEL
+              value: "info"
+            - name: LOG_FOLDER
+              value: "logs"
+            - name: LOGGER_FILENAME
+              value: "tb-web-ui-%DATE%.log"
+            - name: DOCKER_MODE
+              value: "true"
+          livenessProbe:
+            httpGet:
+              path: /index.html
+              port: http
+            initialDelaySeconds: 120
+            timeoutSeconds: 10
+      restartPolicy: Always
+---
+# Source: thingsboard-cluster/charts/internalKafka/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: internalKafka-23.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "3.5.0"
+    app.kubernetes.io/component: kafka
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: kafka
+  serviceName: release-name-kafka-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        helm.sh/chart: internalKafka-23.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "3.5.0"
+        app.kubernetes.io/component: kafka
+      annotations:
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: kafka
+                    app.kubernetes.io/component: kafka
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-kafka
+      containers:
+        - name: kafka
+          image: docker.io/bitnami/kafka:3.5.0-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECT
+              value: 
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,CLIENT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            - name: KAFKA_CFG_LISTENERS
+              value: "INTERNAL://:9094,CLIENT://:9092,CONTROLLER://:9093"
+            - name: KAFKA_CFG_ADVERTISED_LISTENERS
+              value: "INTERNAL://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9094,CLIENT://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9092"
+            - name: ALLOW_PLAINTEXT_LISTENER
+              value: "yes"
+            - name: KAFKA_ZOOKEEPER_PROTOCOL
+              value: PLAINTEXT
+            - name: KAFKA_VOLUME_DIR
+              value: "/bitnami/kafka"
+            - name: KAFKA_LOG_DIR
+              value: "/opt/bitnami/kafka/logs"
+            - name: KAFKA_CFG_DELETE_TOPIC_ENABLE
+              value: "false"
+            - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx1024m -Xms1024m"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MESSAGES
+              value: "10000"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MS
+              value: "1000"
+            - name: KAFKA_CFG_LOG_RETENTION_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_RETENTION_CHECK_INTERVAL_MS
+              value: "300000"
+            - name: KAFKA_CFG_LOG_RETENTION_HOURS
+              value: "168"
+            - name: KAFKA_CFG_MESSAGE_MAX_BYTES
+              value: "1000012"
+            - name: KAFKA_CFG_LOG_SEGMENT_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_DIRS
+              value: "/bitnami/kafka/data"
+            - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_CFG_NUM_IO_THREADS
+              value: "8"
+            - name: KAFKA_CFG_NUM_NETWORK_THREADS
+              value: "3"
+            - name: KAFKA_CFG_NUM_PARTITIONS
+              value: "1"
+            - name: KAFKA_CFG_NUM_RECOVERY_THREADS_PER_DATA_DIR
+              value: "1"
+            - name: KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES
+              value: "104857600"
+            - name: KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECTION_TIMEOUT_MS
+              value: "6000"
+            - name: KAFKA_CFG_AUTHORIZER_CLASS_NAME
+              value: ""
+            - name: KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND
+              value: "true"
+            - name: KAFKA_CFG_SUPER_USERS
+              value: "User:admin"
+            - name: KAFKA_ENABLE_KRAFT
+              value: "true"
+            - name: KAFKA_KRAFT_CLUSTER_ID
+              value: "kafka_cluster_id_test1"
+            - name: KAFKA_CFG_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+          ports:
+            - name: kafka-client
+              containerPort: 9092
+            - name: kafka-internal
+              containerPort: 9094
+            - name: kafka-ctlr
+              containerPort: 9093
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/kafka
+            - name: logs
+              mountPath: /opt/bitnami/kafka/logs
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-kafka-scripts
+            defaultMode: 0755
+        - name: logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: thingsboard-cluster/charts/internalPostgresql/templates/primary/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-postgresql
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: 16.0.0
+    helm.sh/chart: internalPostgresql-13.0.0
+    app.kubernetes.io/component: primary
+spec:
+  replicas: 1
+  serviceName: release-name-postgresql-hl
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      name: release-name-postgresql
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/version: 16.0.0
+        helm.sh/chart: internalPostgresql-13.0.0
+        app.kubernetes.io/component: primary
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: postgresql
+                    app.kubernetes.io/component: primary
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      hostNetwork: false
+      hostIPC: false
+      containers:
+        - name: postgresql
+          image: docker.io/bitnami/postgresql:16.0.0-debian-11-r3
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: POSTGRESQL_PORT_NUMBER
+              value: "5432"
+            - name: POSTGRESQL_VOLUME_DIR
+              value: "/bitnami/postgresql"
+            - name: PGDATA
+              value: "/bitnami/postgresql/data"
+            # Authentication
+            - name: POSTGRES_USER
+              value: "root"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: password
+            - name: POSTGRES_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-postgresql
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "thingsboard"
+            # Replication
+            # Initdb
+            # Standby
+            # LDAP
+            - name: POSTGRESQL_ENABLE_LDAP
+              value: "no"
+            # TLS
+            - name: POSTGRESQL_ENABLE_TLS
+              value: "no"
+            # Audit
+            - name: POSTGRESQL_LOG_HOSTNAME
+              value: "false"
+            - name: POSTGRESQL_LOG_CONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_LOG_DISCONNECTIONS
+              value: "false"
+            - name: POSTGRESQL_PGAUDIT_LOG_CATALOG
+              value: "off"
+            # Others
+            - name: POSTGRESQL_CLIENT_MIN_MESSAGES
+              value: "error"
+            - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
+              value: "pgaudit"
+          ports:
+            - name: tcp-postgresql
+              containerPort: 5432
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "root" -d "dbname=thingsboard" -h 127.0.0.1 -p 5432
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "root" -d "dbname=thingsboard" -h 127.0.0.1 -p 5432
+                  [ -f /opt/bitnami/postgresql/tmp/.initialized ] || [ -f /bitnami/postgresql/.initialized ]
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: data
+              mountPath: /bitnami/postgresql
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: thingsboard-cluster/charts/internalRedis/templates/master/application.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-redis-master
+  namespace: "default"
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/version: 7.2.1
+    helm.sh/chart: internalRedis-18.1.2
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: master
+  serviceName: release-name-redis-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/version: 7.2.1
+        helm.sh/chart: internalRedis-18.1.2
+        app.kubernetes.io/component: master
+      annotations:
+        checksum/configmap: 86bcc953bb473748a3d3dc60b7c11f34e60c93519234d4c37f42e22ada559d47
+        checksum/health: aff24913d801436ea469d8d374b2ddb3ec4c43ee7ab24663d5f8ff1a1b6991a9
+        checksum/scripts: 560c33ff34d845009b51830c332aa05fa211444d1877d3526d3599be7543aaa5
+        checksum/secret: e8fe241d1ce373b2bf056031f98c4f5f6674b7387f272c91fd39229d6213a584
+    spec:
+      
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-redis
+      automountServiceAccountToken: true
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/component: master
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.2.1-debian-11-r0
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          command:
+            - /bin/bash
+          args:
+            - -c
+            - /opt/bitnami/scripts/start-scripts/start-master.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: REDIS_REPLICATION_MODE
+              value: master
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-redis
+                  key: redis-password
+            - name: REDIS_TLS_ENABLED
+              value: "no"
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            # One second longer than command timeout should prevent generation of zombie processes.
+            timeoutSeconds: 6
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_liveness_local.sh 5
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 5
+            exec:
+              command:
+                - sh
+                - -c
+                - /health/ping_readiness_local.sh 1
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: start-scripts
+              mountPath: /opt/bitnami/scripts/start-scripts
+            - name: health
+              mountPath: /health
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /opt/bitnami/redis/mounted-etc
+            - name: redis-tmp-conf
+              mountPath: /opt/bitnami/redis/etc/
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: start-scripts
+          configMap:
+            name: release-name-redis-scripts
+            defaultMode: 0755
+        - name: health
+          configMap:
+            name: release-name-redis-health
+            defaultMode: 0755
+        - name: config
+          configMap:
+            name: release-name-redis-configuration
+        - name: redis-tmp-conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          app.kubernetes.io/instance: release-name
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/component: master
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: thingsboard-cluster/charts/internalZookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/version: 3.9.0
+    helm.sh/chart: internalZookeeper-12.1.3
+    app.kubernetes.io/component: zookeeper
+    role: zookeeper
+spec:
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/name: zookeeper
+      app.kubernetes.io/component: zookeeper
+  serviceName: release-name-zookeeper-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: zookeeper
+        app.kubernetes.io/version: 3.9.0
+        helm.sh/chart: internalZookeeper-12.1.3
+        app.kubernetes.io/component: zookeeper
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/name: zookeeper
+                    app.kubernetes.io/component: zookeeper
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      containers:
+        - name: zookeeper
+          image: docker.io/bitnami/zookeeper:3.9.0-debian-11-r11
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: ZOO_DATA_LOG_DIR
+              value: ""
+            - name: ZOO_PORT_NUMBER
+              value: "2181"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+            - name: ZOO_INIT_LIMIT
+              value: "10"
+            - name: ZOO_SYNC_LIMIT
+              value: "5"
+            - name: ZOO_PRE_ALLOC_SIZE
+              value: "65536"
+            - name: ZOO_SNAPCOUNT
+              value: "100000"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr, mntr, ruok"
+            - name: ZOO_LISTEN_ALLIPS_ENABLED
+              value: "no"
+            - name: ZOO_AUTOPURGE_INTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_RETAIN_COUNT
+              value: "3"
+            - name: ZOO_MAX_SESSION_TIMEOUT
+              value: "40000"
+            - name: ZOO_SERVERS
+              value: release-name-zookeeper-0.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::1 
+            - name: ZOO_ENABLE_AUTH
+              value: "no"
+            - name: ZOO_ENABLE_QUORUM_AUTH
+              value: "no"
+            - name: ZOO_HEAP_SIZE
+              value: "1024"
+            - name: ZOO_LOG_LEVEL
+              value: "ERROR"
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          ports:
+            - name: client
+              containerPort: 2181
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+            - name: data
+              mountPath: /bitnami/zookeeper
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-zookeeper-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: thingsboard-cluster/templates/node/msa/core-statefulset.yml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-core
+  namespace: default
+  labels:
+    app: release-name-core
+spec:
+  serviceName: release-name-core
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-core
+  template:
+    metadata:
+      labels:
+        app: release-name-core
+    spec:
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      securityContext:
+        fsGroup: 799
+        runAsNonRoot: true
+        runAsUser: 799
+      imagePullSecrets:
+        - name: regcred
+      initContainers:         
+        []
+      containers:
+        - name: server
+          imagePullPolicy: Always
+          image: thingsboard/tb-node:3.6.0
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+            - containerPort: 7070
+              name: edge
+              protocol: TCP
+            - containerPort: 9090
+              name: grpc
+              protocol: TCP            
+          env:
+            - name: COAP_ENABLED
+              value: "false"
+            - name: HTTP_ENABLED
+              value: "false"
+            - name: LWM2M_ENABLED
+              value: "false"
+            - name: MQTT_ENABLED
+              value: "false"
+            - name: SNMP_ENABLED
+              value: "false"
+            - name: TB_SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TB_SERVICE_TYPE
+              value: "tb-core"
+            - name: HTTP_LOG_CONTROLLER_ERROR_STACK_TRACE
+              value: "false"
+          envFrom:
+            - configMapRef:
+                name: release-name-node-custom-env            
+            - configMapRef:
+                name: release-name-zookeeper-config            
+            - configMapRef:
+                name: release-name-kafka-config            
+            - configMapRef:
+                name: release-name-redis-config
+            - secretRef:
+                name: release-name-redis-secret                        
+            - configMapRef:
+                name: release-name-postgres-config
+            - secretRef:
+                name: release-name-postgres-secret
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 460
+            timeoutSeconds: 10
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 4000Mi
+            requests:
+              cpu: 1000m
+              memory: 3000Mi
+          volumeMounts:
+            - name: release-name-core-config
+              mountPath: /config
+            - name: release-name-node-logs
+              mountPath: /var/log/thingsboard
+            - name: release-name-node-data
+              mountPath: /data
+              readOnly: false
+      restartPolicy: Always
+      volumes:
+        - name: release-name-core-config
+          configMap:
+            name: release-name-core-config
+            items:
+              - key: conf
+                path: thingsboard.conf
+              - key: logback
+                path: logback.xml
+        - name: release-name-node-logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: release-name-node-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName:
+---
+# Source: thingsboard-cluster/templates/node/msa/rule-engine-statefulset.yml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-rule-engine
+  namespace: default
+  labels:
+    app: release-name-rule-engine
+spec:
+  serviceName: release-name-rule-engine
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-rule-engine
+  template:
+    metadata:
+      labels:
+        app: release-name-rule-engine
+    spec:
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      securityContext:
+        fsGroup: 799
+        runAsNonRoot: true
+        runAsUser: 799
+      imagePullSecrets:
+        - name: regcred
+      initContainers:         
+        []
+      containers:
+        - name: server
+          imagePullPolicy: Always
+          image: thingsboard/tb-node:3.6.0
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            - name: COAP_ENABLED
+              value: "false"
+            - name: HTTP_ENABLED
+              value: "false"
+            - name: LWM2M_ENABLED
+              value: "false"
+            - name: MQTT_ENABLED
+              value: "false"
+            - name: SNMP_ENABLED
+              value: "false"
+            - name: TB_SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TB_SERVICE_TYPE
+              value: "tb-rule-engine"
+            - name: HTTP_LOG_CONTROLLER_ERROR_STACK_TRACE
+              value: "false"
+          envFrom:
+            - configMapRef:
+                name: release-name-node-custom-env            
+            - configMapRef:
+                name: release-name-zookeeper-config            
+            - configMapRef:
+                name: release-name-kafka-config            
+            - configMapRef:
+                name: release-name-redis-config
+            - secretRef:
+                name: release-name-redis-secret                        
+            - configMapRef:
+                name: release-name-postgres-config
+            - secretRef:
+                name: release-name-postgres-secret
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 460
+            timeoutSeconds: 10
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 4000Mi
+            requests:
+              cpu: 1000m
+              memory: 3000Mi
+          volumeMounts:
+            - name: release-name-rule-engine-config
+              mountPath: /config
+            - name: release-name-node-logs
+              mountPath: /var/log/thingsboard
+            - name: release-name-node-data
+              mountPath: /data
+              readOnly: false
+      restartPolicy: Always
+      volumes:
+        - name: release-name-rule-engine-config
+          configMap:
+            name: release-name-rule-engine-config
+            items:
+              - key: conf
+                path: thingsboard.conf
+              - key: logback
+                path: logback.xml
+        - name: release-name-node-logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: release-name-node-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName:
+---
+# Source: thingsboard-cluster/templates/tests/helm-test.yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-name-test
+  labels:
+    app: release-name-test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  containers:
+    - name: wget
+      image: jetbrains/intellij-http-client
+      imagePullPolicy: IfNotPresent
+      args:
+        - helm-test.http
+        - --env-file
+        - env.json
+        - --env
+        - test
+      volumeMounts:
+        - name: release-name-helm-test-configmap
+          mountPath: /workdir
+  volumes:
+    - name: release-name-helm-test-configmap
+      configMap:
+        name: release-name-helm-test-configmap
+        defaultMode: 0777
+        items:
+          - key: helm-test.http
+            path: helm-test.http
+          - key: env.json
+            path: env.json
+  restartPolicy: Never

@@ -1,0 +1,216 @@
+---
+# Source: rstudio-connect/templates/configmap-graphite-exporter.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rstudio-connect-graphite
+  namespace: default
+data:
+  graphite-mapping.yaml: |-
+    mappings:
+      - match: "rsconnect\\.([\\w-]+)\\.content-(\\d+)\\.(.*)"
+        match_type: regex
+        name: "rsconnect_content_$3"
+        labels:
+          host: $1
+          appid: $2
+      - match: "rsconnect\\.([\\w-]+)\\.system-(\\w+)\\.(.*)"
+        match_type: regex
+        name: "rsconnect_system_${2}_${3}"
+        labels:
+          host: $1
+      - match: "rsconnect\\.([\\w-]+)\\.license-(\\w+)\\.(.*)"
+        match_type: regex
+        name: "rsconnect_license_$3"
+        labels:
+          host: $1
+          type: $2
+      - match: "rsconnect\\.([\\w-]+)\\.cpu-(\\d+)\\.(.*)"
+        match_type: regex
+        name: "rsconnect_cpu_$3"
+        labels:
+          host: $1
+          cpu: $2
+      - match: "rsconnect\\.([\\w-]+)\\.system\\.load\\.(.*)"
+        match_type: regex
+        name: "rsconnect_system_load"
+        labels:
+          host: $1
+          duration: $2
+      - match: "rsconnect\\.([\\w-]+)\\.system\\.cpu\\.usage\\.(.*)"
+        match_type: regex
+        name: "rsconnect_system_cpu_$2"
+        labels:
+          host: $1
+      - match: "rsconnect\\.([\\w-]+)\\.system\\.memory\\.(.*)"
+        match_type: regex
+        name: "rsconnect_system_memory_$2"
+        labels:
+          host: $1
+      - match: "rsconnect\\.([\\w-]+)\\.system\\.swap\\.(.*)"
+        match_type: regex
+        name: "rsconnect_system_swap_$2"
+        labels:
+          host: $1
+      - match: "rsconnect\\.([\\w-]+)\\.(.*)"
+        match_type: regex
+        name: "rsconnect_$2"
+        labels:
+          host: "$1"
+---
+# Source: rstudio-connect/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-rstudio-connect-config
+  namespace: default
+data:
+  rstudio-connect.gcfg: |
+    [Authentication]
+    Provider = password
+    
+    [HTTP]
+    Listen = :3939
+    
+    [Logging]
+    AccessLog = STDOUT
+    AccessLogFormat = COMMON
+    ServiceLog = STDOUT
+    ServiceLogFormat = TEXT
+    ServiceLogLevel = INFO
+    
+    [Metrics]
+    Enabled = true
+    GraphiteClientId = rsconnect
+    GraphiteEnabled = true
+    GraphiteHost = 127.0.0.1
+    GraphitePort = 9109
+    
+    [Python]
+    Enabled = true
+    Executable = /opt/python/3.9.17/bin/python
+    Executable = /opt/python/3.8.17/bin/python
+    
+    [Quarto]
+    Enabled = true
+    Executable = /opt/quarto/1.4.552/bin/quarto
+    
+    [RPackageRepository "CRAN"]
+    URL = https://packagemanager.rstudio.com/cran/__linux__/jammy/latest
+    
+    [RPackageRepository "RSPM"]
+    URL = https://packagemanager.rstudio.com/cran/__linux__/jammy/latest
+    
+    [Scheduler]
+    InitTimeout = 5m
+    
+    [Server]
+    Address = http://localhost:3939
+    DataDir = /var/lib/rstudio-connect
+---
+# Source: rstudio-connect/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rstudio-connect
+  namespace: default
+  labels:
+    helm.sh/chart: rstudio-connect-0.6.6
+    app.kubernetes.io/name: rstudio-connect
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2024.04.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP  
+  selector:
+    app.kubernetes.io/name: rstudio-connect
+    app.kubernetes.io/instance: release-name
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 3939
+  - name: metrics
+    port: 9108
+---
+# Source: rstudio-connect/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-rstudio-connect
+  namespace: default
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 100%
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rstudio-connect
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/config: 249c9201364b8ef562f48ab90c06faad023facf6a76fb2462546932260117a9a
+        checksum/config-graphite: bdb5eed790bbe76abb93ee7dfdddf0ae9f049c36f552ffa825c2e2be21c5e0e3
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9108"
+        
+      labels:
+        app.kubernetes.io/name: rstudio-connect
+        app.kubernetes.io/instance: release-name
+    spec:
+      
+      serviceAccountName: ""
+      containers:
+      - name: connect
+        image: "ghcr.io/rstudio/rstudio-connect:ubuntu2204-2024.04.1"
+        env:
+        - name: RSTUDIO_CONNECT_HASTE
+          value: enabled
+        
+        imagePullPolicy: "IfNotPresent"
+        ports:
+        - containerPort: 3939
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: rstudio-connect-config
+            mountPath: "/etc/rstudio-connect/rstudio-connect.gcfg"
+            subPath: "rstudio-connect.gcfg"
+                    
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /__ping__
+            port: 3939
+          initialDelaySeconds: 3
+          periodSeconds: 3
+          successThreshold: 1
+          timeoutSeconds: 1
+      - name: exporter
+        image: "prom/graphite-exporter:v0.9.0"
+        imagePullPolicy: "IfNotPresent"
+        args:
+          - "--graphite.mapping-config=/mnt/graphite/graphite-mapping.yaml"
+        volumeMounts:
+          - name: graphite-exporter-config
+            mountPath: "/mnt/graphite"
+        ports:
+          - containerPort: 9108
+            name: metrics
+        securityContext:
+          {}
+      terminationGracePeriodSeconds: 120
+      volumes:
+      - name: rstudio-connect-config
+        configMap:
+          name: release-name-rstudio-connect-config
+            
+      - name: graphite-exporter-config
+        configMap:
+          name: release-name-rstudio-connect-graphite
+          defaultMode: 0755

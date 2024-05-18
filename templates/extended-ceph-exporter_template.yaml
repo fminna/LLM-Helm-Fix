@@ -1,0 +1,256 @@
+---
+# Source: extended-ceph-exporter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-extended-ceph-exporter
+  labels:
+    helm.sh/chart: extended-ceph-exporter-1.3.8
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.2"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: extended-ceph-exporter/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-extended-ceph-exporter
+  labels:
+    helm.sh/chart: extended-ceph-exporter-1.3.8
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.2"
+    app.kubernetes.io/managed-by: Helm
+data:
+  CEPH_METRICS_RGW_HOST: 
+  CEPH_METRICS_RGW_ACCESS_KEY: WDlNbXZhbzdSMjhMMWFUaWo0TnU=
+  CEPH_METRICS_RGW_SECRET_KEY: UTdPbGRyeGVUNFJlZ2o1cll4anM0WVJ6RWxBQ000aTlUWVFtU2ZpSw==
+---
+# Source: extended-ceph-exporter/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-extended-ceph-exporter
+  labels:
+    helm.sh/chart: extended-ceph-exporter-1.3.8
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9138
+      targetPort: http-metrics
+      protocol: TCP
+      name: http-metrics
+  selector:
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+---
+# Source: extended-ceph-exporter/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-extended-ceph-exporter
+  labels:
+    helm.sh/chart: extended-ceph-exporter-1.3.8
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.2"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: extended-ceph-exporter
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      annotations:
+        checksum/additional-env: 6424b93be8129ffafd77b4087b2373353ad5cce1db625cc9244fdb2220ae6c2d
+      labels:
+        app.kubernetes.io/name: extended-ceph-exporter
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-extended-ceph-exporter
+      securityContext:
+        {}
+      containers:
+        - name: extended-ceph-exporter
+          securityContext:
+            {}
+          image: "docker.io/galexrt/extended-ceph-exporter:v1.2.2"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: release-name-extended-ceph-exporter
+          ports:
+            - name: http-metrics
+              containerPort: 9138
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http-metrics
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http-metrics
+          resources:
+            limits:
+              cpu: 125m
+              memory: 150Mi
+            requests:
+              cpu: 25m
+              memory: 150Mi
+---
+# Source: extended-ceph-exporter/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-extended-ceph-exporter-test-connection"
+  labels:
+    helm.sh/chart: extended-ceph-exporter-1.3.8
+    app.kubernetes.io/name: extended-ceph-exporter
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "v1.2.2"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-extended-ceph-exporter:9138']
+  restartPolicy: Never
+---
+# Source: extended-ceph-exporter/templates/post-install-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: extended-ceph-exporter
+  labels:
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: v1.2.2
+    helm.sh/chart: "extended-ceph-exporter-1.3.8"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": "post-install,post-upgrade"
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    metadata:
+      name: "release-name"
+      labels:
+        helm.sh/chart: "extended-ceph-exporter-1.3.8"
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: rook-ceph-config
+          image: "quay.io/ceph/ceph:v17.2.7"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Replicate the script from toolbox.sh inline so the ceph image
+              # can be run directly, instead of requiring the rook toolbox
+              CEPH_CONFIG="/etc/ceph/ceph.conf"
+              MON_CONFIG="/etc/rook/mon-endpoints"
+              KEYRING_FILE="/etc/ceph/keyring"
+
+              # create a ceph config file in its default location so ceph/rados tools can be used
+              # without specifying any arguments
+              write_endpoints() {
+                endpoints=$(cat ${MON_CONFIG})
+
+                # filter out the mon names
+                # external cluster can have numbers or hyphens in mon names, handling them in regex
+                # shellcheck disable=SC2001
+                mon_endpoints=$(echo "${endpoints}"| sed 's/[a-z0-9_-]\+=//g')
+
+                DATE=$(date)
+                echo "$DATE writing mon endpoints to ${CEPH_CONFIG}: ${endpoints}"
+                  cat <<EOF > ${CEPH_CONFIG}
+              [global]
+              mon_host = ${mon_endpoints}
+
+              [client.admin]
+              keyring = ${KEYRING_FILE}
+              EOF
+              }
+
+              # create the keyring file
+              cat <<EOF > ${KEYRING_FILE}
+              [${ROOK_CEPH_USERNAME}]
+              key = ${ROOK_CEPH_SECRET}
+              EOF
+
+              # write the initial config file
+              write_endpoints
+          env:
+            - name: ROOK_CEPH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: ceph-username
+            - name: ROOK_CEPH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: ceph-secret
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: ceph-config
+            - name: mon-endpoint-volume
+              mountPath: /etc/rook
+      containers:
+        - name: rgw-creds-setup
+          image: "quay.io/ceph/ceph:v17.2.7"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CEPH_METRICS_RGW_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-extended-ceph-exporter
+                  key: CEPH_METRICS_RGW_HOST
+            - name: RGW_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-extended-ceph-exporter
+                  key: CEPH_METRICS_RGW_ACCESS_KEY
+            - name: RGW_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-extended-ceph-exporter
+                  key: CEPH_METRICS_RGW_SECRET_KEY
+          command:
+            - /bin/bash
+            - -c
+            - |
+              if radosgw-admin user list | grep -q '"extended-ceph-exporter"'; then
+                radosgw-admin user rm --uid extended-ceph-exporter
+              fi
+              radosgw-admin user create --uid extended-ceph-exporter \
+              --display-name "extended-ceph-exporter admin user" \
+              --caps "buckets=read;users=read;usage=read;metadata=read;zone=read" \
+              --access-key=$(RGW_ACCESS_KEY) \
+              --secret-key=$(RGW_SECRET_KEY) &> /dev/null
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: ceph-config
+      volumes:
+        - name: mon-endpoint-volume
+          configMap:
+            name: rook-ceph-mon-endpoints
+            items:
+              - key: data
+                path: mon-endpoints
+        - name: ceph-config
+          emptyDir: {}

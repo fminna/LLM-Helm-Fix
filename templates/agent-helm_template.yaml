@@ -1,0 +1,596 @@
+---
+# Source: agent-helm/templates/dsk-kubernetes-agent/rbac.yaml
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:   
+  name: dsk-kubernetes-agent
+  namespace: default
+  labels:  
+    app.kubernetes.io/version: 2.5.0
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/name: datasaker
+    app.kubernetes.io/instance: dsk-kubernetes-agent
+imagePullSecrets:
+  - name: regcred-default
+---
+# Source: agent-helm/templates/dsk-base-agent/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:   
+  name: dsk-base-agent
+  namespace: default
+  labels:  
+    app.kubernetes.io/name: datasaker
+    app: dsk-base-agent
+data:
+  node-agent-config.yml: |
+    agent:
+      metadata:
+        agent_name: dsk-node-agent
+        cluster_id: unknown
+      option:
+        exporter_config:
+          command: "/etc/datasaker/target-exporter"
+          port: 19110
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/rootfs
+            - --collector.filesystem.ignored-mount-points="^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/kubelet/pods/.+)($|/)"
+            - --collector.tcpstat
+        scrape_interval: 15s
+        scrape_timeout: 5s
+        scrape_configs:
+          - job_name: dsk-node-agent
+            url: "localhost:19110"
+            filtering_configs:
+              rule: drop
+  container-agent-config.yml: |
+    agent:
+      metadata:
+        agent_name: dsk-container-agent
+        cluster_id: unknown
+      option:
+        exporter_config:
+          command: "/usr/bin/cadvisor"
+          port: 14194
+          args:
+            - --logtostderr=true
+            - --disable_metrics=percpu,sched,process,tcp,udp,advtcp
+            - --housekeeping_interval=10s
+            - --max_housekeeping_interval=60s
+            - --storage_duration=2m0s
+            - --store_container_labels=false
+            - --docker_only=true
+            - --whitelisted_container_labels=io.kubernetes.container.name,io.kubernetes.pod.name,io.kubernetes.pod.namespace,io.kubernetes.pod.uid
+            - --disable_root_cgroup_stats=true
+        scrape_interval: 15s
+        scrape_timeout: 5s
+        scrape_configs:
+          - job_name: dsk-container-agent
+            url: "localhost:14194"
+            filtering_configs:
+              rule: drop
+  process-agent-config.yml: |
+    agent:
+      metadata:
+        agent_name: dsk-process-agent
+        cluster_id: unknown
+      option:
+        exporter_config:
+          command: "/etc/datasaker/target-exporter"
+          port: 19256
+          args:
+            - --no-threads
+            - --procfs=/host/proc
+            - --config.path=/etc/datasaker/dsk-process-agent/config.yml
+        scrape_interval: 20s
+        scrape_timeout: 5s
+        scrape_configs:
+          - job_name: dsk-process-agent
+            url: "localhost:19256"
+            filtering_configs:
+              rule: drop
+---
+# Source: agent-helm/templates/dsk-kubernetes-agent/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:   
+  name: dsk-kubernetes-agent
+  namespace: default
+  labels:  
+    app.kubernetes.io/version: 2.5.0
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/name: datasaker
+    app.kubernetes.io/instance: dsk-kubernetes-agent
+data:
+  agent-config.yml: |
+    agent:
+      metadata:
+        agent_name: dsk-kubernetes-agent
+        cluster_id: unknown
+      option:
+        exporter_config:
+          command: "/etc/datasaker/target-exporter"
+          port: 18080
+        scrape_interval: 15s
+        scrape_timeout: 5s
+        scrape_configs:
+          - job_name: dsk-k8s-agent
+            url: "localhost:18080"
+            filtering_configs:
+              rule: drop
+        eventLevel: Warn
+---
+# Source: agent-helm/templates/global_config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:   
+  name: dsk-global-config
+  namespace: default
+  labels:
+    app.kubernetes.io/name: datasaker
+    app: dsk-global-config
+  
+data:
+  global-config.yml: |
+    global:
+      api_key: sample-api-key
+      gates:
+        metric_datagate:
+          url: gate.kr.datasaker.io:31302
+          remote_timeout: 5s
+        manifest_datagate:
+          url: gate.kr.datasaker.io:31301
+          remote_timeout: 5s
+        trace_datagate:
+          url: gate.kr.datasaker.io:31300
+          remote_timeout: 5s
+        plan_datagate:
+          url: gate.kr.datasaker.io:31303
+          remote_timeout: 5s
+        loggate:
+          url: gate.kr.datasaker.io:31304
+          remote_timeout: 5s
+      agent_manager:
+        url: api.kr.datasaker.io
+        base_url: /dsk-agentmanager-api/agent
+        endpoint: /alive
+        send_interval: 1m
+---
+# Source: agent-helm/templates/dsk-kubernetes-agent/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:       
+      app.kubernetes.io/version: 2.5.0
+      app.kubernetes.io/component: exporter
+      app.kubernetes.io/name: datasaker
+      app.kubernetes.io/instance: dsk-kubernetes-agent
+  name: dsk-kubernetes-agent-default
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - endpoints
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - pods
+      - replicationcontrollers
+      - secrets
+      - services
+      - serviceaccounts
+      - resourcequotas
+      - limitranges
+      - events
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterrolebindings
+      - clusterroles
+      - rolebindings
+      - roles
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - cronjobs
+      - jobs
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - statefulsets
+      - daemonsets
+      - deployments
+      - replicasets
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - certificates.k8s.io
+    resources:
+      - certificatesigningrequests
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - storageclasses
+      - volumeattachments
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - admissionregistration.k8s.io
+    resources:
+      - mutatingwebhookconfigurations
+      - validatingwebhookconfigurations
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+      - ingresses
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - events.k8s.io
+    resources:
+      - events
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - list
+      - watch
+---
+# Source: agent-helm/templates/dsk-kubernetes-agent/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:       
+      app.kubernetes.io/version: 2.5.0
+      app.kubernetes.io/component: exporter
+      app.kubernetes.io/name: datasaker
+      app.kubernetes.io/instance: dsk-kubernetes-agent
+  name: dsk-kubernetes-agent-default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dsk-kubernetes-agent-default
+subjects:
+  - kind: ServiceAccount
+    name: dsk-kubernetes-agent
+    namespace: default
+---
+# Source: agent-helm/templates/dsk-base-agent/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:   
+  name: dsk-base-agent
+  namespace: default
+  labels:  
+    app.kubernetes.io/name: datasaker
+    app: dsk-base-agent
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:       
+      app.kubernetes.io/name: datasaker
+      app: dsk-base-agent
+  template:
+    metadata:
+      labels:         
+        app.kubernetes.io/name: datasaker
+        app: dsk-base-agent
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      hostPID: true
+      initContainers:
+      - name: chowner
+        image: datasaker/busybox:latest
+        command: ["sh", "-c", "chown -R 202306:202306 /var/datasaker"]
+        volumeMounts:
+          - mountPath: /var/datasaker
+            mountPropagation: HostToContainer
+            name: dsk-mount
+          - mountPath: /etc/datasaker/global-config.yml
+            name: global-config
+            subPath: global-config.yml
+      containers:
+        - name: dsk-node-agent
+          image: datasaker/dsk-node-agent:latest
+          imagePullPolicy: Always
+          resources:
+            {}
+          volumeMounts:
+            - mountPath: /var/datasaker
+              mountPropagation: HostToContainer
+              name: dsk-mount
+            - mountPath: /etc/datasaker/global-config.yml
+              name: global-config
+              subPath: global-config.yml
+            - name: agent-configs
+              subPath: node-agent-config.yml
+              mountPath: /etc/datasaker/dsk-node-agent/agent-config.yml
+            - name: proc
+              mountPath: /host/proc
+            - name: sys
+              mountPath: /host/sys
+            - name: rootfs
+              mountPath: /rootfs
+              mountPropagation: HostToContainer
+              readOnly: true
+          env:
+            - name: DSK_LOG_LEVEL
+              value: INFO
+        - name: dsk-container-agent
+          image: datasaker/dsk-container-agent:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          resources:
+            {}
+          volumeMounts:
+            - mountPath: /var/datasaker
+              mountPropagation: HostToContainer
+              name: dsk-mount
+            - mountPath: /etc/datasaker/global-config.yml
+              name: global-config
+              subPath: global-config.yml
+            - name: agent-configs
+              subPath: container-agent-config.yml
+              mountPath: /etc/datasaker/dsk-container-agent/agent-config.yml
+            - name: rootfs
+              mountPath: /rootfs
+              readOnly: true
+            - name: var-run
+              mountPath: /var/run
+              readOnly: true
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: disk
+              mountPath: /dev/disk
+              readOnly: true
+            - name: containerd
+              mountPath: /var/run/containerd
+              readOnly: true
+          env:
+            - name: DSK_LOG_LEVEL
+              value: INFO
+            - name: GOMAXPROCS
+              value: "1"
+        - name: dsk-process-agent
+          image: datasaker/dsk-process-agent:latest
+          imagePullPolicy: Always
+          resources:
+            null
+          volumeMounts:
+            - mountPath: /var/datasaker
+              mountPropagation: HostToContainer
+              name: dsk-mount
+            - mountPath: /etc/datasaker/global-config.yml
+              name: global-config
+              subPath: global-config.yml
+            - name: agent-configs
+              subPath: process-agent-config.yml
+              mountPath: /etc/datasaker/dsk-process-agent/agent-config.yml
+            - name: proc
+              mountPath: /host/proc
+          env:
+            - name: DSK_CLUSTER_ID
+              value: unknown
+            - name: DSK_LOG_LEVEL
+              value: INFO
+      volumes:
+        - hostPath:
+            path: /var/datasaker
+            type: DirectoryOrCreate
+          name: dsk-mount
+        - configMap:
+            items:
+            - key: global-config.yml
+              path: global-config.yml
+            name: dsk-global-config
+          name: global-config
+        - name: containerd
+          hostPath:
+            path: /var/run/containerd
+        - name: agent-configs
+          configMap:
+            name: dsk-base-agent
+            items:
+              - key: node-agent-config.yml
+                path: node-agent-config.yml
+              - key: container-agent-config.yml
+                path: container-agent-config.yml
+              - key: process-agent-config.yml
+                path: process-agent-config.yml
+        - name: rootfs
+          hostPath:
+            path: /
+            type: ""
+        - name: proc
+          hostPath:
+            path: /proc
+            type: ""
+        - name: sys
+          hostPath:
+            path: /sys
+            type: ""
+        - name: var-run
+          hostPath:
+            path: /var/run
+        - name: disk
+          hostPath:
+            path: /dev/disk
+---
+# Source: agent-helm/templates/dsk-kubernetes-agent/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:   
+  name: dsk-kubernetes-agent
+  namespace: default
+  labels:  
+    app.kubernetes.io/version: 2.5.0
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/name: datasaker
+    app.kubernetes.io/instance: dsk-kubernetes-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:       
+      app.kubernetes.io/name: datasaker
+      app.kubernetes.io/instance: dsk-kubernetes-agent
+  template:
+    metadata:
+      labels:         
+        app.kubernetes.io/version: 2.5.0
+        app.kubernetes.io/component: exporter
+        app.kubernetes.io/name: datasaker
+        app.kubernetes.io/instance: dsk-kubernetes-agent
+    spec:
+      automountServiceAccountToken: true
+      initContainers:
+      - name: chowner
+        image: datasaker/busybox:latest
+        command: ["sh", "-c", "chown -R 202306:202306 /var/datasaker"]
+        volumeMounts:
+          - mountPath: /var/datasaker
+            mountPropagation: HostToContainer
+            name: dsk-mount
+          - mountPath: /etc/datasaker/global-config.yml
+            name: global-config
+            subPath: global-config.yml
+      containers:
+        - name: dsk-k8s-agent
+          image: datasaker/dsk-k8s-agent:latest
+          imagePullPolicy: Always
+          resources:
+            {}
+          env:
+            - name: DSK_LOG_LEVEL
+              value: INFO
+          volumeMounts:
+            - mountPath: /var/datasaker
+              mountPropagation: HostToContainer
+              name: dsk-mount
+            - mountPath: /etc/datasaker/global-config.yml
+              name: global-config
+              subPath: global-config.yml
+            - name: agent-config
+              subPath: agent-config.yml
+              mountPath: /etc/datasaker/dsk-k8s-agent/agent-config.yml
+        - name: dsk-kube-state-agent
+          image: datasaker/dsk-kube-state-agent:latest
+          imagePullPolicy: Always
+          resources:
+            {}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 18080
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+          ports:
+            - containerPort: 18080
+              name: http-metrics
+            - containerPort: 8081
+              name: telemetry
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+          env:
+            - name: DSK_LOG_LEVEL
+              value: INFO
+          volumeMounts:
+            - mountPath: /var/datasaker
+              mountPropagation: HostToContainer
+              name: dsk-mount
+            - mountPath: /etc/datasaker/global-config.yml
+              name: global-config
+              subPath: global-config.yml
+            - name: agent-config
+              subPath: agent-config.yml
+              mountPath: /etc/datasaker/dsk-k8s-agent/agent-config.yml
+      volumes:
+        - hostPath:
+            path: /var/datasaker
+            type: DirectoryOrCreate
+          name: dsk-mount
+        - configMap:
+            items:
+            - key: global-config.yml
+              path: global-config.yml
+            name: dsk-global-config
+          name: global-config
+        - name: agent-config
+          configMap:
+            name: dsk-kubernetes-agent
+            items:
+              - key: agent-config.yml
+                path: agent-config.yml
+      nodeSelector:
+        kubernetes.io/os: linux
+      serviceAccountName: dsk-kubernetes-agent

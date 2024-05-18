@@ -1,0 +1,159 @@
+---
+# Source: erigon/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-erigon-secret
+stringData:
+  jwt-secret.txt: abf3a433bfe1f8faa262ad82b3ec5fa572e9c045a4c44bd3b21998e77fd3632a
+---
+# Source: erigon/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-erigon
+  labels:
+    helm.sh/chart: erigon-0.0.5
+    app.kubernetes.io/name: erigon
+    app.kubernetes.io/instance: release-name
+    release: release-name
+    app.kubernetes.io/version: "v1.10.26"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: LoadBalancer
+  ports:
+    # HTTP RPC
+    - name: rpc-http-port
+      port: 8545
+      targetPort: 8545
+    # AuthRPC
+    - name: authrpc-port
+      port: 8551
+      targetPort: 8551
+    # Metrics
+    - name: metrics-port
+      port: 7301
+      targetPort: 7300
+    # pprof
+    - name: pprof-port
+      port: 6061
+      targetPort: 6060
+  selector:
+    app.kubernetes.io/name: erigon
+    app.kubernetes.io/instance: release-name
+    release: release-name
+---
+# Source: erigon/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-erigon
+  labels:
+    helm.sh/chart: erigon-0.0.5
+    app.kubernetes.io/name: erigon
+    app.kubernetes.io/instance: release-name
+    release: release-name
+    app.kubernetes.io/version: "v1.10.26"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: erigon
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: erigon
+      app.kubernetes.io/instance: release-name
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: erigon
+        app.kubernetes.io/instance: release-name
+        release: release-name
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      - name: preprocess
+        command: [ "/bin/sh", "-c" ]
+        args:
+          - |
+            rm -rf /home/erigon/data/LOCK  # remove lock
+            rm -rf /home/erigon/data/nodekey  # remove nodekey
+            mkdir -p /home/erigon/data
+            chown -R 1000:1000 /home/erigon/data/
+            chmod -R g+w /home/erigon/data/
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+          - name: data
+            mountPath: /home/erigon
+      containers:
+        - name: release-name-erigon
+          image: "testinprod/op-erigon:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            # HTTP RPC
+            - name: rpc-http-port
+              containerPort: 8545
+            # AuthRPC
+            - name: authrpc-port
+              containerPort: 8551
+            # Metrics
+            - name: metrics-port
+              containerPort: 7300
+            # pprof
+            - name: pprof-port
+              containerPort: 6060
+          command: ["erigon"]
+          args:
+            - --maxpeers=50
+            - --datadir=/home/erigon/data
+            # HTTP RPC
+            - --http
+            - --http.api=eth,erigon,engine,debug,engine,txpool
+            - --http.addr=0.0.0.0
+            - --http.port=8545
+            - --http.corsdomain=*
+            # WS RPC
+            - --ws
+            # network settings
+            - --networkid=1
+            - --chain=mainnet
+            # Auth RPC
+            - --authrpc.addr=0.0.0.0
+            - --authrpc.port=8551
+            - --authrpc.vhosts=*
+            - --authrpc.jwtsecret=/secrets/jwt-secret.txt
+            # pprof
+            - --pprof
+            - --pprof.addr=0.0.0.0
+            - --pprof.port=6060
+            # metrics
+            - --metrics
+            - --metrics.addr=0.0.0.0
+            - --metrics.port=7300
+          volumeMounts:
+          - name: data
+            mountPath: /home/erigon
+          - mountPath: /secrets # mounts all files in the Secrets.
+            name: release-name-erigon-secret
+          resources:
+            {}
+      volumes:
+        - name: release-name-erigon-secret
+          secret:
+            secretName: release-name-erigon-secret
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      annotations:
+        "helm.sh/resource-policy": keep
+      labels:
+        app.kubernetes.io/name: erigon
+        app.kubernetes.io/instance: release-name
+        release: release-name
+    spec:
+      accessModes:
+      - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: 200Gi

@@ -1,0 +1,170 @@
+---
+# Source: appmesh-spire-agent/templates/account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  namespace: default
+  labels:
+    app.kubernetes.io/name: appmesh-spire-agent
+    helm.sh/chart: appmesh-spire-agent-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: appmesh-spire-agent/templates/spire-agent-cfg.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent
+  labels:
+    app.kubernetes.io/name: appmesh-spire-agent
+    helm.sh/chart: appmesh-spire-agent-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire"
+      log_level = "DEBUG"
+      server_address = "spire-server"
+      server_port = "8081"
+      socket_path = "/run/spire/sockets/agent.sock"
+      trust_bundle_path = "/run/spire/bundle/bundle.crt"
+      trust_domain = "appmesh.aws"
+    }
+
+    plugins {
+      NodeAttestor "k8s_sat" {
+        plugin_data {
+          cluster = "k8s-cluster"
+        }
+      }
+
+      KeyManager "memory" {
+        plugin_data {
+        }
+      }
+
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          skip_kubelet_verification = true
+        }
+      }
+
+      WorkloadAttestor "unix" {
+          plugin_data {
+          }
+      }
+    }
+---
+# Source: appmesh-spire-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent-role
+  labels:
+    app.kubernetes.io/name: appmesh-spire-agent
+    helm.sh/chart: appmesh-spire-agent-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["pods","nodes","nodes/proxy"]
+    verbs: ["get"]
+---
+# Source: appmesh-spire-agent/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent-rolebinding
+  labels:
+    app.kubernetes.io/name: appmesh-spire-agent
+    helm.sh/chart: appmesh-spire-agent-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent-role
+subjects:
+- name: spire-agent
+  namespace: default
+  kind: ServiceAccount
+---
+# Source: appmesh-spire-agent/templates/deployment.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  labels:
+    app.kubernetes.io/name: appmesh-spire-agent
+    helm.sh/chart: appmesh-spire-agent-1.0.7
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.5.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: appmesh-spire-agent
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: appmesh-spire-agent
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/part-of: appmesh
+    spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: spire-agent
+      initContainers:
+        - name: init
+          image: "gcr.io/spiffe-io/wait-for-it"
+          args:
+            - -t
+            - "30"
+            - spire-server:8081
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-agent
+        - name: spire-bundle
+          configMap:
+            name: spire-bundle
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+      containers:
+        - name: appmesh-spire-agent
+          image: "gcr.io/spiffe-io/spire-agent:1.5.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config
+            - /run/spire/config/agent.conf
+          livenessProbe:
+            exec:
+              command:
+                - /opt/spire/bin/spire-agent
+                - healthcheck
+                - -socketPath
+                - /run/spire/sockets/agent.sock
+            failureThreshold: 2
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-bundle
+              mountPath: /run/spire/bundle
+              readOnly: true
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: false

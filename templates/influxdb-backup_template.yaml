@@ -1,0 +1,145 @@
+---
+# Source: influxdb-backup/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-influxdb-backup
+  labels:
+    helm.sh/chart: influxdb-backup-0.2.0
+    app.kubernetes.io/name: influxdb-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.10"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+---
+# Source: influxdb-backup/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-influxdb-backup
+  labels:
+    helm.sh/chart: influxdb-backup-0.2.0
+    app.kubernetes.io/name: influxdb-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.10"
+    app.kubernetes.io/managed-by: Helm
+data:
+  backup.sh: |-
+    #!/bin/bash
+
+    set -e
+
+    DATE="$(date +%Y%m%d_%H%M%S)"
+
+    
+
+    echo "deleting old backups"
+    find /backups -not -name ".snapshot" -not -name "lost+found" -mindepth 3 -maxdepth 3 -type d -mtime +10 -exec rm -r {} \;
+  restore.sh: |-
+    #!/bin/bash
+
+    set -e
+
+    echo "restoring or creating database db from directory /backups/instancename/dbname/20200530_020027"
+    influxd restore -host influxdb.influxdb.svc.cluster.local:8088 -portable -db database /backups/instancename/dbname/20200530_020027
+  upload-azure.sh: |-
+    #!/bin/bash
+
+    set -ex
+
+    az storage blob sync --source /backups --container influxdb-container
+  upload-google.sh: |-
+    #!/bin/bash
+
+    set -ex
+    
+    gsutil -m rsync -d -r /backups gs://bucket/influxdb
+  download-azure.sh: |-
+    #!/bin/bash
+
+    set -ex
+
+    az storage blob download-batch -d . -s influxdb-container --pattern /backups
+  download-google.sh: |-
+    #!/bin/bash
+
+    set -ex
+
+    
+    gsutil -m rsync -r -d gs://bucket/influxdb/ /backups
+---
+# Source: influxdb-backup/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: "release-name-influxdb-backup"
+  labels:
+    helm.sh/chart: influxdb-backup-0.2.0
+    app.kubernetes.io/name: influxdb-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+---
+# Source: influxdb-backup/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: release-name-influxdb-backup
+  labels:
+    helm.sh/chart: influxdb-backup-0.2.0
+    app.kubernetes.io/name: influxdb-backup
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "1.7.10"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: influxdb-backup
+            app.kubernetes.io/instance: release-name
+          annotations:
+            null
+        spec:
+          restartPolicy: OnFailure
+          volumes:
+            - name: backup-scripts
+              configMap:
+                name: release-name-influxdb-backup
+                defaultMode: 0755
+            - name: release-name-influxdb-backup
+              persistentVolumeClaim:
+                claimName: release-name-influxdb-backup
+          initContainers:
+            - name: influxdb-backup
+              image: "influxdb:1.7.10-alpine"
+              resources:
+                {}
+              env:
+              command:
+                - "/tmp/backup.sh"
+              volumeMounts:
+                - name: release-name-influxdb-backup
+                  mountPath: "/backups"
+                - name: backup-scripts
+                  mountPath: /tmp/backup.sh
+                  subPath: backup.sh
+          containers:
+            - name: influxdb-backup-no-upload-dummy
+              image: "influxdb:1.7.10-alpine"
+              resources:
+                {}
+              command:
+                - "/bin/true"

@@ -1,0 +1,146 @@
+---
+# Source: datacube-ows/templates/ows-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: datacube-ows
+    chart: datacube-ows-0.20.0
+    release: release-name
+    heritage: Helm
+  name: release-name-datacube-ows
+spec:
+  type: NodePort
+  ports:
+  - name: "80"
+    port: 80
+    targetPort: 8000
+  selector:
+    app: datacube-ows
+    release: release-name
+---
+# Source: datacube-ows/templates/ows-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "release-name-datacube-ows-dev"
+  labels:
+    app: datacube-ows
+    chart: datacube-ows-0.20.0
+    release: release-name
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datacube-ows
+      release: release-name
+  strategy:
+    rollingUpdate:
+      maxSurge: "25%"
+      maxUnavailable: "25%"
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: datacube-ows
+        release: release-name
+      annotations:
+        iam.amazonaws.com/role: kubernetes-wms
+    spec:
+      # Turning single-request-reopen option on would fix issue where in two requests from the same port are
+      # not handled correctly it will close the socket and open a new one before sending the second request.
+      dnsConfig:
+        options:
+        - name: single-request-reopen
+      initContainers:
+      - name: ows-config
+        image: "docker.io/opendatacube/ows:latest"
+        imagePullPolicy: Always
+        args: [ "cp", "-rf", "/code/integration_tests/cfg", "/env/config" ]
+        volumeMounts:
+        - mountPath: /env/config
+          name: ows-config-volume
+      containers:
+      - name: ows
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/usr/bin/sleep", "15"]
+        env:
+        - name: DB_HOSTNAME
+          value: "localhost"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: "datacube"
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: release-name-datacube-ows
+              key: postgres-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-datacube-ows
+              key: postgres-password
+        - name: DATACUBE_OWS_CFG
+          value: cfg.ows_test_cfg.ows_cfg
+        - name: PYTHONPATH
+          value: /env/config
+        - name: VIRTUAL_HOST
+          value: localhost,127.0.0.
+        image: "docker.io/opendatacube/ows:latest"
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2048Mi
+        args: [ "gunicorn",  "-b",  "0.0.0.0:8000",  "-w",  "4",  "--keep-alive",  "50",  "--timeout",  "120",  "datacube_ows.wsgi", ]
+        volumeMounts:
+        - mountPath: /env/config
+          name: ows-config-volume
+      restartPolicy: Always
+      volumes:
+      - name: ows-config-volume
+        emptyDir: {}
+status: {}
+---
+# Source: datacube-ows/templates/autoscaling.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: release-name-datacube-ows
+  labels:
+    app: datacube-ows
+    chart: datacube-ows-0.20.0
+    release: release-name
+    heritage: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: "release-name-datacube-ows-dev"
+  minReplicas: 1
+  maxReplicas: 2
+---
+# Source: datacube-ows/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-datacube-ows
+  labels:
+    app: release-name-datacube-ows
+    chart: "datacube-ows-0.20.0"
+    release: "release-name"
+    heritage: "Helm"
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+type: Opaque
+data:
+  postgres-username: "cmVsZWFzZS1uYW1l"
+  postgres-password: "UmNLbkZLRml2Qg=="

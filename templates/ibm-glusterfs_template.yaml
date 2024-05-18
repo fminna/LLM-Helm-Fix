@@ -1,0 +1,2131 @@
+---
+# Source: ibm-glusterfs/templates/glusterfs-config.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018, 2019 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+data:
+  sgx-config.sh: |
+    #!/bin/bash
+
+    sed -i '/Port 2222/c\Port 2222' /etc/ssh/sshd_config
+
+    /usr/local/bin/update-params.sh
+
+    exec "$@"
+
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-config
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "config"
+    glusterfs: "glusterfs-config"
+---
+# Source: ibm-glusterfs/templates/heketi-certificate-cm.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-heketicert-cm
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketicert-cm"
+    glusterfs-heketicert: "heketicert-cm"
+data:
+
+  heketicert_job.sh: |
+    #!/bin/bash
+
+    # This job patchs the Certification to update Heketi Service IP.
+    # As the patch causes Heketi deployment Pod to terminate and restart another POD,
+    # we want to scale down the deplyment and then bring it up again after patching it.
+    #
+    echo "heketi-certificate-job: Scaling down heketi deployment"
+    kubectl scale --replicas=0 deployment release-name-glusterfs-heketi-deployment
+    # 
+    # wait until heketi service is available
+    while true
+    do
+      out=$((kubectl get service release-name-glusterfs-heketi-service ) 2>&1)
+
+      if [[ $out =~ "Error from server (NotFound):" ]];then
+        echo "heketi-certificate-job: Waiting for heketi service to come up"
+      else
+        heketi_ip=$(kubectl get service "release-name-glusterfs-heketi-service" -o=jsonpath='{.spec.clusterIP}')
+        echo "heketi-certificate-job: Heketi service is available. Service IP [$heketi_ip]."
+        break
+      fi
+    done
+
+    # wait until heketi cert object is available
+    while true
+    do
+      out=$((kubectl get certificates release-name-glusterfs-heketi-cert ) 2>&1)
+
+      if [[ $out =~ "Error from server (NotFound):" ]];then
+        echo "heketi-certificate-job: Waiting for heketi cert object to come up"
+      else
+        kubectl patch certificates release-name-glusterfs-heketi-cert  --type json  -p='[{"op": "add", "path": "/spec/ipAddresses", "value": ['$heketi_ip'] }]'
+        echo "heketi-certificate-job: Certificate has been patched with Heketi service IP [$heketi_ip]."
+        break
+      fi
+    done
+
+    echo "heketi-certificate-job: Scaling up heketi deployment again."
+    kubectl scale --replicas=1 deployment release-name-glusterfs-heketi-deployment
+---
+# Source: ibm-glusterfs/templates/heketi-config.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+data:
+  heketi.json: |
+    {
+      "_port_comment": "Heketi Server Port Number",
+      "port" : "8080",
+
+      "_use_auth": "Enable JWT authorization. Please enable for deployment",
+      "use_auth" : false,
+
+      "_enable_tls_comment": "Enable TLS in Heketi Server",
+      "enable_tls": true,
+
+      "_cert_file_comment": "Path to a valid certificate file",
+      "cert_file": "/tls-cert/tls.crt",
+
+      "_key_file_comment": "Path to a valid private key file",
+      "key_file": "/tls-cert/tls.key",
+
+      "_backup_db_to_kube_secret": "Backup the heketi database to a Kubernetes secret when running in Kubernetes. Default is off.",
+      "backup_db_to_kube_secret" : true,
+
+      "_jwt" : "Private keys for access",
+      "jwt" : {
+        "_admin" : "Admin has access to all APIs",
+        "admin" : {
+          "key" : "My Secret"
+        },
+        "_user" : "User only has access to /volumes endpoint",
+        "user" : {
+          "key" : "My Secret"
+        }
+      },
+
+      "_glusterfs_comment": "GlusterFS Configuration",
+      "glusterfs" : {
+
+        "_executor_comment": "Execute plugin. Possible choices: mock, ssh",
+        "executor" : "mock",
+
+        "_db_comment": "Database file name",
+        "db" : "/var/lib/heketi/heketi.db"
+      }
+    }
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-heketi-config
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketi-config"
+    glusterfs: "heketi-config"
+---
+# Source: ibm-glusterfs/templates/heketi-topology-configmap.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-heketi-topology
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketi-topology"
+    glusterfs: "heketi-topology"
+  annotations:
+    description: Heketi Topology Configmap
+data:
+  heketi-topology.json: |
+    {
+    "clusters": [
+    {
+    "nodes": [{
+      "node": {
+      "hostnames": {
+      "manage": [
+       ""
+       ],
+       "storage": [
+       ""
+       ]
+       },
+       "zone": 1
+       },
+       "devices":
+        ["device-1"]
+      },{
+      "node": {
+      "hostnames": {
+      "manage": [
+       ""
+       ],
+       "storage": [
+       ""
+       ]
+       },
+       "zone": 1
+       },
+       "devices":
+        ["device-1"]
+      },{
+      "node": {
+      "hostnames": {
+      "manage": [
+       ""
+       ],
+       "storage": [
+       ""
+       ]
+       },
+       "zone": 1
+       },
+       "devices":
+        ["device-1","device-2"]
+      }
+       ]
+      }
+      ]
+     }
+
+  heketi-topology-load.sh: |
+    #!/bin/bash
+
+    HEKETI_DB_PATH=${HEKETI_DB_PATH:-/var/lib/heketi/heketi.db}
+
+    echo "heketi-topology-load: Started loading heketi topology"
+
+    if [ -f /backupdb/heketi.db.gz ] ; then
+      gunzip -c /backupdb/heketi.db.gz > "${HEKETI_DB_PATH}"
+      if [ $? -ne 0 ] ; then
+        echo "heketi-topology-load: Unable to copy /backupdb/heketi.db.gz database"
+        exit 1
+      fi
+      echo "heketi-topology-load: Copied backup db [/backupdb/heketi.db.gz] to ${HEKETI_DB_PATH}"
+
+    elif [ -f /backupdb/heketi.db ] ; then
+      cp /backupdb/heketi.db "${HEKETI_DB_PATH}"
+      if [ $? -ne 0 ] ; then
+        echo "heketi-topology-load: Unable to copy /backupdb/heketi.db database"
+        exit 1
+      fi
+      echo "heketi-topology-load: Copied backup db [/backupdb/heketi.db] to ${HEKETI_DB_PATH}"
+    fi
+
+    /usr/bin/heketi --config=/etc/heketi/heketi.json &
+
+    until curl --insecure https://localhost:8080/hello | grep "Hello from Heketi"; do echo "heketi-topology-load: Waiting for Heketi to come up"; sleep 1; done
+
+    topology_info=$(heketi-cli --insecure-tls topology info)
+    echo "heketi-topology-load: Before loading topology. Topology Info: START | $topology_info | END"
+
+    if [ -z "$topology_info" ] ; then
+
+      while true
+      do
+        echo "heketi-topology-load: Loading heketi topology"
+        output_topo="$(heketi-cli --insecure-tls topology load --json=/topology/heketi-topology.json 2>&1)"
+
+        if [ $? -ne 0 ] || [[ "$output_topo" = *"Unable to"* ]] ; then
+          echo "heketi-topology-load: Unable to load the heketi topology. |$output_topo | End"
+        else
+
+          loaded_topo=$(heketi-cli topology info)
+          echo "heketi-topology-load: After loading topology. Topology Info: START | $loaded_topo | END"
+
+          sleep "10"
+
+          echo "heketi-topology-load: Successfully loaded heketi topology"
+          break
+        fi
+
+        echo "!!! Heketi topology is not loaded yet !!!"
+
+        sleep 2
+
+      done
+    else
+      echo "heketi-topology-load: Heketi topology is already available. Skipping heketi load topology!"
+    fi
+
+
+  heketi-topology-verify.sh: |
+    #!/bin/bash
+
+    HEKETI_DB_PATH=${HEKETI_DB_PATH:-/var/lib/heketi/heketi.db}
+
+    echo "heketi-topology-verify: Start topology verification check"
+
+    if [ -f /backupdb/heketi.db.gz ] ; then
+
+      db_size=$(stat -c %s /backupdb/heketi.db.gz)
+      echo "heketi-topology-verify: size of heketi.db.gz is $db_size"
+
+      if [ $db_size -le 0 ] ; then
+        echo "heketi-topology-verify: heketi.db.gz size is $db_size. Topology info is not available."
+        exit 1
+      fi
+
+      gunzip -c /backupdb/heketi.db.gz > "${HEKETI_DB_PATH}"
+      if [ $? -ne 0 ] ; then
+        echo "heketi-topology-verify: Unable to copy database [/backupdb/heketi.db.gz]"
+        exit 1
+      fi
+      echo "heketi-topology-verify: Copied backup db [/backupdb/heketi.db.gz] to ${HEKETI_DB_PATH}"
+
+    elif [ -f /backupdb/heketi.db ] ; then
+      cp /backupdb/heketi.db "${HEKETI_DB_PATH}"
+      if [ $? -ne 0 ] ; then
+        echo "heketi-topology-verify: Unable to copy database [/backupdb/heketi.db]"
+        exit 1
+      fi
+      echo "heketi-topology-verify: Copied backup db [/backupdb/heketi.db] to ${HEKETI_DB_PATH}"
+    fi
+
+    /usr/bin/heketi --config=/etc/heketi/heketi.json &
+    until curl --insecure https://localhost:8080/hello | grep "Hello from Heketi"; do echo "heketi-topology-verify: Waiting for Heketi to come up"; sleep 1; done
+
+    topology_info=$(heketi-cli --insecure-tls topology info)
+    echo "heketi-topology-verify: Topology Info: START | $topology_info | END"
+
+    node_count=$(heketi-cli --insecure-tls node list | wc -l)
+    echo "heketi-topology-verify: Storage node count: start | $node_count | End"
+    if [ $node_count -le 0 ] ; then
+      echo "heketi-topology-verify: No Storage node present in Topology. Can not proceed."
+      exit 1
+    fi
+
+    echo "heketi-topology-verify: topology verification complete"
+
+  is_gluster_daemon_up.sh: |
+    #!/bin/bash
+
+    echo "is_gluster_daemon_up: Checking GlusterFS Daemonset's Readiness"
+
+    while true
+    do
+       output=$(kubectl get ds release-name-glusterfs-daemonset -o=custom-columns=A:.status.numberReady,B:.status.desiredNumberScheduled --no-headers=true | tr -s " " | awk '$1 == $2 {print "READY"}')
+
+       if [ "$output" == "READY" ]; then
+         echo "is_gluster_daemon_up: GlusterFS Daemonset is Ready."
+         break
+       fi
+
+       echo "is_gluster_daemon_up: GlusterFS Daemonset is not ready yet!"
+
+       sleep 1
+    done
+---
+# Source: ibm-glusterfs/templates/heketi-service.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-glusterfs-heketi-service
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketi-service"
+    glusterfs: "heketi-service"
+  annotations:
+    description: Exposes Heketi Service
+spec:
+  type: ClusterIP
+  selector:
+    glusterfs: heketi-pod
+  ports:
+    - name: heketi
+      port: 8080
+      targetPort: 8080
+---
+# Source: ibm-glusterfs/templates/glusterfs-daemonset.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: release-name-glusterfs-daemonset
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "daemonset"
+    glusterfs: "daemonset"
+    version: "v4.1.5.1"
+  annotations:
+    description: GlusterFS Daemon Set
+    tags: glusterfs
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: glusterfs
+      release: "release-name"
+      heritage: "Helm"
+      glusterfs: "pod"
+      glusterfs-node: "daemonset"
+  template:
+    metadata:
+      name: release-name-glusterfs-daemonset
+      labels:
+        app: glusterfs
+        release: "release-name"
+        heritage: "Helm"
+        chart: "ibm-glusterfs"
+        glusterfs: "pod"
+        glusterfs-node: "daemonset"
+        version: "v4.1.5.1"
+      annotations:
+        productName: "GlusterFS"
+        productID: "GlusterFS_v4.1.5.1_free_00000"
+        productVersion: "v4.1.5.1"
+
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      hostNetwork: true
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - image: "ibmcom/gluster:v4.1.5.1"
+          imagePullPolicy: "IfNotPresent"
+          name: glusterfs
+
+          volumeMounts:
+            - name: glusterfs-heketi
+              mountPath: "/var/lib/heketi"
+            - name: glusterfs-run
+              mountPath: "/run"
+            - name: glusterfs-lvm
+              mountPath: "/run/lvm"
+            - name: glusterfs-etc
+              mountPath: "/etc/glusterfs"
+            - name: glusterfs-logs
+              mountPath: "/var/log/glusterfs"
+            - name: glusterfs-config
+              mountPath: "/var/lib/glusterd"
+            - name: glusterfs-dev
+              mountPath: "/dev"
+            - name: glusterfs-cgroup
+              mountPath: "/sys/fs/cgroup"
+            - name: glusterfs-custom-cfg
+              mountPath: "/config"
+          securityContext:
+            capabilities: {}
+            privileged: true
+          readinessProbe:
+            timeoutSeconds: 3
+            initialDelaySeconds: 60
+            exec:
+              command:
+                - "/bin/bash"
+                - "-c"
+                - systemctl status glusterd.service
+          livenessProbe:
+            timeoutSeconds: 3
+            initialDelaySeconds: 60
+            exec:
+              command:
+                - "/bin/bash"
+                - "-c"
+                - systemctl status glusterd.service
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: glusterfs-heketi
+          hostPath:
+            path: "/var/lib/heketi"
+        - name: glusterfs-run
+        - name: glusterfs-lvm
+          hostPath:
+            path: "/run/lvm"
+        - name: glusterfs-etc
+          hostPath:
+            path: "/etc/glusterfs"
+        - name: glusterfs-logs
+          hostPath:
+            path: "/var/log/glusterfs"
+        - name: glusterfs-config
+          hostPath:
+            path: "/var/lib/glusterd"
+        - name: glusterfs-dev
+          hostPath:
+            path: "/dev"
+        - name: glusterfs-cgroup
+          hostPath:
+            path: "/sys/fs/cgroup"
+        - name: glusterfs-custom-cfg
+          configMap:
+            name: release-name-glusterfs-config
+            defaultMode: 0744
+      nodeSelector:
+        hostgroup: glusterfs
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/heketi-deployment.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: release-name-glusterfs-heketi-deployment
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketi-deployment"
+    glusterfs: "heketi-deployment"
+    version: "v8.0.0.1"
+  annotations:
+    description: Defines how to deploy Heketi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glusterfs
+      release: "release-name"
+      heritage: "Helm"
+      glusterfs: "heketi-pod"
+  template:
+    metadata:
+      name: release-name-glusterfs-heketi-deployment
+      labels:
+        app: glusterfs
+        release: "release-name"
+        heritage: "Helm"
+        chart: "ibm-glusterfs"
+        glusterfs: "heketi-pod"
+        version: "v8.0.0.1"
+      annotations:
+        productName: "Heketi"
+        productID: "Heketi_v8.0.0.1_free_00000"
+        productVersion: "v8.0.0.1"
+
+        prometheus.io/scheme: "https"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"
+
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      #serviceAccountName: default
+      priorityClassName: "system-cluster-critical"
+      initContainers:
+        - image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+          name: init-gluster-check
+
+          command: ["/gluster-check/is_gluster_daemon_up.sh"]
+
+          volumeMounts:
+            - name: topology
+              mountPath: "/gluster-check"
+
+        - image: "ibmcom/heketi:v8.0.0.1"
+          imagePullPolicy: "IfNotPresent"
+          name: init-heketi
+
+          command: ["/topology/heketi-topology-load.sh"]
+          env:
+            - name: HEKETI_EXECUTOR
+              value: kubernetes
+            - name: HEKETI_FSTAB
+              value: "/var/lib/heketi/fstab"
+            - name: HEKETI_SNAPSHOT_LIMIT
+              value: '14'
+            - name: HEKETI_KUBE_GLUSTER_DAEMONSET
+              value: "y"
+            - name: HEKETI_IGNORE_STALE_OPERATIONS
+              value: "true"
+            - name: HEKETI_KUBE_DB_SECRET_NAME
+              value: "heketi-db-backup"
+            - name: HEKETI_CLI_SERVER
+              value: "https://localhost:8080"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: "heketi-db-secret"
+              mountPath: "/backupdb"
+            - name: config
+              mountPath: "/etc/heketi"
+            - name: topology
+              mountPath: "/topology"
+            - name: heketi-tls-cert
+              mountPath: "/tls-cert"
+
+        - image: "ibmcom/heketi:v8.0.0.1"
+          imagePullPolicy: "IfNotPresent"
+          name: verify-topology
+
+          command: ["/topology/heketi-topology-verify.sh"]
+          env:
+            - name: HEKETI_EXECUTOR
+              value: kubernetes
+            - name: HEKETI_FSTAB
+              value: "/var/lib/heketi/fstab"
+            - name: HEKETI_SNAPSHOT_LIMIT
+              value: '14'
+            - name: HEKETI_KUBE_GLUSTER_DAEMONSET
+              value: "y"
+            - name: HEKETI_IGNORE_STALE_OPERATIONS
+              value: "true"
+            - name: HEKETI_KUBE_DB_SECRET_NAME
+              value: "heketi-db-backup"
+            - name: HEKETI_CLI_SERVER
+              value: "https://localhost:8080"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: "heketi-db-secret"
+              mountPath: "/backupdb"
+            - name: config
+              mountPath: "/etc/heketi"
+            - name: topology
+              mountPath: "/topology"
+            - name: heketi-tls-cert
+              mountPath: "/tls-cert"
+
+      containers:
+        - image: "ibmcom/heketi:v8.0.0.1"
+          imagePullPolicy: "IfNotPresent"
+          name: heketi
+
+          env:
+            - name: HEKETI_EXECUTOR
+              value: kubernetes
+            - name: HEKETI_FSTAB
+              value: "/var/lib/heketi/fstab"
+            - name: HEKETI_SNAPSHOT_LIMIT
+              value: '14'
+            - name: HEKETI_KUBE_GLUSTER_DAEMONSET
+              value: "y"
+            - name: HEKETI_IGNORE_STALE_OPERATIONS
+              value: "true"
+            - name: HEKETI_CLI_SERVER
+              value: "https://localhost:8080"
+            - name: HEKETI_MAX_INFLIGHT_OPERATIONS
+              value: "20"
+            - name: HEKETI_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: 
+                  key: admin_password
+            - name: HEKETI_KUBE_DB_SECRET_NAME
+              value: "heketi-db-backup"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: "heketi-db-secret"
+              mountPath: "/backupdb/heketi.db.gz"
+              subPath: heketi.db.gz
+            - name: config
+              mountPath: "/etc/heketi"
+            - name: heketi-tls-cert
+              mountPath: "/tls-cert"
+          readinessProbe:
+            timeoutSeconds: 3
+            initialDelaySeconds: 10
+            httpGet:
+              path: "/hello"
+              port: 8080
+              scheme: HTTPS
+          livenessProbe:
+            timeoutSeconds: 3
+            initialDelaySeconds: 30
+            httpGet:
+              path: "/hello"
+              port: 8080
+              scheme: HTTPS
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: topology
+          configMap:
+            name: release-name-glusterfs-heketi-topology
+            defaultMode: 0744
+        - name: heketi-db-secret
+          secret:
+            defaultMode: 420
+            secretName: "heketi-db-backup"
+        - name: config
+          configMap:
+            name: release-name-glusterfs-heketi-config
+            defaultMode: 420
+            items:
+            - key: heketi.json
+              path: heketi.json
+        - name: heketi-tls-cert
+          secret:
+            defaultMode: 420
+            secretName: release-name-glusterfs-heketi-cert-secret
+            items:
+            - key: tls.key
+              path: tls.key
+            - key: tls.crt
+              path: tls.crt
+
+      nodeSelector:
+        hostgroup: glusterfs
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/heketi-certificate-job.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-glusterfs-heketicert-job
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketicert-job"
+    glusterfs-heketicert: "job"
+  annotations:
+    description: Defines how to get heketi service IP and patch the same to heketi cert
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: release-name-glusterfs-heketicert-job
+      labels:
+        app: "glusterfs"
+        chart: "ibm-glusterfs-1.4.0" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "heketicert-job"
+        glusterfs-heketicert: "pod"
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      restartPolicy: Never
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: glusterfs-heketicert-job
+          image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+
+          command: ["/heketicert/heketicert_job.sh"]
+
+          volumeMounts:
+            - name: glusterfs-heketicert
+              mountPath: "/heketicert"
+
+      volumes:
+        - name: glusterfs-heketicert
+          configMap:
+            name: release-name-glusterfs-heketicert-cm
+            defaultMode: 0777
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/heketi-certificate.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: certmanager.k8s.io/v1alpha1
+kind: Certificate
+metadata:
+  name: release-name-glusterfs-heketi-cert
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "heketi-cert"
+    glusterfs: "heketi-cert"
+spec:
+  secretName: release-name-glusterfs-heketi-cert-secret
+  issuerRef:
+    name: icp-ca-issuer
+    kind: ClusterIssuer
+  commonName: "localhost"
+---
+# Source: ibm-glusterfs/templates/precheck-configmap.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-precheck-cm
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "precheck-cm"
+    glusterfs-precheck: "precheck-cm"
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+data:
+
+  precheck_daemonset.sh: |
+    #!/bin/bash
+
+    python /precheck/precheck_daemonset.py
+    sleep 600
+
+
+  precheck_daemonset.py: |
+
+    import sys
+    import json
+    import os.path
+    import subprocess
+    import socket
+
+    precheck_cm = "release-name-glusterfs-precheck-results-cm"
+
+    glusterfs_ports = [ 2222 , 24007, 24008]
+
+    glusterfs_client_port_start = 49152
+    glusterfs_client_port_end = 49251
+
+
+    def update_configmap(status, err_msg):
+
+      '''
+       data:
+         node1 : { status: s, msg: msg }
+         node2 : { status: s, msg: msg }
+      '''
+
+      key = os.getenv("MY_NODE_NAME")
+      value = "status : %s # msg: %s" %(status, err_msg)
+
+      if status == "success":
+        # Get configmap
+        cm_out = subprocess.check_output(
+          "kubectl get configmap %s -ojson" %(precheck_cm), shell=True)
+
+        json_out = json.loads(cm_out)
+
+        #skip patching when status success is already updated
+        if "data" in json_out.keys() and key in json_out["data"].keys() and "success" in json_out["data"][key]:
+          return
+
+      patch_var = '{"data": {"%s" : "%s"}}' % (key, value)
+
+      print("Updating the configmap %s with %s" %(precheck_cm, patch_var))
+      subprocess.check_output(
+        "kubectl patch configmap %s --patch='%s'" %(precheck_cm, patch_var), shell=True)
+
+
+    def validate_kernel_modules(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      print("Validating Kernel module dm_thin_pool")
+      lsmod_out = subprocess.check_output("lsmod | awk '{print $1}'", shell=True)
+
+      if "dm_thin_pool" not in lsmod_out:
+        msg = "Kernel module 'dm_thin_pool' does not exist on " + os.getenv("MY_NODE_NAME")
+        return "fail", msg
+
+      return retval, msg
+
+
+    def validate_port(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      print("Validating ports")
+      for port in range(glusterfs_client_port_start, glusterfs_client_port_end + 1):
+        glusterfs_ports.append(port)
+
+
+      open_port_list = []
+      for port_val in glusterfs_ports:
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('',port_val))
+
+        if result == 0:
+          open_port_list.append(port_val)
+
+      if len(open_port_list) != 0:
+        msg = "GlusterFS ports '%s' are open on %s" %(open_port_list, os.getenv("MY_NODE_NAME"))
+        retval = "fail"
+
+      return retval, msg
+
+
+    def validate_storage_ips(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+      validate = False
+
+      print("Validating Storage IP Addresses")
+
+      topology_info = json.loads(config_data["topology"])
+      print("Topology info: ", topology_info)
+
+      for node in topology_info:
+
+        if node["k8sNodeIp"] == os.getenv("MY_NODE_IP"):
+          validate = True
+          break
+
+      if validate == False:
+        retval = "fail"
+        msg = "Storage IP configured for this node %s is not valid" %(os.getenv("MY_NODE_NAME"))
+
+      return retval, msg
+
+
+    def validate_vg(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      print("Validating volume groups")
+      if "Fresh" == "Fresh":
+
+        # logical volume check
+        result = subprocess.check_output("vgscan | grep 'vg_'", shell=True)
+        print("vgscan output:", result)
+        if b'Found' in result:
+          msg = "Volume groups present on node %s" %(os.getenv("MY_NODE_NAME"))
+          retval = "fail"
+
+      return retval, msg
+
+
+    def validate_topology(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+      validate = False
+
+      install_type = config_data["installtype"]
+
+      input_val = "false"
+      print("Input value of skipDiskValidation: %s" % (input_val))
+
+      if input_val not in [ "true", "false" ]:
+        skip_disk_validation = False
+      else:
+        if input_val == "true":
+          skip_disk_validation = True
+        else:
+          skip_disk_validation = False
+
+      if skip_disk_validation == False:
+
+        print("skip_disk_validation is '%s'. Executing disk validation tasks" %(skip_disk_validation))
+
+        topology_info = json.loads(config_data["topology"])
+        print("Topology info: ", topology_info)
+
+        failed_path_device_list = []
+        failed_lvm_device_list = []
+        for node in topology_info:
+
+          if node["k8sNodeName"] == os.getenv("MY_NODE_NAME"):
+            validate = True
+            device_list = node["devices"]
+            for device in device_list:
+              print("Device: ", device)
+              # device path check
+              if os.path.islink(device) is False:
+                failed_path_device_list.append(device)
+              else:
+                if install_type == "Fresh":
+                  # logical volume check
+                  result = subprocess.check_output("lsblk %s" %device, shell=True)
+                  print("lsblk output:", result)
+                  if b'lvm' in result:
+                    failed_lvm_device_list.append(device)
+                  else:
+                    subprocess.check_output("wipefs --all --force %s" %device, shell=True)
+
+        if validate == False:
+          retval = "success"
+          msg = "No heketi topology configured for this node '%s'" % (os.getenv("MY_NODE_NAME"))
+
+        if len(failed_path_device_list) != 0:
+          msg = "GlusterFS storage device paths %s does not exist" % (failed_path_device_list)
+          retval = "fail"
+
+        if len(failed_lvm_device_list) != 0:
+          msg = "Disks %s have logical volumes" % (failed_lvm_device_list)
+          retval = "fail"
+
+      else:
+        print("skip_disk_validation is '%s'. Skipping disk validation tasks" %(skip_disk_validation))
+
+      return retval, msg
+
+
+    def main():
+      config_data = {
+        "topology" : "[{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\",\"device-2\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"}]" ,
+        "installtype" : "Fresh",
+      }
+
+      validation_methods_list = [
+        validate_storage_ips,
+        validate_kernel_modules,
+        validate_port,
+        validate_topology,
+        #validate_vg,
+      ]
+
+      for method in validation_methods_list:
+
+         status, msg = method(config_data)
+         update_configmap(status, msg)
+
+         if status != "success":
+           return "fail"
+
+      return "success"
+
+
+    if __name__ == "__main__":
+      if main() == "fail":
+        exit(1)
+      exit(0)
+
+
+  precheck_job.py: |
+
+    import subprocess
+    import json
+    import time
+    import re
+
+    precheck_cm = "release-name-glusterfs-precheck-results-cm"
+
+    def validate_min_nodes(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      topology_info = json.loads(config_data["topology"])
+
+      if topology_info is None:
+        msg = "Please configure Heketi Topology nodes before proceeding with the installation"
+        return "fail", msg
+
+      volumeType = "replicate:3"
+
+      if volumeType == "none":
+        replicas = 1
+        if (replicas > len(topology_info)):
+          msg = "Number of nodes required to satisfy the topology are fewer than the replicas requested."
+          return "fail", msg
+      elif volumeType.split(':')[0] == "replicate":
+        replicas = int(volumeType.split(':')[1])
+        if (replicas <= 0 or replicas > len(topology_info)):
+          msg = "Number of nodes required to satisfy the topology are fewer than the replicas requested."
+          return "fail", msg
+      elif volumeType.split(':')[0] == "disperse":
+        replicas = int(volumeType.split(':')[2])
+        if (replicas <= 0
+        or
+        (replicas + int(volumeType.split(':')[1])) > len(topology_info)
+        or
+        (int(volumeType.split(':')[1]) % replicas) != 0):
+          msg = "Number of nodes required to satisfy a dispersed topology do not fulfill replicas count requested."
+          return "fail", msg
+
+
+      return retval, msg
+
+
+    def validate_kubelet_nodes(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      topology_info = json.loads(config_data["topology"])
+
+      kubelet_nodes = subprocess.check_output("kubectl get nodes -ojson", shell=True)
+
+      kubelet_node_data_json = json.loads(kubelet_nodes)
+      kubelet_node_list = kubelet_node_data_json["items"]
+
+      topo_node_list = []
+      matched_kubelet_node_list = []
+      matched_labeled_node_list = []
+      for topo_node in topology_info:
+        if topo_node["k8sNodeName"] not in topo_node_list:
+          topo_node_list.append(topo_node["k8sNodeName"])
+
+        for kubelet_node in kubelet_node_list:
+
+          if topo_node["k8sNodeName"] == kubelet_node["metadata"]["name"]:
+            print("K8s Node Name '%s' present in kubetlet nodes '%s'" %(topo_node["k8sNodeName"],kubelet_node["metadata"]))
+            matched_kubelet_node_list.append(topo_node["k8sNodeName"])
+
+            if "hostgroup" in kubelet_node["metadata"]["labels"].keys() and "glusterfs" in kubelet_node["metadata"]["labels"].values():
+              print("K8s Node Name '%s' present in storage node labels '%s'" %(topo_node["k8sNodeName"],kubelet_node["metadata"]["labels"]))
+              matched_labeled_node_list.append(topo_node["k8sNodeName"])
+
+            break
+
+      if len(matched_kubelet_node_list) != len(topo_node_list) or len(matched_labeled_node_list) != len(topo_node_list):
+        msg = "Some of the Hostnames configured %s are not present in kubelet nodes or not labeled. Matched Kubelet Nodes: %s. Matched Labeled Nodes: %s" %(topo_node_list, matched_kubelet_node_list, matched_labeled_node_list)
+        return "fail", msg
+
+      return retval, msg
+
+
+    def validate_name(config_data):
+
+      retval = "success"
+      msg = ""
+
+      scname = config_data["scname"]
+      pattern = "[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*"
+      matchObj = re.match(pattern, scname)
+
+      if matchObj == None or matchObj.group(0) != scname:
+        msg = msg + "GlusterFS storage class name %s is invalid. Name must consist of lower case alphanumeric characters, - or ., and must start and end with an alphanumeric character. " %(scname)
+        retval = "fail"
+
+      # db backup secret name validation
+      backupdbsecret = config_data["backupdbsecret"]
+      matchObj = re.match(pattern, backupdbsecret)
+
+      if matchObj == None or matchObj.group(0) != backupdbsecret:
+        msg = msg + "Heketi db backup secret name %s is invalid. Name must consist of lower case alphanumeric characters, - or ., and must start and end with an alphanumeric character. " %(backupdbsecret)
+        retval = "fail"
+
+      # heketi auth secret name validation
+      authsecret = config_data["authsecret"]
+      matchObj = re.match(pattern, authsecret)
+
+      if matchObj == None or matchObj.group(0) != authsecret:
+        msg = msg + "Heketi authentication secret name %s is invalid. Name must consist of lower case alphanumeric characters, - or ., and must start and end with an alphanumeric character." %(authsecret)
+        retval = "fail"
+
+      return retval, msg
+
+
+    def validate_heketi_db_secret(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      err_msg = ""
+
+      secret = config_data["backupdbsecret"]
+      install_type = config_data["installtype"]
+
+      try:
+        subprocess.check_output("kubectl get secret %s" %(secret), stderr=subprocess.STDOUT, shell=True)
+        if install_type == "Fresh":
+          msg = "Heketi DB Backup Secret %s is already available for the install type %s. Please remove and proceed the install" %(secret, install_type)
+          retval = "fail"
+      except subprocess.CalledProcessError as e:
+        err_msg = e.output.decode()
+        if install_type == "Upgrade":
+          if ('secrets "%s" not found' %secret) in err_msg:
+            msg = "Heketi DB Backup Secret %s is not available for the install type %s." %(secret, install_type)
+            retval = "fail"
+
+      return retval, msg
+
+
+    def validate_heketi_auth_secret(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      secret = config_data["authsecret"]
+
+      err_msg = ""
+
+      try:
+        subprocess.check_output("kubectl get secret %s" %(secret), stderr=subprocess.STDOUT, shell=True)
+
+      except subprocess.CalledProcessError as e:
+        err_msg = e.output.decode()
+        if ('secrets "%s" not found' %secret) in err_msg:
+          msg = "Heketi authentication secret %s is not available. Please create the secret" %(secret)
+          retval = "fail"
+
+      return retval, msg
+
+
+    def validate_tls_secret(config_data):
+
+      retval = "success"
+      msg = "Validation Success"
+
+      tls_secret = config_data["tlssecret"]
+
+      if ("true" == "false") and (tls_secret.strip() in (None, "") ):
+        msg = "Heketi TLS secret is not configured. Please configure."
+        retval = "fail"
+
+      return retval, msg
+
+
+    def check_configmap():
+
+      retval = "success"
+
+      while True:
+
+        cm_data = subprocess.check_output("kubectl get configmap %s -ojson" %(precheck_cm), shell=True)
+
+        # ConfigMap JSON Data Parsing
+        # Return success when the ConfigMap status of all nodes is updated and is Success.
+        # Return fail if any one of the nodes status is Fail
+
+        cm_data_json = json.loads(cm_data)
+
+        print("ConfigMap JSON Data: %s" %(cm_data_json))
+
+        if "data" in cm_data_json.keys():
+
+          cm_node_list = cm_data_json["data"]
+
+          print("cm_node_list: %s" %(cm_node_list))
+
+          for node in cm_node_list:
+
+            if "fail" in cm_node_list[node]:
+              print("Validation failed for node: '%s' with error '%s'" %(node, cm_node_list[node]))
+              return "fail"
+
+          topology_info = json.loads("[{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\",\"device-2\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"}]")
+
+          topo_node_list = []
+          matched_node_list = []
+          # wait for all nodes to get updated with the status
+          if len(cm_node_list) >= len(topology_info):
+
+            for node in topology_info:
+              if node["k8sNodeName"] not in topo_node_list:
+                topo_node_list.append(node["k8sNodeName"])
+
+              if node["k8sNodeName"] in cm_node_list.keys():
+                print("%s in %s" %(node["k8sNodeName"],cm_node_list.keys()))
+                matched_node_list.append(node["k8sNodeName"])
+
+          if len(matched_node_list):
+            print("Topology Node List: %s" %(topo_node_list))
+            print("ConfigMap Updated Node List: %s" %(matched_node_list))
+
+            # matched_node_list is a sublist of topo_node_list
+            if set(matched_node_list) <= set(topo_node_list):
+              msg = "Heketi Topology Validation Success!!"
+              return retval
+
+        time.sleep(2)
+
+
+    def update_configmap(status, err_msg):
+
+      key = "precheckJobStatus"
+      value = "status : %s # msg: %s" %(status, err_msg)
+
+      patch_var = '{"data": {"%s" : "%s"}}' % (key, value)
+
+      print("Updating the configmap %s with %s" %(precheck_cm, patch_var))
+      subprocess.check_output(
+          "kubectl patch configmap %s --patch='%s'" %(precheck_cm, patch_var), shell=True)
+
+
+    def create_heketi_db_backup_secret():
+
+      secret_data = {
+        "apiVersion": "v1",
+        "type": "Opaque",
+        "kind": "Secret",
+        "metadata": {
+          "name": "heketi-db-backup",
+          "namespace": "default",
+          "labels": {
+            "glusterfs": "heketi-db-backup-secret",
+            "heketi": "db",
+          }
+        },
+        "data": {
+          "heketi.db": None
+        }
+      }
+
+      secret_json_data = json.dumps(secret_data)
+      print("Heketi DB Backup Secret JSON to be created: %s" % secret_json_data)
+
+      file = open("heketi_db_bkp_secret.json","w")
+      file.write(secret_json_data)
+      file.close()
+
+      subprocess.check_output("kubectl create -f heketi_db_bkp_secret.json --validate=false", shell=True)
+
+
+    def main():
+
+      config_data = {
+        "topology" : "[{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"},{\"devices\":[\"device-1\",\"device-2\"],\"k8sNodeIp\":\"\",\"k8sNodeName\":\"\"}]",
+        "scname" : "glusterfs",
+        "backupdbsecret" : "heketi-db-backup",
+        "authsecret" : "",
+        "installtype" : "Fresh",
+        "tlssecret" : ""
+      }
+
+      validation_methods_list = [
+        validate_min_nodes,
+        validate_kubelet_nodes,
+        validate_name,
+        validate_heketi_auth_secret,
+        validate_heketi_db_secret,
+        validate_tls_secret
+      ]
+
+      for method in validation_methods_list:
+
+        status, msg = method(config_data)
+
+        if status != "success":
+          update_configmap(status, msg)
+          break
+
+      if check_configmap() != "success":
+        return "fail"
+
+      # if installType is "Fresh", create a new secret with empty data
+      if "Fresh" == "Fresh":
+        create_heketi_db_backup_secret()
+
+      return "success"
+
+
+    def cleanup_prehook_resources():
+
+      subprocess.check_output("kubectl delete configmap %s" %("release-name-glusterfs-precheck-cm"), shell=True)
+      subprocess.check_output("kubectl delete daemonset %s" %("release-name-glusterfs-precheck-daemonset"), shell=True)
+
+
+    if __name__ == "__main__":
+      if main() == "fail":
+        cleanup_prehook_resources()
+        exit(1)
+
+      # Delete DaemonSet when success
+      subprocess.check_output("kubectl delete daemonset %s" %("release-name-glusterfs-precheck-daemonset"), shell=True)
+      exit(0)
+---
+# Source: ibm-glusterfs/templates/precheck-results-configmap.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-precheck-results-cm
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "precheck-results-cm"
+    glusterfs-precheck: "precheck-results-cm"
+  annotations:
+    description: GlusterFS precheck results configmap
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data: null
+---
+# Source: ibm-glusterfs/templates/predelete-cm.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-predelete-cm
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "predelete-cm"
+    glusterfs-predelete: "predelete-cm"
+  annotations:
+    "helm.sh/hook": pre-delete, post-delete
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+data:
+
+  predelete_job.sh: |
+    #!/bin/bash
+    kubectl delete storageclasses glusterfs
+    kubectl delete configmaps release-name-glusterfs-precheck-results-cm || true
+    kubectl delete job release-name-glusterfs-precheck-job || true
+    kubectl delete secret release-name-glusterfs-heketi-cert-secret || true
+---
+# Source: ibm-glusterfs/templates/storage-class-cm.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-glusterfs-storageclass-cm
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "storageclass-cm"
+    glusterfs-sc: "sc-cm"
+  annotations:
+    "helm.sh/hook": post-install, post-upgrade, post-rollback
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+data:
+
+  storage_class.sh: |
+    #!/bin/bash
+
+    # Storage class parameters can not be updated, hence deleting the storage class and re-creating.
+    # Release.IsUpgrade: This is set to true if the current operation is an upgrade or rollback.
+    if [ false == true ]; then
+      kubectl delete storageclasses glusterfs
+    fi
+
+    heketi_ip_port=$(kubectl get service "release-name-glusterfs-heketi-service" -o=jsonpath='{.spec.clusterIP}:{.spec.ports[0].port}')
+
+    cat <<EOF | kubectl create -f -
+
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+         name: glusterfs
+         annotations:
+            storageclass.beta.kubernetes.io/is-default-class: "false"
+      parameters:
+        resturl: "https://${heketi_ip_port}"
+        restuser: admin
+        secretName: 
+        secretNamespace: default
+        volumetype: replicate:3
+        volumenameprefix: icp
+      provisioner: kubernetes.io/glusterfs
+      reclaimPolicy: Delete
+      volumeBindingMode: Immediate
+      allowVolumeExpansion: true
+    EOF
+---
+# Source: ibm-glusterfs/templates/precheck-daemonset.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+## This manifest deploys a Job which performs validation of
+## glusterfs nodes
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: release-name-glusterfs-precheck-daemonset
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "precheck-daemonset"
+    glusterfs-precheck: "daemonset"
+  annotations:
+    description: Defines how to run validations for glusterfs
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+spec:
+  selector:
+    matchLabels:
+      app: glusterfs
+      release: "release-name"
+      heritage: "Helm"
+      glusterfs-precheck: "pod"
+  template:
+    metadata:
+      name: release-name-glusterfs-precheck-daemonset
+      labels:
+        app: glusterfs
+        release: "release-name"
+        heritage: "Helm"
+        chart: "ibm-glusterfs"
+        glusterfs-precheck: "pod"
+      annotations:
+        productName: "GlusterFS Precheck HyperKube"
+        productID: "HyperKube_3.2.0_free_00000"
+        productVersion: "3.2.0"
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      hostNetwork: true
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: glusterfs-precheck-ds
+          image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+
+          command: ["/precheck/precheck_daemonset.sh"]
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: MY_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: glusterfs-precheck
+              mountPath: "/precheck"
+            - name: dev-host
+              mountPath: "/dev/"
+      volumes:
+        - name: dev-host
+          hostPath:
+            path: "/dev/"
+        - name: glusterfs-precheck
+          configMap:
+            name: release-name-glusterfs-precheck-cm
+            defaultMode: 0777
+      nodeSelector:
+        hostgroup: glusterfs
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/precheck-job.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-glusterfs-precheck-job
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "precheck-job"
+    glusterfs-precheck: "job"
+  annotations:
+    description: GlusterFS precheck
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": hook-succeeded, before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      name: release-name-glusterfs-precheck-job
+      labels:
+        app: "glusterfs"
+        chart: "ibm-glusterfs-1.4.0" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "precheck-job"
+        glusterfs-precheck: "pod"
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      restartPolicy: Never
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: glusterfs-precheck-job
+          image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+
+          command: ["python", "/precheck/precheck_job.py"]
+
+          volumeMounts:
+            - name: glusterfs-precheck
+              mountPath: "/precheck"
+
+      volumes:
+        - name: glusterfs-precheck
+          configMap:
+            name: release-name-glusterfs-precheck-cm
+            defaultMode: 0777
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/predelete-job.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-glusterfs-predelete-job
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "predelete-job"
+    glusterfs-predelete: "job"
+  annotations:
+    "helm.sh/hook": pre-delete, post-delete
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: release-name-glusterfs-predelete-job
+      labels:
+        app: "glusterfs"
+        chart: "ibm-glusterfs-1.4.0" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "predelete-job"
+        glusterfs-predelete: "pod"
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      restartPolicy: Never
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: glusterfs-predelete-job
+          image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+
+          command: ["/predelete/predelete_job.sh"]
+
+          volumeMounts:
+            - name: glusterfs-predelete
+              mountPath: "/predelete"
+
+      volumes:
+        - name: glusterfs-predelete
+          configMap:
+            name: release-name-glusterfs-predelete-cm
+            defaultMode: 0777
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists
+---
+# Source: ibm-glusterfs/templates/storage-class-job.yaml
+###############################################################################
+# Licensed Materials - Property of IBM
+# 5737-E67
+# (C) Copyright IBM Corporation 2016, 2018 All Rights Reserved
+# US Government Users Restricted Rights - Use, duplication or disclosure
+# restricted by GSA ADP Schedule Contract with IBM Corp.
+################################################################################         
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-glusterfs-storageclass-job
+  namespace: default
+  labels:
+    app: "glusterfs"
+    chart: "ibm-glusterfs-1.4.0" 
+    heritage: "Helm"
+    release: "release-name"
+    component: "storageclass-job"
+    glusterfs-sc: "job"
+  annotations:
+    description: Defines how to create glusterfs storage class
+    "helm.sh/hook": post-install, post-upgrade, post-rollback
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": hook-succeeded, hook-failed, before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      name: release-name-glusterfs-storageclass-job
+      labels:
+        app: "glusterfs"
+        chart: "ibm-glusterfs-1.4.0" 
+        heritage: "Helm"
+        release: "release-name"
+        component: "storageclass-job"
+        glusterfs-sc: "pod"
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      restartPolicy: Never
+      priorityClassName: "system-cluster-critical"
+      containers:
+        - name: glusterfs-sc-job
+          image: "ibmcom/icp-storage-util:3.2.0"
+          imagePullPolicy: "IfNotPresent"
+
+          command: ["/sc/storage_class.sh"]
+
+          volumeMounts:
+            - name: storage-class
+              mountPath: "/sc"
+
+      volumes:
+        - name: storage-class
+          configMap:
+            name: release-name-glusterfs-storageclass-cm
+            defaultMode: 0777
+      affinity:      
+      #https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          #If you specify multiple nodeSelectorTerms associated with nodeAffinity types,
+          #then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+          #
+          #If you specify multiple matchExpressions associated with nodeSelectorTerms,
+          #then the pod can be scheduled onto a node only if all matchExpressions can be satisfied.
+          #
+          #valid operators: In, NotIn, Exists, DoesNotExist, Gt, Lt
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - ppc64le
+                - s390x
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - ppc64le
+          - weight: 2
+            preference:
+              matchExpressions:
+              - key: beta.kubernetes.io/arch
+                operator: In
+                values:
+                - s390x
+      tolerations:
+        - key: dedicated
+          operator: Exists
+        - key: CriticalAddonsOnly
+          operator: Exists

@@ -1,0 +1,374 @@
+---
+# Source: shoreline-agent/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shoreline-sa
+  namespace: shoreline
+---
+# Source: shoreline-agent/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: customer-secret
+  namespace: shoreline
+  labels:
+    app : shoreline
+type: Opaque
+data:
+  customer-secret: "c2VjcmV0"
+---
+# Source: shoreline-agent/templates/capemconfigmap.yaml
+apiVersion: v1
+data:
+  ca.pem: |
+    
+    -----BEGIN CERTIFICATE-----
+    -----END CERTIFICATE-----
+    
+kind: ConfigMap
+metadata:
+  name: ca-pemstore
+  namespace: shoreline
+---
+# Source: shoreline-agent/templates/scraperconfigmap.yaml
+apiVersion: v1
+data:
+  scraper.yml: |
+    scrape_configs:
+    - job_name: 'node-exporter'
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - "monitoring"
+      resource_mapping_config:
+        mode: exporter
+        resource_types:
+        - host # default resource type, default value of __shoreline_rq_type__
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_endpoints_name]
+        regex: "node-exporter"
+        action: keep
+      - target_label: __shoreline_rq_type
+        action: replace # its default value
+        replacement: host # host type, the resource will mapping the host id where the scraper is located at default.
+      metric_relabel_configs:
+      - source_labels: [__name__] # metric filter
+        action: keep
+        regex: (node_cpu_seconds_total|node_memory_MemFree_bytes|node_memory_Cached_bytes|node_memory_MemTotal_bytes|node_memory_Buffers_bytes|node_filesystem_avail_bytes|node_network_transmit_drop_total|node_network_transmit_packets_total|node_network_transmit_bytes_total|node_network_receive_packets_total|node_network_receive_bytes_total|node_disk_reads_completed_total|node_disk_writes_completed_total|node_disk_read_bytes_total|node_disk_written_bytes_total|node_vmstat_pgfault|node_vmstat_pgmajfault|node_vmstat_oom_kill|node_filesystem_free_bytes|node_filesystem_size_bytes|node_network_receive_errs_total|node_network_transmit_errs_total|node_network_receive_drop_total)
+    - job_name: 'cadvisor'
+      scrape_interval: 10s
+      honor_timestamps: false
+      scheme: https
+      metrics_path: /metrics/cadvisor
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      resource_mapping_config:
+        mode: metric
+        resource_types:
+        - pod
+        - container
+        default_resource_type: container # default resource type, default value of __shoreline_rq_type__
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      metric_relabel_configs:
+      - source_labels: [__name__] # metric filter
+        action: keep
+        regex: (container_cpu_usage_seconds_total|container_memory_usage_bytes|container_spec_cpu_quota|container_fs_limit_bytes|container_spec_memory_limit_bytes|container_network_receive_packets_dropped_total|container_network_transmit_packets_dropped_total|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_memory_working_set_bytes)
+      - source_labels: [container]
+        target_label: __shoreline_rq_type
+        regex: (^$|^POD$)
+        action: replace
+        replacement: pod
+      - source_labels: [namespace]
+        target_label: __shoreline_rq_tags_namespace
+      - source_labels: [pod]
+        target_label: __shoreline_rq_tags_pod_name
+      - source_labels: [container]
+        regex: (^([^P]|P[^O]|PO[^D])+$)  # not empty or POD
+        target_label: __shoreline_rq_tags_container_name
+      - regex: (image|id|name|namespace|pod)
+        action: labeldrop
+    - job_name: 'kubelets'
+      scheme: https
+      metrics_path: /metrics
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      resource_mapping_config:
+        mode: metric
+        resource_types:
+        - pod # default resource type, default value of __shoreline_rq_type
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      metric_relabel_configs:
+      - source_labels: [__name__] # metric filter
+        action: keep
+        regex: (kubelet_volume_stats_available_bytes|kubelet_volume_stats_capacity_bytes)
+      - source_labels: [namespace]
+        target_label: __shoreline_rq_tags_namespace
+      - source_labels: [persistentvolumeclaim]
+        target_label: __shoreline_rq_tags_pvc_ # TODO:, promethues original rule does not allow regex for target_label
+    - job_name: 'envoy'
+      scrape_interval: 10s
+      metrics_path: /stats/prometheus
+      kubernetes_sd_configs:
+      - role: pod
+      resource_mapping_config:
+        mode: exporter
+        resource_types:
+        - pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        action: keep
+        regex: istio-proxy
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        action: keep
+        regex: '.*-envoy-prom'
+      - source_labels: [__address__, __meta_kubernetes_pod_container_port_number]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+        separator: "."
+        action: replace
+        target_label: __shoreline_rq_name
+      metric_relabel_configs:
+      - source_labels: [__name__] # metric filter
+        action: keep
+        regex: (istio_request_duration_milliseconds_count|istio_request_duration_milliseconds_bucket)
+kind: ConfigMap
+metadata:
+  name: scraper-config
+  namespace: shoreline
+---
+# Source: shoreline-agent/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shoreline-agent
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - nodes/metrics
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+---
+# Source: shoreline-agent/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shoreline-sa-view-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: shoreline-agent
+subjects:
+- kind: ServiceAccount
+  name: shoreline-sa
+  namespace: shoreline
+---
+# Source: shoreline-agent/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shoreline-agent-role
+  namespace: shoreline
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+  - list
+---
+# Source: shoreline-agent/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shoreline-sa-view-role-binding
+  namespace: shoreline
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shoreline-agent-role
+subjects:
+- kind: ServiceAccount
+  name: shoreline-sa
+  namespace: shoreline
+---
+# Source: shoreline-agent/templates/shoreline.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    k8s-app: shoreline
+  name: shoreline
+  namespace: shoreline
+spec:
+  selector:
+    matchLabels:
+      app: shoreline
+  template:
+    metadata:
+      labels:
+        app: shoreline
+    spec:
+      containers:
+        - env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BACKEND_ADDRESS
+              value: 
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: SSH_USERNAME
+              value: shoreline
+            - name: SSH_PORT
+              value: "22"
+            - name: K8S_CACERT_PATH
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - name: K8S_TOKEN_PATH
+              value: /var/run/secrets/kubernetes.io/serviceaccount/token
+            - name: SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: customer-secret
+                  key: customer-secret
+            - name: SECRETS_DIRECTORY
+              value: "/agent/secrets"
+            - name: CUSTOMER_ID
+              value: 
+            - name: ELIXIR_LOGGER_LEVEL
+              value: "error"
+          image: >-
+            shorelinesoftware/agent:release-x.x.x
+          name: shoreline
+          readinessProbe:
+            exec:
+              command:
+                - "/agent/bin/health_check.sh"
+                - "/agent/healthy"
+                - "10"
+            initialDelaySeconds: 180
+            periodSeconds: 120
+            timeoutSeconds: 60
+          livenessProbe:
+            exec:
+              command:
+                - "/agent/bin/health_check.sh"
+                - "/agent/healthy"
+                - "10"
+            initialDelaySeconds: 180
+            periodSeconds: 120
+            timeoutSeconds: 60
+          ports:
+            - containerPort: 5051
+              name: agent-opservice
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "500Mi"
+            requests:
+              cpu: "500m"
+              memory: "500Mi"
+          volumeMounts:
+            - mountPath: /var/log
+              name: varlog
+            - mountPath: /var/lib/docker/containers
+              name: varlibdockercontainers
+              readOnly: true
+            - mountPath: /agent/secrets/ca_cert.crt
+              name: ca-pemstore
+              readOnly: false
+              subPath: ca.pem
+            - mountPath: /agent/.host_ssh
+              name: host-ssh-volume
+              readOnly: true
+            - mountPath: /agent/etc/scraper.yml
+              name: scraper-config
+              subPath: scraper.yml
+      serviceAccountName: shoreline-sa
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - hostPath:
+            path: /var/log
+          name: varlog
+        - hostPath:
+            path: /var/lib/docker/containers
+          name: varlibdockercontainers
+        - configMap:
+            name: ca-pemstore
+          name: ca-pemstore
+        - name: host-ssh-volume
+          hostPath:
+            path: /home/shoreline/.ssh
+            type: DirectoryOrCreate
+        - name: scraper-config
+          configMap:
+            name: scraper-config
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 10
+    type: RollingUpdate

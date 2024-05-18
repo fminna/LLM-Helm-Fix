@@ -1,0 +1,491 @@
+---
+# Source: icingaweb/templates/icingaweb-graphs-configmap.yaml
+# icingaweb-graphs configmap: get data from _graphs-ini.tpl
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: icingaweb-graphs
+  labels:
+    app.kubernetes.io/name: icingaweb
+    helm.sh/chart: icingaweb-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: icingaweb
+data:
+  graphs.ini: |-    
+    [hostalive]
+    dashboard = "icinga2-hostalive"
+    panelId = "1"
+    orgId = "1"
+    repeatable = "no"
+    dashboarduid = "icinga2-hostalive"
+---
+# Source: icingaweb/templates/icingaweb-http-configmap.yaml
+# icingaweb apache configmap - get data from _icingaweb-apache.tpl
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: icingaweb-http
+  labels:
+    app.kubernetes.io/name: icingaweb
+    helm.sh/chart: icingaweb-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: icingaweb
+data:
+  icingaweb2.conf: |-    
+    # Apache config for icingaweb
+    Alias /icingaweb "/usr/share/icingaweb2/public/"
+    # Remove comments if you want to use PHP FPM and your Apache version is older than 2.4
+    #<IfVersion < 2.4>
+    #    # Forward PHP requests to FPM
+    #    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    #    <LocationMatch "^//(.*\.php)$">
+    #        ProxyPassMatch "fcgi://127.0.0.1:9000//usr/share/icingaweb2/public/$1"
+    #    </LocationMatch>
+    #</IfVersion>
+    
+    <Directory "/usr/share/icingaweb2/public">
+        Options SymLinksIfOwnerMatch
+        AllowOverride None
+    
+        DirectoryIndex index.php
+    
+        <IfModule mod_authz_core.c>
+            # Apache 2.4
+            <RequireAll>
+                Require all granted
+            </RequireAll>
+        </IfModule>
+    
+        <IfModule !mod_authz_core.c>
+            # Apache 2.2
+            Order allow,deny
+            Allow from all
+        </IfModule>
+    
+        SetEnv ICINGAWEB_CONFIGDIR "/etc/icingaweb2"
+    
+        EnableSendfile Off
+    
+        <IfModule mod_rewrite.c>
+            RewriteEngine on
+            RewriteBase /icingaweb
+            RewriteCond %{REQUEST_FILENAME} -s [OR]
+            RewriteCond %{REQUEST_FILENAME} -l [OR]
+            RewriteCond %{REQUEST_FILENAME} -d
+            RewriteRule ^.*$ - [NC,L]
+            RewriteRule ^.*$ index.php [NC,L]
+        </IfModule>
+    
+        <IfModule !mod_rewrite.c>
+            DirectoryIndex error_norewrite.html
+            ErrorDocument 404 //error_norewrite.html
+        </IfModule>
+    
+    # Remove comments if you want to use PHP FPM and your Apache version
+    # is greater than or equal to 2.4
+    #    <IfVersion >= 2.4>
+    #        # Forward PHP requests to FPM
+    #        SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    #        <FilesMatch "\.php$">
+    #            SetHandler "proxy:fcgi://127.0.0.1:9000"
+    #            ErrorDocument 503 //error_unavailable.html
+    #        </FilesMatch>
+    #    </IfVersion>
+    </Directory>
+---
+# Source: icingaweb/templates/service.yaml
+# icingaweb service: expose service.port (8080)
+apiVersion: v1
+kind: Service
+metadata:
+  name: icingaweb
+  labels:
+    app.kubernetes.io/name: icingaweb
+    helm.sh/chart: icingaweb-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: icingaweb
+      port: 8080
+      targetPort: icingaweb
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: icingaweb
+    app.kubernetes.io/instance: release-name
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 7200
+---
+# Source: icingaweb/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-icingaweb
+  labels:
+    app.kubernetes.io/name: icingaweb
+    helm.sh/chart: icingaweb-1.0.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: icingaweb
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: icingaweb
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: icingaweb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: icingaweb
+        helm.sh/chart: icingaweb-1.0.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: icingaweb
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: icingaweb
+                app.kubernetes.io/name: icingaweb
+            topologyKey: app.kubernetes.io/hostname
+      # Init contaiter: change own for icingaweb config directory and waiting for icinga master
+      initContainers:
+      - name: icingaweb-init
+        image: docker.io/busybox:1.33 # busybox:1.33
+        imagePullPolicy: "IfNotPresent"
+        command:
+          - /bin/sh
+          - -c
+          - |
+            mkdir -p /data/etc/icingaweb2/enabledModules
+            mkdir -p /data/var/lib/icingaweb2
+            mkdir -p /data/etc/icingaweb2/modules/grafana
+            chown -R www-data:www-data /data
+            until nc -zvw5 release-name-icinga2-master-0.icinga2-headless 5665; do echo "Waiting for icinga master..."; sleep 2; done
+        volumeMounts:
+          - name: icingaweb-volume
+            mountPath: /data
+      imagePullSecrets:
+      - name: ghcr-pull-secret
+      containers:
+      # icingaweb container
+      - name: icingaweb
+        image: svtechnmaa/svtech_icingaweb2:v1.0.2 # svtechnmaa/svtech_icingaweb2:v1.0.2
+        imagePullPolicy: "IfNotPresent"
+        securityContext:
+          runAsUser: 33
+          runAsGroup: 33
+        ports:
+        - name: icingaweb
+          containerPort: 8080
+        ## ENV
+        env:
+        - name: TZ
+          value: "Asia/Ho_Chi_Minh"
+        - name: icingaweb.enabledModules
+          value: director,grafana,icingadb,incubator,        
+        - name: icingaweb.authentication.icingaweb2.backend
+          value: "db"
+        - name: icingaweb.authentication.icingaweb2.resource
+          value: "icingaweb2db"
+        - name: icingaweb.passwords.icingaweb2.icingaweb
+          value: "juniper@123"
+        - name: icingaweb.config.global.config_resource
+          value: "icingaweb2db"
+        - name: icingaweb.groups.icingaweb2.backend
+          value: "db"
+        - name: icingaweb.groups.icingaweb2.resource
+          value: "icingaweb2db"
+        - name: icingaweb.roles.Administrators.users
+          value: "icingaweb"
+        - name: icingaweb.roles.Administrators.permissions
+          value: "*"
+        - name: icingaweb.roles.Administrators.groups
+          value: Administrators
+        
+        - name: icingaweb.modules.director.config.db.resource
+          value: "directordb"
+        - name: icingaweb.modules.director.kickstart.config.endpoint
+          value: master-0
+        - name: icingaweb.modules.director.kickstart.config.host
+          value: release-name-icinga2-master-0.icinga2-headless.default.svc.cluster.local
+        - name: icingaweb.modules.director.kickstart.config.username
+          value: "icingaAdmin"
+        - name: icingaweb.modules.director.kickstart.config.password
+          value: "icingaAdmin"
+        
+        - name: icingaweb.modules.icingadb.config.icingadb.resource
+          value: "icingadb"
+        - name: icingaweb.modules.icingadb.redis.redis1.host
+          value: "icinga2.default.svc.cluster.local"
+        - name: icingaweb.modules.icingadb.redis.redis1.port
+          value: "6379"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.transport
+          value: api
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.skip_validation
+          value: "0"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.host
+          value: "icinga2.default.svc.cluster.local"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.port
+          value: "5665"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.username
+          value: "icingaAdmin"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.password
+          value:  "icingaAdmin"
+        
+        - name: icingaweb.modules.grafana.config.grafana.host
+          value: "%!s(<nil>)/grafana"
+        - name: icingaweb.modules.grafana.config.grafana.protocol
+          value: "https"
+        - name: icingaweb.modules.grafana.config.grafana.timerangeAll
+          value: "1w/w"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboard
+          value: "icinga2-default"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboarduid
+          value: "icinga2-default"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboardpanelid
+          value: "1"
+        - name: icingaweb.modules.grafana.config.grafana.defaultorgid
+          value: "1"
+        - name: icingaweb.modules.grafana.config.grafana.shadows
+          value: "0"
+        - name: icingaweb.modules.grafana.config.grafana.theme
+          value: "light"
+        - name: icingaweb.modules.grafana.config.grafana.datasource
+          value: "influxdb"
+        - name: icingaweb.modules.grafana.config.grafana.accessmode
+          value: "iframe"
+        - name: icingaweb.modules.grafana.config.grafana.debug
+          value: "0"        
+        - name: icingaweb.resources.directordb.type
+          value: db
+        - name: icingaweb.resources.directordb.db
+          value: mysql
+        - name: icingaweb.resources.directordb.charset
+          value: utf8
+        - name: icingaweb.resources.directordb.host
+          value: "mariadb"
+        - name: icingaweb.resources.directordb.dbname
+          value: directordb
+        - name: icingaweb.resources.directordb.username
+          value: director
+        - name: icingaweb.resources.directordb.password
+          value: "juniper@123"
+        - name: icingaweb.resources.icingadb.type
+          value: db
+        - name: icingaweb.resources.icingadb.db
+          value: mysql
+        - name: icingaweb.resources.icingadb.charset
+          value: utf8
+        - name: icingaweb.resources.icingadb.host
+          value: "mariadb"
+        - name: icingaweb.resources.icingadb.dbname
+          value: icingadb
+        - name: icingaweb.resources.icingadb.username
+          value: icingadb
+        - name: icingaweb.resources.icingadb.password
+          value: "juniper@123"
+        - name: icingaweb.resources.icingaweb2db.type
+          value: db
+        - name: icingaweb.resources.icingaweb2db.db
+          value: mysql
+        - name: icingaweb.resources.icingaweb2db.charset
+          value: utf8
+        - name: icingaweb.resources.icingaweb2db.host
+          value: "mariadb"
+        - name: icingaweb.resources.icingaweb2db.dbname
+          value: icingaweb2db
+        - name: icingaweb.resources.icingaweb2db.username
+          value: icingaweb2
+        - name: icingaweb.resources.icingaweb2db.password
+          value: "juniper@123"
+      # Volume and volumeMount
+        volumeMounts:
+          # icingaweb http config
+          - name: icingaweb-http
+            mountPath: /etc/apache2/conf-enabled/icingaweb2.conf
+            subPath: icingaweb2.conf
+          # icingaweb graphs
+          - name: icingaweb-graphs
+            mountPath: /data/etc/icingaweb2/modules/grafana/graphs.ini
+            subPath: graphs.ini
+          # shareVolume
+          - name: icingaweb-volume
+            mountPath: /data
+      # director module container
+      - name: director
+        image: svtechnmaa/svtech_icingaweb2:v1.0.2 # svtechnmaa/svtech_icingaweb2:v1.0.2
+        imagePullPolicy: "IfNotPresent"
+        ## ENV
+        env:
+        - name: TZ
+          value: "Asia/Ho_Chi_Minh"
+        - name: icingaweb.enabledModules
+          value: director,grafana,icingadb,incubator,        
+        - name: icingaweb.authentication.icingaweb2.backend
+          value: "db"
+        - name: icingaweb.authentication.icingaweb2.resource
+          value: "icingaweb2db"
+        - name: icingaweb.passwords.icingaweb2.icingaweb
+          value: "juniper@123"
+        - name: icingaweb.config.global.config_resource
+          value: "icingaweb2db"
+        - name: icingaweb.groups.icingaweb2.backend
+          value: "db"
+        - name: icingaweb.groups.icingaweb2.resource
+          value: "icingaweb2db"
+        - name: icingaweb.roles.Administrators.users
+          value: "icingaweb"
+        - name: icingaweb.roles.Administrators.permissions
+          value: "*"
+        - name: icingaweb.roles.Administrators.groups
+          value: Administrators
+        
+        - name: icingaweb.modules.director.config.db.resource
+          value: "directordb"
+        - name: icingaweb.modules.director.kickstart.config.endpoint
+          value: master-0
+        - name: icingaweb.modules.director.kickstart.config.host
+          value: release-name-icinga2-master-0.icinga2-headless.default.svc.cluster.local
+        - name: icingaweb.modules.director.kickstart.config.username
+          value: "icingaAdmin"
+        - name: icingaweb.modules.director.kickstart.config.password
+          value: "icingaAdmin"
+        
+        - name: icingaweb.modules.icingadb.config.icingadb.resource
+          value: "icingadb"
+        - name: icingaweb.modules.icingadb.redis.redis1.host
+          value: "icinga2.default.svc.cluster.local"
+        - name: icingaweb.modules.icingadb.redis.redis1.port
+          value: "6379"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.transport
+          value: api
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.skip_validation
+          value: "0"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.host
+          value: "icinga2.default.svc.cluster.local"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.port
+          value: "5665"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.username
+          value: "icingaAdmin"
+        - name: icingaweb.modules.icingadb.commandtransports.icinga2.password
+          value:  "icingaAdmin"
+        
+        - name: icingaweb.modules.grafana.config.grafana.host
+          value: "%!s(<nil>)/grafana"
+        - name: icingaweb.modules.grafana.config.grafana.protocol
+          value: "https"
+        - name: icingaweb.modules.grafana.config.grafana.timerangeAll
+          value: "1w/w"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboard
+          value: "icinga2-default"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboarduid
+          value: "icinga2-default"
+        - name: icingaweb.modules.grafana.config.grafana.defaultdashboardpanelid
+          value: "1"
+        - name: icingaweb.modules.grafana.config.grafana.defaultorgid
+          value: "1"
+        - name: icingaweb.modules.grafana.config.grafana.shadows
+          value: "0"
+        - name: icingaweb.modules.grafana.config.grafana.theme
+          value: "light"
+        - name: icingaweb.modules.grafana.config.grafana.datasource
+          value: "influxdb"
+        - name: icingaweb.modules.grafana.config.grafana.accessmode
+          value: "iframe"
+        - name: icingaweb.modules.grafana.config.grafana.debug
+          value: "0"        
+        - name: icingaweb.resources.directordb.type
+          value: db
+        - name: icingaweb.resources.directordb.db
+          value: mysql
+        - name: icingaweb.resources.directordb.charset
+          value: utf8
+        - name: icingaweb.resources.directordb.host
+          value: "mariadb"
+        - name: icingaweb.resources.directordb.dbname
+          value: directordb
+        - name: icingaweb.resources.directordb.username
+          value: director
+        - name: icingaweb.resources.directordb.password
+          value: "juniper@123"
+        - name: icingaweb.resources.icingadb.type
+          value: db
+        - name: icingaweb.resources.icingadb.db
+          value: mysql
+        - name: icingaweb.resources.icingadb.charset
+          value: utf8
+        - name: icingaweb.resources.icingadb.host
+          value: "mariadb"
+        - name: icingaweb.resources.icingadb.dbname
+          value: icingadb
+        - name: icingaweb.resources.icingadb.username
+          value: icingadb
+        - name: icingaweb.resources.icingadb.password
+          value: "juniper@123"
+        - name: icingaweb.resources.icingaweb2db.type
+          value: db
+        - name: icingaweb.resources.icingaweb2db.db
+          value: mysql
+        - name: icingaweb.resources.icingaweb2db.charset
+          value: utf8
+        - name: icingaweb.resources.icingaweb2db.host
+          value: "mariadb"
+        - name: icingaweb.resources.icingaweb2db.dbname
+          value: icingaweb2db
+        - name: icingaweb.resources.icingaweb2db.username
+          value: icingaweb2
+        - name: icingaweb.resources.icingaweb2db.password
+          value: "juniper@123"
+        command: []
+        args:
+          - /bin/bash
+          - -ce
+          - |
+            icingacli director migration run
+            (icingacli director kickstart required && icingacli director kickstart run && icingacli director config deploy) || true
+            icingacli director daemon run
+      volumes:
+        # icingaweb http 
+        - name: icingaweb-http
+          configMap:
+            name: icingaweb-http
+        # icingaweb graphs
+        - name: icingaweb-graphs
+          configMap:
+            name: icingaweb-graphs
+        # shareVome
+        - name: icingaweb-volume
+          persistentVolumeClaim:
+            claimName: icingaweb-pvc
+---
+# Source: icingaweb/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: icingaweb-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: default
+  rules:
+  - http:
+      paths:
+      - path: /icingaweb
+        pathType: Prefix
+        backend:
+          service:
+            name: icingaweb
+            port:
+              number: 8080

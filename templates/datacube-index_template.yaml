@@ -1,0 +1,77 @@
+---
+# Source: datacube-index/templates/index.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-datacube-index
+  labels:
+    app.kubernetes.io/name: datacube-index
+    helm.sh/chart: datacube-index-0.4.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      name: release-name-datacube-index
+      labels:
+        heritage: release-name-datacube-index
+        release: release-name
+      annotations:
+        iam.amazonaws.com/role: kubernetes-wms
+    spec:
+      # Turning single-request-reopen option on would fix issue where in two requests from the same port are
+      # not handled correctly it will close the socket and open a new one before sending the second request.
+      dnsConfig:
+        options:
+          - name: single-request-reopen
+      initContainers:
+      - name: postgres-listener
+        image: alpine
+        command: ["sh", "-c", "for i in $(seq 1 200); do nc -z -w3 localhost 5432 && exit 0 || sleep 3; done; exit 1"]
+      containers:
+      - name: datacube-index
+        image: "opendatacube/ows:latest"
+        imagePullPolicy: Always
+        args: [ "/bin/bash",  "-c",  "cd index; ./create-index.sh", ]
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1024Mi
+          requests:
+            cpu: 300m
+            memory: 768Mi
+        env:
+        - name: WMS_CONFIG_URL
+          value: ""
+        - name: DC_S3_INDEX_BUCKET
+          value: "dea-public-data"
+        - name: DC_S3_INDEX_PREFIX
+          value: 
+        - name: DC_S3_INDEX_SUFFIX
+          value: ".yaml"
+        - name: DC_S3_IGNORE_SUFFIX
+          value: 
+        - name: DC_INDEX_YAML_SAFETY
+          value: 
+        - name: DB_HOSTNAME
+          value: "localhost"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: "datacube"
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: datacube
+              key: postgres-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: datacube
+              key: postgres-password
+        # Mount the config volume
+        volumeMounts:  
+      restartPolicy: Never
+      # Define the config volume
+      volumes:

@@ -1,0 +1,206 @@
+---
+# Source: consensus-monitor/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-consensus-monitor
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  namespace: default
+---
+# Source: consensus-monitor/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-consensus-monitor-env
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+---
+# Source: consensus-monitor/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-consensus-monitor
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  config.toml: |
+    [network]
+    name = "pithos"
+    etherscan_api_key = "some-etherscan-api-key"
+    
+    [consensus_chain]
+    seconds_per_slot = 12
+    slots_per_epoch = 32
+    genesis_time = 1634213100
+    
+    [weak_subjectivity]
+    provider_endpoint = "http://eth2-ws-provider_eth2_ws_server_1:80"
+    
+    [monitor]
+    output_dir = "public"
+    port = 8080
+    
+    [[monitor.endpoints]]
+    consensus = "http://$BEACON_HTTP_API:$PORT"
+    execution = "Geth"
+    
+    [[monitor.endpoints]]
+    consensus = "http://$ANOTHER_BEACON_HTTP_API:$PORT"
+    execution = "Nethermind"
+---
+# Source: consensus-monitor/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-consensus-monitor-headless
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+---
+# Source: consensus-monitor/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-consensus-monitor
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+---
+# Source: consensus-monitor/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-consensus-monitor
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    {}
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consensus-monitor
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-consensus-monitor-headless
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consensus-monitor
+        app.kubernetes.io/instance: release-name
+      annotations:
+        checksum/config: 3be432a880a2a6d31ad8ea8f67a62700663c3010c4c0190e097b8d2d539b4195
+        checksum/secrets: 2c86b7be51e8edd18b248612173a5a289d93c609910a721a8ae7af9a090826a6
+    spec:
+      serviceAccountName: release-name-consensus-monitor
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+      initContainers:
+      containers:
+        - name: consensus-monitor
+          image: "ralexstokes/ethereum_consensus_monitor:latest"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {}
+          volumeMounts:
+            - name: config
+              mountPath: "/config.toml"
+              subPath: config.toml
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 60
+            periodSeconds: 120
+            tcpSocket:
+              port: http
+          readinessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            tcpSocket:
+              port: http
+          resources:
+            {}
+          env:
+      nodeSelector:
+        {}
+      affinity:
+        {}
+      tolerations:
+        []
+      topologySpreadConstraints:
+        []
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: release-name-consensus-monitor
+---
+# Source: consensus-monitor/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-consensus-monitor-test-connection"
+  labels:
+    helm.sh/chart: consensus-monitor-0.1.2
+    app.kubernetes.io/name: consensus-monitor
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl
+      command: ['curl']
+      args:
+       - --location
+       - --request
+       - GET
+       - 'release-name-consensus-monitor:8080/'
+  restartPolicy: Never

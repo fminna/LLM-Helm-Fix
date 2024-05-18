@@ -1,0 +1,224 @@
+---
+# Source: ilum-marquez/templates/marquez/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ilum-marquez
+type: Opaque
+data:
+  marquez-db-password: "Q0hBTkdFTUVQTEVBU0U="
+---
+# Source: ilum-marquez/templates/marquez/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marquez-config
+  labels:
+    app.kubernetes.io/component: marquez
+data:
+  ### HTTP SERVER CONFIG ###
+
+  config.yml: |-
+    # Enables HTTP server configuration overrides (see: https://www.dropwizard.io/en/stable/manual/configuration.html#servers)
+    server:
+      applicationConnectors:
+      - type: http
+        port: ${MARQUEZ_PORT}
+        httpCompliance: RFC7230_LEGACY
+      adminConnectors:
+      - type: http
+        port: ${MARQUEZ_ADMIN_PORT}
+
+    ### DATABASE CONFIG ###
+
+    # Enables database configuration overrides (see: https://www.dropwizard.io/en/stable/manual/configuration.html#database)
+    db:
+      driverClass: org.postgresql.Driver
+      url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+
+    # Enables database migration on startup (default: true)
+    migrateOnStartup: ${MIGRATE_ON_STARTUP}
+    logging:
+      level: ${LOG_LEVEL}
+      appenders:
+        - type: console
+---
+# Source: ilum-marquez/templates/marquez/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-marquez
+  labels:
+    app: ilum-marquez
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9555
+      targetPort: http
+  selector:
+    app: ilum-marquez
+---
+# Source: ilum-marquez/templates/web/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ilum-marquez-web
+  labels:
+    app: ilum-marquez-web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9444
+      targetPort: http
+
+  selector:
+    app: ilum-marquez-web
+---
+# Source: ilum-marquez/templates/marquez/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-marquez
+  labels:
+    app: marquez
+spec:
+  selector:
+    matchLabels:
+      app: ilum-marquez
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ilum-marquez
+    spec:
+      # This init container is for avoiding CrashLoopback errors in the Marquez container because the PostgreSQL container is not ready
+      initContainers:
+        - name: wait-for-db
+          image: bitnami/postgresql:16
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+          args:
+            - -ec
+            - until pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER}; do echo waiting for database; sleep 2; done;
+          env:
+            - name: POSTGRES_HOST
+              value: "ilum-postgresql-0.ilum-postgresql-hl"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: "ilum"
+      containers:
+        - name: ilum-marquez
+          image: ilum/marquez:0.42.0
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: marquez-volume
+              mountPath: /usr/src/app/config.yml
+              subPath: config.yml
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+            - name: http-admin
+              containerPort: 5001
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+          env:
+            - name: MARQUEZ_PORT
+              value: "5000"
+            - name: MARQUEZ_ADMIN_PORT
+              value: "5001"
+            - name: MARQUEZ_CONFIG
+              value: /usr/src/app/config.yml
+            - name: POSTGRES_HOST
+              value: "ilum-postgresql-0.ilum-postgresql-hl"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "marquez"
+            - name: POSTGRES_USER
+              value: "ilum"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ilum-marquez
+                  key: marquez-db-password
+            - name: MIGRATE_ON_STARTUP
+              value: "true"
+          resources:
+            limits: {}
+            requests: {}
+      volumes:
+        - name: marquez-volume
+          configMap:
+            name: marquez-config
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+---
+# Source: ilum-marquez/templates/web/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ilum-marquez-web
+spec:
+  selector:
+    matchLabels:
+      app: ilum-marquez-web
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ilum-marquez-web
+    spec:
+      containers:
+        - name: ilum-marquez-web
+          image: ilum/marquez-web:0.42.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+          env:
+            - name: MARQUEZ_HOST
+              value: ilum-marquez
+            - name: MARQUEZ_PORT
+              value: "9555"
+          resources:
+            limits: {}
+            requests: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64

@@ -1,0 +1,156 @@
+---
+# Source: event-store-service/templates/deployment.yaml
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: release-name
+  labels:
+    choerodon.io/release: "release-name"
+    choerodon.io/logs-parser: "spring-boot"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      choerodon.io/release: "release-name"
+  template:
+    metadata:
+      annotations:
+        choerodon.io/metrics-group: "spring-boot"
+        choerodon.io/metrics-path: "/prometheus"
+      labels:
+        choerodon.io/version: "0.8.0"
+        choerodon.io/service: "event-store-service"
+        choerodon.io/metrics-port: "9011"
+        choerodon.io/release: "release-name"
+    spec:
+      containers:
+        - name: release-name
+          image: "choerodon/event-store-service:0.8.0"
+          imagePullPolicy: Always
+          env:
+          - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+            value: "http://register-server.io-choerodon:8000/eureka/"
+          - name: "SPRING_CLOUD_CONFIG_ENABLED"
+            value: "true"
+          - name: "SPRING_CLOUD_CONFIG_URI"
+            value: "http://localhost:8010"
+          - name: "SPRING_CLOUD_STREAM_KAFKA_BINDER_BROKERS"
+            value: "kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092,kafka-2.kafka-headless.kafka.svc.cluster.local:9092"
+          - name: "SPRING_CLOUD_STREAM_KAFKA_BINDER_ZK_NODES"
+            value: "zookeeper-0.zookeeper-headless.zookeeper.svc.cluster.local:2181,zookeeper-1.zookeeper-headless.zookeeper.svc.cluster.local:2181,zookeeper-2.zookeeper-headless.zookeeper.svc.cluster.local:2181"
+          - name: "SPRING_DATASOURCE_PASSWORD"
+            value: "password"
+          - name: "SPRING_DATASOURCE_URL"
+            value: "jdbc:mysql://127.0.0.1/event_store_service?useUnicode=true&characterEncoding=utf-8&useSSL=false"
+          - name: "SPRING_DATASOURCE_USERNAME"
+            value: "username"
+          - name: "SPRING_KAFKA_BOOTSTRAP_SERVERS"
+            value: "kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092,kafka-2.kafka-headless.kafka.svc.cluster.local:9092"
+          ports:
+            - name: http
+              containerPort: 9010
+              protocol: TCP
+          # readinessProbe:
+          #   httpGet:
+          #     path: /health
+          #     port: 9011
+          #     scheme: HTTP
+          readinessProbe:
+            exec:
+              command:
+              - curl
+              - localhost:9011/health
+            failureThreshold: 3
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 10
+          resources:
+            limits:
+              memory: 3Gi
+            requests:
+              memory: 2Gi
+---
+# Source: event-store-service/templates/pre-config-config.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-config
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: release-name-init-config
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rf /var/choerodon/* /tools
+        image: registry.cn-hangzhou.aliyuncs.com/choerodon-tools/dbtool:0.5.2
+        imagePullPolicy: Always
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-config
+        image: "choerodon/event-store-service:0.8.0"
+        command:
+        - /bin/sh
+        - -c
+        - '
+          java -Dspring.datasource.url="jdbc:mysql://localhost:3306/manager_service?useUnicode=true&characterEncoding=utf-8&useSSL=false" -Dspring.datasource.username=username -Dspring.datasource.password=password -Dservice.name=event-store-service -Dservice.version=0.8.0 -Dconfig.file=application.yml -Dconfig.jar=/event-store-service.jar -jar /var/choerodon/choerodon-tool-config.jar;
+          '
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar
+---
+# Source: event-store-service/templates/pre-config-db.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: release-name-init-db
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: release-name-init-db
+    spec:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -rf /var/choerodon/* /tools
+        image: registry.cn-hangzhou.aliyuncs.com/choerodon-tools/dbtool:0.5.2
+        imagePullPolicy: Always
+        name: tools
+        volumeMounts:
+        - mountPath: /tools
+          name: tools-jar
+      containers:
+      - name: release-name-init-db
+        image: "choerodon/event-store-service:0.8.0"
+        command:
+        - /bin/sh
+        - -c
+        - '
+          java -Dspring.datasource.url="jdbc:mysql://localhost:3306/event_store_service?useUnicode=true&characterEncoding=utf-8&useSSL=false" -Dspring.datasource.username=username -Dspring.datasource.password=password -Ddata.init=true -Ddata.jar=/event-store-service.jar -jar /var/choerodon/choerodon-tool-liquibase.jar;
+          '
+        volumeMounts:
+        - mountPath: /var/choerodon
+          name: tools-jar
+      restartPolicy: Never
+      volumes:
+      - emptyDir: {}
+        name: tools-jar

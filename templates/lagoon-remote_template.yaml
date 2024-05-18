@@ -1,0 +1,256 @@
+---
+# Source: lagoon-remote/templates/priorityclasses.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: lagoon-priority-production
+value: 1000000
+globalDefault: true
+description: "This priority class should be used for production environments."
+---
+# Source: lagoon-remote/templates/priorityclasses.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: lagoon-priority-staging
+value: 100000
+globalDefault: false
+description: "This priority class should be used for staging environments."
+---
+# Source: lagoon-remote/templates/priorityclasses.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: lagoon-priority-development
+value: 10000
+globalDefault: false
+description: "This priority class should be used for development environments."
+---
+# Source: lagoon-remote/templates/docker-host.networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: release-name-lagoon-remote-docker-host
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchExpressions:
+        - key: lagoon.sh/environment
+          operator: Exists
+      podSelector:
+        matchExpressions:
+        - key: lagoon.sh/buildName
+          operator: Exists
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lagoon-remote
+      app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+      app.kubernetes.io/instance: release-name
+  policyTypes:
+  - Ingress
+---
+# Source: lagoon-remote/templates/docker-host.serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-lagoon-remote-docker-host
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: lagoon-remote/templates/docker-host.pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-name-lagoon-remote-docker-host
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "750Gi"
+---
+# Source: lagoon-remote/templates/application-logs.service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: application-logs
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ExternalName
+  externalName: "lagoon-logging-logs-dispatcher.lagoon-logging.svc.cluster.local"
+---
+# Source: lagoon-remote/templates/docker-host.service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-host
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 2375
+      targetPort: docker-daemon
+      protocol: TCP
+      name: docker-daemon
+  selector:
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+---
+# Source: lagoon-remote/templates/router-logs.service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: router-logs
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ExternalName
+  externalName: "lagoon-logging-logs-dispatcher.lagoon-logging.svc.cluster.local"
+---
+# Source: lagoon-remote/templates/docker-host.deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-lagoon-remote-docker-host
+  namespace: "default"
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lagoon-remote
+      app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+      app.kubernetes.io/instance: release-name
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lagoon-remote
+        app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: release-name-lagoon-remote-docker-host
+      securityContext:
+        {}
+      containers:
+      - name: docker-host
+        securityContext:
+          privileged: true
+          seLinuxOptions:
+            type: spc_t
+        image: "uselagoon/docker-host:v3.3.0"
+        imagePullPolicy: Always
+        env:
+        - name: DOCKER_HOST
+          value: localhost
+        - name: REGISTRY
+          value: "registry.lagoon.svc:5000"
+        - name: REPOSITORY_TO_UPDATE
+          value: "amazeeio|lagoon"
+        - name: PRUNE_IMAGES_UNTIL
+          value: "168h"
+        - name: CRONJOBS
+          value: |
+            22 1 * * * /lagoon/cronjob.sh "/prune-images.sh"
+            22 */4 * * * /lagoon/cronjob.sh "/remove-exited.sh"
+            */15 * * * * /lagoon/cronjob.sh "/update-images.sh"
+        ports:
+        - containerPort: 2375
+          protocol: TCP
+          name: docker-daemon
+        livenessProbe:
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          tcpSocket:
+            port: 2375
+          timeoutSeconds: 1
+        readinessProbe:
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          tcpSocket:
+            port: 2375
+          timeoutSeconds: 1
+        resources:
+          {}
+        volumeMounts:
+        - mountPath: /var/lib/docker
+          name: docker-lib
+      volumes:
+      - name: docker-lib
+        persistentVolumeClaim:
+          claimName: release-name-lagoon-remote-docker-host
+      tolerations:
+      - effect: NoSchedule
+        key: lagoon/build
+        operator: Exists
+      - effect: PreferNoSchedule
+        key: lagoon/build
+        operator: Exists
+      - effect: NoSchedule
+        key: lagoon.sh/build
+        operator: Exists
+      - effect: PreferNoSchedule
+        key: lagoon.sh/build
+        operator: Exists
+---
+# Source: lagoon-remote/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-lagoon-remote-docker-host-test-connection"
+  labels:
+    helm.sh/chart: lagoon-remote-0.88.1
+    app.kubernetes.io/name: lagoon-remote
+    app.kubernetes.io/component: release-name-lagoon-remote-docker-host
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+  - name: nc
+    image: busybox
+    command: ['nc']
+    args:
+    - "-zvw5"
+    - "docker-host"
+    - "2375"
+  restartPolicy: Never

@@ -1,0 +1,1644 @@
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-dn-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hdfs-datanode
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs
+      app.kubernetes.io/component: datanode
+      app.kubernetes.io/instance: release-name
+  minAvailable: 3
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: release-name-hdfs-namenode
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs
+      app.kubernetes.io/component: namenode
+      app.kubernetes.io/instance: release-name
+  minAvailable: 1
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hadoop-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hdfs-hadoop
+  labels:
+    app.kubernetes.io/name: hdfs
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+data:
+  bootstrap.sh: |-
+    #!/bin/bash
+    
+    : ${HADOOP_HOME:=/usr/local/hadoop}
+    
+    . $HADOOP_HOME/etc/hadoop/hadoop-env.sh
+    
+    # Directory to find config artifacts
+    CONFIG_DIR="/tmp/hadoop-config"
+    
+    # Copy config files from volume mount
+    
+    for f in slaves core-site.xml hdfs-site.xml mapred-site.xml yarn-site.xml; do
+        if [[ -e ${CONFIG_DIR}/$f ]]; then
+        cp ${CONFIG_DIR}/$f $HADOOP_HOME/etc/hadoop/$f
+        else
+        echo "ERROR: Could not find $f in $CONFIG_DIR"
+        exit 1
+        fi
+    done
+    
+    # installing libraries if any - (resource urls added comma separated to the ACP system variable)
+    cd $HADOOP_HOME/share/hadoop/common ; for cp in ${ACP//,/ }; do  echo == $cp; curl -LO $cp ; done; cd -
+    if [[ $2 == "namenode" ]]; then
+        if [ ! -d "/dfs/name" ]; then
+        mkdir -p /dfs/name
+        $HADOOP_HOME/bin/hdfs namenode -format -force -nonInteractive
+        fi
+        $HADOOP_HOME/sbin/hadoop-daemon.sh start namenode
+    fi
+    if [[ $2 == "datanode" ]]; then
+        if [ ! -d "/dfs/data" ]; then
+        mkdir -p /dfs/data
+        fi
+        #  wait up to 30 seconds for namenode
+        (while [[ $count -lt 15 && -z `curl -sf http://release-name-hdfs-namenode:50070` ]]; do ((count=count+1)) ; echo "Waiting for release-name-hdfs-namenode" ; sleep 2; done && [[ $count -lt 15 ]])
+        [[ $? -ne 0 ]] && echo "Timeout waiting for hdfs namenode, exiting." && exit 1
+    
+        $HADOOP_HOME/sbin/hadoop-daemon.sh start datanode
+    fi
+    if [[ $1 == "-d" ]]; then
+        until find ${HADOOP_HOME}/logs -mmin -1 | egrep -q '.*'; echo "`date`: Waiting for logs..." ; do sleep 2 ; done
+        tail -F ${HADOOP_HOME}/logs/* &
+        while true; do sleep 1000; done
+    fi
+    
+    if [[ $1 == "-bash" ]]; then
+        /bin/bash
+    fi
+  core-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property><name>fs.defaultFS</name><value>hdfs://release-name-hdfs-namenode:8020/</value></property>
+        <property><name>hadoop.proxyuser.hdfs.hosts</name>
+                <value>*</value>
+        </property>
+        <property>
+            <name>hadoop.proxyuser.hdfs.groups</name>
+            <value>*</value>
+        </property>
+    </configuration>
+  hdfs-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property><name>dfs.datanode.use.datanode.hostname</name><value>false</value></property>
+        <property><name>dfs.client.use.datanode.hostname</name><value>false</value></property>
+        <property><name>dfs.datanode.data.dir</name><value>file:///dfs/data</value>
+        <description>DataNode directory</description>
+        </property>
+    
+        <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:///dfs/name</value>
+        <description>NameNode directory for namespace and transaction logs storage.</description>
+        </property>
+    
+        <property>
+        <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+        <value>false</value>
+        </property>
+    
+        <!-- Bind to all interfaces -->
+        <property>
+        <name>dfs.namenode.rpc-bind-host</name>
+        <value>0.0.0.0</value>
+        </property>
+        <property>
+        <name>dfs.namenode.servicerpc-bind-host</name>
+        <value>0.0.0.0</value>
+        </property>
+        <!-- /Bind to all interfaces -->
+        <property><name>dfs.replication</name><value>3</value></property>
+    
+    </configuration>
+  mapred-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+    </configuration>
+  yarn-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+    </configuration>
+  httpfs-site.xml: |-
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+    </configuration>
+  httpfs-signature.secret: |-
+    hadoop httpfs secret
+  slaves: |
+    localhost
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-exporter-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hdfs-namenode-exporter
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+data:
+  config-exporter.yml: |-
+    fsImagePath : '/dfs/name/current'
+    skipPreviouslyParsed : true
+    skipFileDistributionForGroupStats : false
+    skipFileDistributionForUserStats : false
+    skipFileDistributionForPathStats : false
+    skipFileDistributionForPathSetStats : false
+    fileSizeDistributionBuckets: ['0','1MiB', '32MiB', '64MiB', '128MiB', '1GiB', '10GiB']
+---
+# Source: opentsdb/charts/hbase/templates/exporter-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hbase-exporter
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+data:
+  jmx-hbase-prometheus.yml: |+
+    lowercaseOutputLabelNames: true
+    lowercaseOutputName: true
+    rules:
+    - labels:
+        namespace: $1
+        region: $3
+        table: $2
+      name: HBase_metric_$4
+      pattern: Hadoop<service=HBase, name=RegionServer, sub=Regions><>Namespace_([^\W_]+)_table_([^\W_]+)_region_([^\W_]+)_metric_(\w+)
+    - labels:
+        name: $2
+        sub: $3
+      name: hadoop_$1_$4
+      pattern: Hadoop<service=(\w+), name=(\w+), sub=(\w+)><>([\w._]+)
+    - pattern: .+
+---
+# Source: opentsdb/charts/hbase/templates/hbase-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-hbase
+  labels:
+    app.kubernetes.io/name: hbase
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+data:
+  bootstrap.sh: |
+    #!/bin/bash
+
+    : ${HBASE_PREFIX:=/usr/local/hbase}
+
+    . $HBASE_PREFIX/conf/hbase-env.sh
+
+    # Directory to find config artifacts
+    CONFIG_DIR="/tmp/hbase-config"
+
+    # Copy config files from volume mount
+
+    for f in hbase-site.xml hbase-env.sh; do
+      if [[ -e ${CONFIG_DIR}/$f ]]; then
+        cp ${CONFIG_DIR}/$f $HBASE_PREFIX/conf/$f
+      else
+        echo "ERROR: Could not find $f in $CONFIG_DIR"
+        exit 1
+      fi
+    done
+    _HBASE_OPTS="$HBASE_OPTS"
+    # SET HBASE_OPTS with prometheus javaagent jmx exporter port
+    export HBASE_OPTS="$_HBASE_OPTS -javaagent:/jmx-exporter/jmx_prometheus_javaagent.jar=5556:/etc/exporter/jmx-hbase-prometheus.yml"    
+    if [[ $2 == "master" ]]; then
+      $HBASE_PREFIX/bin/hbase-daemon.sh start master
+      # RESET HBASE_OPTS with thrift jmx exporter port
+      export HBASE_OPTS="$_HBASE_OPTS -javaagent:/jmx-exporter/jmx_prometheus_javaagent.jar=5557:/etc/exporter/jmx-hbase-prometheus.yml"   
+      $HBASE_PREFIX/bin/hbase-daemon.sh start thrift
+    fi
+    if [[ $2 == "regionserver" ]]; then
+      #  wait up to 30 seconds for masternode
+      (while [[ $count -lt 15 && -z `curl -sf http://release-name-hbase-master:16010` ]]; do ((count=count+1)) ; echo "Waiting for release-name-hbase-master" ; sleep 2; done && [[ $count -lt 15 ]])
+      [[ $? -ne 0 ]] && echo "Timeout waiting for hbase-master, exiting." && exit 1
+      $HBASE_PREFIX/bin/hbase-daemon.sh start regionserver
+    fi
+    if [[ $1 == "-d" ]]; then
+      until find ${HBASE_PREFIX}/logs -mmin -1 | egrep -q '.*'; echo "`date`: Waiting for logs..." ; do sleep 2 ; done
+      tail -F ${HBASE_PREFIX}/logs/* &
+      while true; do sleep 1000; done
+    fi
+
+    if [[ $1 == "-bash" ]]; then
+      /bin/bash
+    fi
+  hbase-env.sh: |
+    # Extra Java runtime options.
+    # Below are what we set by default.  May only work with SUN JVM.
+    # For more on why as well as other possible settings,
+    # see http://hbase.apache.org/book.html#performance
+    export HBASE_OPTS="$HBASE_OPTS -XX:+UseConcMarkSweepGC"
+  hbase-site.xml: |
+    <?xml version="1.0"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>hbase.cluster.distributed</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>hbase.master</name>
+        <value>>release-name-hbase-master:16000</value>
+      </property>
+      <property>
+        <name>hbase.zookeeper.quorum</name>
+        <value>release-name-zookeeper:2181</value>
+      </property>
+      <property>
+        <name>hbase.rootdir</name>
+        <value>hdfs://release-name-hdfs-namenode:8020/hbase</value>
+      </property>
+    </configuration>
+---
+# Source: opentsdb/templates/opentsdb-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-opentsdb
+  labels:
+    app.kubernetes.io/name: opentsdb
+    helm.sh/chart: opentsdb-0.1.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/part-of: opentsdb
+data:
+  opentsdb.conf: |-
+    # --------- NETWORK ----------
+    # The TCP port TSD should use for communications
+    # *** REQUIRED ***
+    tsd.network.port=4242
+    # ----------- HTTP -----------
+    # The location of static files for the HTTP GUI interface.
+    # *** REQUIRED ***
+    tsd.http.staticroot = /usr/share/opentsdb/static/
+    # Where TSD should write it's cache files to
+    # *** REQUIRED ***
+    tsd.http.cachedir = /tmp/opentsdb
+    tsd.storage.hbase.zk_quorum = release-name-zookeeper:2181
+    tsd.core.auto_create_metrics = true
+    tsd.core.auto_create_tagks = true
+    tsd.core.auto_create_tagvs = true
+    
+  logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration debug="true" scan="true" scanPeriod="60 seconds" >
+      <!-- reference https://logback.qos.ch/manual/appenders.html -->
+      <!--<jmxConfigurator/>-->
+      <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <!--
+        deny all events with a level below INFO, that is TRACE and DEBUG
+        https://logback.qos.ch/manual/filters.html
+        -->
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+          <level>WARN</level>
+        </filter>
+        <encoder>
+          <pattern>
+            %d{ISO8601} %-5level [%thread] %logger{0}: %msg%n
+          </pattern>
+        </encoder>
+      </appender>
+      <logger name="net.opentsdb.core" level="INFO"/>
+      <logger name="net.opentsdb.graph" level="INFO"/>
+      <logger name="net.opentsdb.meta" level="INFO"/>
+      <logger name="net.opentsdb.search" level="INFO"/>
+      <logger name="net.opentsdb.stats" level="INFO"/>
+      <logger name="net.opentsdb.tools" level="INFO"/>
+      <logger name="net.opentsdb.tree" level="INFO"/>
+      <logger name="net.opentsdb.tsd" level="INFO"/>
+      <logger name="net.opentsdb.tsd.ConnectionManager" level="WARN"/>
+      <logger name="net.opentsdb.tsd.GraphHandler" level="WARN"/>
+      <logger name="net.opentsdb.tsd.HttpQuery" level="WARN"/>
+      <logger name="net.opentsdb.uid" level="INFO"/>
+      <logger name="net.opentsdb.utils" level="INFO"/>
+      <!-- Per class logger levels -->
+      <logger name="QueryLog" level="WARN" additivity="false">
+        <appender-ref ref="STDOUT"/>
+      </logger>
+      <logger name="org.hbase.async" level="WARN"/>
+      <logger name="com.stumbleupon.async" level="WARN"/>
+      <!-- Fallthrough root logger and router -->
+      <root level="DEBUG">
+        <appender-ref ref="STDOUT"/>
+      </root>
+    </configuration>
+---
+# Source: opentsdb/templates/opentsdb-grafana-datasource.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-opentsdb-grafana-datasource
+  labels:
+    app.kubernetes.io/name: opentsdb
+    helm.sh/chart: opentsdb-0.1.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/part-of: opentsdb
+    grafana_datasource: "1"
+data:
+  datasource.yaml: |-
+    apiVersion: 1
+    # list of datasources that should be deleted from the database
+    deleteDatasources:
+      - name: PNDA OpenTSDB
+        orgId: 1
+
+    # list of datasources to insert/update depending
+    # whats available in the database
+    datasources:
+      # <string, required> name of the datasource. Required
+    - name: PNDA OpenTSDB
+      type: opentsdb
+      access: proxy
+      orgId: 1
+      url: http://release-name-opentsdb:4242
+      basicAuth: false
+      isDefault: true
+      # <map> fields that will be converted to json and stored in json_data
+      jsonData:
+         tsdbVersion: "2.3"
+      version: 1
+      # <bool> allow users to edit datasources from the UI.
+      editable: false
+---
+# Source: opentsdb/templates/opentsdb-init-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-opentsdb-init
+  labels:
+    app.kubernetes.io/name: opentsdb
+    helm.sh/chart: opentsdb-0.1.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/part-of: opentsdb
+data:
+  create_hbase_tables.sh: |-
+    #!/bin/bash
+    #set -x # increase verbosity
+    set -e # exit on error
+    set -a # export vars as env vars
+    # Small script to setup the HBase tables used by OpenTSDB.
+    # notice that this can be also set as ENV var inside of container image (as in dockerfile)
+    test -n "$HBASE_PREFIX" || {
+        echo >&2 'The environment variable HBASE_PREFIX must be set'
+        exit 1
+    }
+    test -d "$HBASE_PREFIX" || {
+        echo >&2 "No such directory: HBASE_PREFIX=$HBASE_PREFIX"
+        exit 1
+    }
+    cp /tmp/hbase-config/* $HBASE_PREFIX/conf/
+    
+    TSDB_TABLE=${TSDB_TABLE-'tsdb'}
+    UID_TABLE=${UID_TABLE-'tsdb-uid'}
+    TREE_TABLE=${TREE_TABLE-'tsdb-tree'}
+    META_TABLE=${META_TABLE-'tsdb-meta'}
+    BLOOMFILTER=${BLOOMFILTER-'ROW'}
+    # LZO requires lzo2 64bit to be installed + the hadoop-gpl-compression jar.
+    COMPRESSION=${COMPRESSION-'GZ'}
+    # All compression codec names are upper case (NONE, LZO, SNAPPY, etc).
+    COMPRESSION=${COMPRESSION^^}
+    # DIFF encoding is very useful for OpenTSDB's case that many small KVs and common prefix.
+    # This can save a lot of storage space.
+    DATA_BLOCK_ENCODING=${DATA_BLOCK_ENCODING-'DIFF'}
+    DATA_BLOCK_ENCODING=${DATA_BLOCK_ENCODING^^}
+    # set 'time to live' in seconds for data, allows automatic data retention which will be handled by HBase itself
+    TSDB_TTL=${TSDB_TTL-'FOREVER'}
+    
+    case $COMPRESSION in
+        (NONE|LZO|GZ|SNAPPY)  :;;  # Known good.
+        (*)
+        echo >&2 "warning: compression codec '$COMPRESSION' might not be supported."
+        ;;
+    esac
+    # test if compression algorithm is supported by hbase installation (lowercase compression var)
+    echo "Checking if given compression is supported..."
+    $HBASE_PREFIX/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/testfile ${COMPRESSION,,}
+    
+    case $DATA_BLOCK_ENCODING in
+      (NONE|PREFIX|DIFF|FAST_DIFF|ROW_INDEX_V1)  :;; # Know good
+      (*)
+        echo >&2 "warning: encoding '$DATA_BLOCK_ENCODING' might not be supported."
+        ;;
+    esac
+    
+    # render hbase script to fill in env vars
+    ( echo "cat <<EOF" ; cat /tmp/init/hbase_script.txt ; echo ; echo EOF ) | bash > $HBASE_PREFIX/conf/hbase_script_parsed.txt
+    echo "HBase script:"
+    echo "----"
+    cat $HBASE_PREFIX/conf/hbase_script_parsed.txt
+    echo "----"
+    
+    echo "Checking if opentsdb $UID_TABLE hbase table exists"
+    ret=$( echo "exists '$UID_TABLE'" | $HBASE_PREFIX/bin/hbase shell -n )
+    if [[ $ret == *"true"* ]];
+    then
+        echo "OpenTSDB tables already created."
+        exit 0
+    else
+        echo "Creating OpenTSDB hbase tables:"
+        $HBASE_PREFIX/bin/hbase shell -n $HBASE_PREFIX/conf/hbase_script_parsed.txt
+        echo "DONE"
+    fi
+    
+  hbase_script.txt: |-
+    create '$UID_TABLE',
+    {NAME => 'id', COMPRESSION => '$COMPRESSION', BLOOMFILTER => '$BLOOMFILTER'},
+    {NAME => 'name', COMPRESSION => '$COMPRESSION', BLOOMFILTER => '$BLOOMFILTER'}
+    create '$TSDB_TABLE',
+    {NAME => 't', VERSIONS => 1, COMPRESSION => '$COMPRESSION', BLOOMFILTER => '$BLOOMFILTER'}
+    create '$TREE_TABLE',
+    {NAME => 't', VERSIONS => 1, COMPRESSION => '$COMPRESSION', BLOOMFILTER => '$BLOOMFILTER'}
+    create '$META_TABLE',
+    {NAME => 'name', COMPRESSION => '$COMPRESSION', BLOOMFILTER => '$BLOOMFILTER'}
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-dn-svc-headless.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hdfs-datanode
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  ports:
+  - name: webhdfs
+    port: 50075
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: datanode
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-exporter-service.yml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-hdfs-namenode-exporter
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec: 
+  selector:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+  ports:
+  - port: 5556
+    name: metrics
+    targetPort: 5556
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-svc-headless.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hdfs-namenode
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  ports:
+  - name: dfs
+    port: 8020
+    protocol: TCP
+  - name: webhdfs
+    port: 50070
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hdfs
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  ports:
+  - name: dfs
+    port: 8020
+    protocol: TCP
+  - name: webhdfs
+    port: 50070
+  selector:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/httpfs-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hdfs-httpfs
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: httpfs
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  ports:
+  - name: httpfs
+    port: 14000
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: httpfs
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/charts/zookeeper/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-6.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    
+    
+    - name: follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: opentsdb/charts/hbase/charts/zookeeper/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-6.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  ports:
+    
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    
+    
+    - name: follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: opentsdb/charts/hbase/templates/hbase-master-exporter-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-hbase-master-metrics
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec: 
+  selector: 
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    app.kubernetes.io/instance: release-name
+  ports:
+  - port: 5556
+    name: metrics
+    targetPort: 5556
+---
+# Source: opentsdb/charts/hbase/templates/hbase-master-svc.yaml
+#Headless service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hbase-master
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: thrift
+    port: 9090
+    protocol: TCP
+  - name: thrift-ui
+    port: 9095
+    protocol: TCP
+  - name: hbase-master
+    port: 16000
+    protocol: TCP
+  - name: hbase-ui
+    port: 16010
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/templates/hbase-master-thrift-exporter-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-hbase-master-thrift-metrics
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: thrift
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec: 
+  selector:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    app.kubernetes.io/instance: release-name
+  ports:
+  - port: 5557
+    name: metrics
+    targetPort: 5557
+---
+# Source: opentsdb/charts/hbase/templates/hbase-region-exporter-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: release-name-hbase-region-metrics
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: regionserver
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec: 
+  selector: 
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: regionserver
+    app.kubernetes.io/instance: release-name
+  ports:
+  - port: 5556
+    name: metrics
+    targetPort: 5556
+---
+# Source: opentsdb/charts/hbase/templates/hbase-region-svc.yaml
+# A headless service to create DNS records
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-hbase-regionserver
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: regionserver
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec:
+  ports:
+  - name: hbase-regionserver
+    port: 16020
+    protocol: TCP
+  - name: hbase-ui
+    port: 16030
+    protocol: TCP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: regionserver
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/templates/opentsdb-svc.yaml
+#Headless service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-opentsdb
+  labels:
+    app.kubernetes.io/name: opentsdb
+    helm.sh/chart: opentsdb-0.1.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/part-of: opentsdb
+spec:
+  ports:
+  - name: opentsdb
+    port: 4242
+    protocol: TCP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: opentsdb
+    app.kubernetes.io/instance: release-name
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/httpfs-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-hdfs-httpfs
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: httpfs
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs
+      app.kubernetes.io/component: httpfs
+      app.kubernetes.io/instance: "release-name"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hdfs
+        app.kubernetes.io/component: httpfs
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      containers:
+      - name: httpfs
+        image: "gradiant/hdfs:2.7.7"
+        imagePullPolicy: "IfNotPresent"
+        env:
+          - name: HTTPFS_HTTP_PORT
+            value: "14000"
+          - name: HTTPFS_ADMIN_PORT
+            value: "14001"
+          - name: CATALINA_OPTS
+            value: -Dhttpfs.admin.hostname=0.0.0.0
+        command:
+        - "/opt/hadoop/sbin/httpfs.sh"
+        - "run"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        #livenessProbe:
+        #  httpGet:
+        #    path: /
+        #    port: 50070
+        #  initialDelaySeconds: 10
+        #  timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /opt/hadoop/etc/hadoop
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hdfs-hadoop
+---
+# Source: opentsdb/templates/opentsdb-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-opentsdb
+  labels:
+    app.kubernetes.io/name: opentsdb
+    helm.sh/chart: opentsdb-0.1.7
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.4.0"
+    app.kubernetes.io/part-of: opentsdb
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentsdb
+      app.kubernetes.io/instance: "release-name"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opentsdb
+        helm.sh/chart: opentsdb-0.1.7
+        app.kubernetes.io/managed-by: "Helm"
+        app.kubernetes.io/instance: "release-name"
+        app.kubernetes.io/version: "2.4.0"
+        app.kubernetes.io/part-of: opentsdb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: opentsdb
+                  helm.sh/chart: opentsdb-0.1.7
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "2.4.0"
+                  app.kubernetes.io/part-of: opentsdb
+      initContainers:
+      - name: opentsdb-create-hbase-tables
+        image: "gradiant/hbase-base:2.0.1"
+        command: ['bash', '/tmp/init/create_hbase_tables.sh']
+        env:
+        - name: "COMPRESSION"
+          value: "GZ"
+        volumeMounts:
+        - name: opentsdb-init
+          mountPath: /tmp/init
+        - name: hbase-config
+          mountPath: /tmp/hbase-config
+      containers:
+      - name: opentsdb
+        image: "gradiant/opentsdb:2.4.0"
+        imagePullPolicy: "IfNotPresent"
+        env:
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /stats  # it triggers connection to hbase
+            port: 4242
+          initialDelaySeconds: 60
+          timeoutSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 4242
+          initialDelaySeconds: 60
+          timeoutSeconds: 15
+        volumeMounts:
+          - name: opentsdb-config
+            mountPath: /etc/opentsdb
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: opentsdb-init
+        configMap:
+          name: release-name-opentsdb-init
+      - name: opentsdb-config
+        configMap:
+          name: release-name-opentsdb
+      - name: hbase-config
+        configMap:
+          name: release-name-hbase
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-dn-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hdfs-datanode
+  annotations:
+    checksum/config: f706da1b22f21cebff32c397c8487524b22ebd6d32145ace70694d6ff659b400
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: datanode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs
+      app.kubernetes.io/component: datanode
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hdfs-datanode
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hdfs
+        app.kubernetes.io/component: datanode
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hdfs
+                  app.kubernetes.io/component: datanode
+                  helm.sh/chart: hdfs-0.1.10
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "2.7.7"
+                  app.kubernetes.io/part-of: hdfs
+      securityContext:
+        fsGroup: 114
+      initContainers:
+      - name: "chown"
+        image: "gradiant/hdfs:2.7.7"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - /bin/bash
+        - -c
+        - chown -R hdfs:hadoop /dfs &&
+          chmod g+s /dfs
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /dfs
+          name: dfs
+      containers:
+      - name: datanode
+        image: "gradiant/hdfs:2.7.7"
+        imagePullPolicy: "IfNotPresent"
+        command:
+           - "/bin/bash"
+           - "/tmp/hadoop-config/bootstrap.sh"
+           - "-d"
+           - "datanode"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 50075
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 50075
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /dfs
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hdfs-hadoop
+      - name: dfs
+        emptyDir: {}
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/hdfs-nn-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hdfs-namenode
+  annotations:
+    checksum/config: f706da1b22f21cebff32c397c8487524b22ebd6d32145ace70694d6ff659b400
+  labels:
+    app.kubernetes.io/name: hdfs
+    app.kubernetes.io/component: namenode
+    helm.sh/chart: hdfs-0.1.10
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.7.7"
+    app.kubernetes.io/part-of: hdfs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hdfs
+      app.kubernetes.io/component: namenode
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hdfs-namenode  
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hdfs
+        app.kubernetes.io/component: namenode
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hdfs
+                  app.kubernetes.io/component: namenode
+                  helm.sh/chart: hdfs-0.1.10
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "2.7.7"
+                  app.kubernetes.io/part-of: hdfs
+      initContainers:
+      - name: "chown"
+        image: "gradiant/hdfs:2.7.7"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - /bin/bash
+        - -c
+        - chown -R hdfs:hadoop /dfs &&
+          chmod g+s /dfs
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /dfs
+          name: dfs
+      containers:
+      - name: namenode
+        image: "gradiant/hdfs:2.7.7"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - "/bin/bash"
+        - "/tmp/hadoop-config/bootstrap.sh"
+        - "-d"
+        - "namenode"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 50070
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 50070
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: dfs
+          mountPath: /dfs
+      - name: namenode-exporter
+        image: "marcelmay/hadoop-hdfs-fsimage-exporter:1.2"
+        command:
+        - /bin/sh
+        - -c
+        - java $JAVA_OPTS -jar /opt/fsimage-exporter/fsimage-exporter.jar 0.0.0.0 "5556" /exporter/config-exporter.yml
+        ports:
+        - containerPort: 5556
+        resources:
+                    null
+        volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+        - name: config-exporter
+          mountPath: /exporter
+        - name: dfs
+          mountPath: /dfs
+      volumes:
+      - name: hadoop-config
+        configMap:
+          name: release-name-hdfs-hadoop
+      - name: config-exporter
+        configMap:
+          name: release-name-hdfs-namenode-exporter
+      - name: dfs
+        emptyDir: {}
+---
+# Source: opentsdb/charts/hbase/charts/zookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-6.3.4
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+    role: zookeeper
+spec:
+  serviceName: release-name-zookeeper-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zookeeper
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: zookeeper
+  template:
+    metadata:
+      name: release-name-zookeeper
+      labels:
+        app.kubernetes.io/name: zookeeper
+        helm.sh/chart: zookeeper-6.3.4
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: zookeeper
+    spec:
+      
+      serviceAccountName: default
+      securityContext:
+        fsGroup: 1001
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: zookeeper
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: zookeeper
+                namespaces:
+                  - default
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      containers:
+        - name: zookeeper
+          image: docker.io/bitnami/zookeeper:3.6.2-debian-10-r124
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsUser: 1001
+          command:
+            - bash
+            - -ec
+            - |
+                # Execute entrypoint as usual after obtaining ZOO_SERVER_ID
+                # check ZOO_SERVER_ID in persistent volume via myid
+                # if not present, set based on POD hostname
+                if [[ -f "/bitnami/zookeeper/data/myid" ]]; then
+                  export ZOO_SERVER_ID="$(cat /bitnami/zookeeper/data/myid)"
+                else
+                  HOSTNAME=`hostname -s`
+                  if [[ $HOSTNAME =~ (.*)-([0-9]+)$ ]]; then
+                    ORD=${BASH_REMATCH[2]}
+                    export ZOO_SERVER_ID=$((ORD + 1 ))
+                  else
+                    echo "Failed to get index from hostname $HOST"
+                    exit 1
+                  fi
+                fi
+                exec /entrypoint.sh /run.sh
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: ZOO_DATA_LOG_DIR
+              value: ""
+            - name: ZOO_PORT_NUMBER
+              value: "2181"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+            - name: ZOO_INIT_LIMIT
+              value: "10"
+            - name: ZOO_SYNC_LIMIT
+              value: "5"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr, mntr, ruok"
+            - name: ZOO_LISTEN_ALLIPS_ENABLED
+              value: "no"
+            - name: ZOO_AUTOPURGE_INTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_RETAIN_COUNT
+              value: "3"
+            - name: ZOO_MAX_SESSION_TIMEOUT
+              value: "40000"
+            - name: ZOO_SERVERS
+              value: release-name-zookeeper-0.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::1 
+            - name: ZOO_ENABLE_AUTH
+              value: "no"
+            - name: ZOO_HEAP_SIZE
+              value: "1024"
+            - name: ZOO_LOG_LEVEL
+              value: "ERROR"
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          ports:
+            
+            - name: client
+              containerPort: 2181
+            
+            
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          livenessProbe:
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/zookeeper
+      volumes:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: opentsdb/charts/hbase/templates/hbase-master-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hbase-master
+  annotations:
+    checksum/config: 24b223cd8162b457e83d33de4b085561836f24c525c2e25dce35c0718e1d5a74
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: master
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hbase
+      app.kubernetes.io/component: master
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hbase-master
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hbase
+        app.kubernetes.io/component: master
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hbase
+                  app.kubernetes.io/component: master
+                  helm.sh/chart: hbase-0.1.6
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "2.0.1"
+                  app.kubernetes.io/part-of: hbase      
+      initContainers:
+      - name: inject-exporter-jar
+        image: "spdigital/prometheus-jmx-exporter-kubernetes:0.3.1"
+        env:
+        - name: SHARED_VOLUME_PATH
+          value: /jmx-exporter
+        volumeMounts:
+        - mountPath: /jmx-exporter
+          name: jmx-exporter    
+      containers:
+      - name: master
+        image: "gradiant/hbase-base:2.0.1"
+        imagePullPolicy: "IfNotPresent"
+        command:
+        - "/bin/bash"
+        - "/tmp/hbase-config/bootstrap.sh"
+        - "-d"
+        - "master"
+        env:
+        - name: HADOOP_USER_NAME
+          value: hdfs
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 16010
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 16010
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hbase-config
+          mountPath: /tmp/hbase-config      
+        - name: jmx-exporter  
+          mountPath: /jmx-exporter
+        - name: exporter-config
+          mountPath: /etc/exporter
+      volumes:
+      - name: hbase-config
+        configMap:
+          name: release-name-hbase
+      - name: jmx-exporter
+        emptyDir: {}      
+      - name: exporter-config
+        configMap:
+          name: release-name-hbase-exporter
+---
+# Source: opentsdb/charts/hbase/templates/hbase-regionserver-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-hbase-regionserver
+  annotations:
+    checksum/config: 24b223cd8162b457e83d33de4b085561836f24c525c2e25dce35c0718e1d5a74
+  labels:
+    app.kubernetes.io/name: hbase
+    app.kubernetes.io/component: regionserver
+    helm.sh/chart: hbase-0.1.6
+    app.kubernetes.io/managed-by: "Helm"
+    app.kubernetes.io/instance: "release-name"
+    app.kubernetes.io/version: "2.0.1"
+    app.kubernetes.io/part-of: hbase
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hbase
+      app.kubernetes.io/component: regionserver
+      app.kubernetes.io/instance: "release-name"
+  serviceName: release-name-hbase-regionserver
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hbase
+        app.kubernetes.io/component: regionserver
+        app.kubernetes.io/instance: "release-name"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 5
+            podAffinityTerm:
+              topologyKey: "kubernetes.io/hostname"
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hbase
+                  app.kubernetes.io/component: regionserver
+                  helm.sh/chart: hbase-0.1.6
+                  app.kubernetes.io/managed-by: "Helm"
+                  app.kubernetes.io/instance: "release-name"
+                  app.kubernetes.io/version: "2.0.1"
+                  app.kubernetes.io/part-of: hbase      
+      initContainers:
+      - name: inject-exporter-jar
+        image: "spdigital/prometheus-jmx-exporter-kubernetes:0.3.1"
+        env:
+        - name: SHARED_VOLUME_PATH
+          value: /jmx-exporter
+        volumeMounts:
+        - mountPath: /jmx-exporter
+          name: jmx-exporter    
+      containers:
+      - name: regionserver
+        image: "gradiant/hbase-base:2.0.1"
+        imagePullPolicy: "IfNotPresent"
+        command:
+           - "/bin/bash"
+           - "/tmp/hbase-config/bootstrap.sh"
+           - "-d"
+           - "regionserver"
+        env:
+        - name: HADOOP_USER_NAME
+          value: hdfs
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 2048Mi
+          requests:
+            cpu: 10m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 16030
+          initialDelaySeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 16030
+          initialDelaySeconds: 10
+          timeoutSeconds: 2
+        volumeMounts:
+        - name: hbase-config
+          mountPath: /tmp/hbase-config      
+        - name: jmx-exporter  
+          mountPath: /jmx-exporter
+        - name: exporter-config
+          mountPath: /etc/exporter
+      volumes:
+      - name: hbase-config
+        configMap:
+          name: release-name-hbase
+      - name: jmx-exporter
+        emptyDir: {}      
+      - name: exporter-config
+        configMap:
+          name: release-name-hbase-exporter
+---
+# Source: opentsdb/charts/hbase/charts/hdfs/templates/tests/canary-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-canary"
+  annotations:
+    "helm.sh/hook": test-success
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+spec:
+  containers:
+  - name: release-name-canary
+    image: "gradiant/hdfs:2.7.7"
+    imagePullPolicy: "IfNotPresent"
+    env:
+      - name: MY_POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+    command:
+    - bash
+    - -c
+    - |
+      # configure data for hadoop container
+      . /tmp/hadoop-config/bootstrap.sh || exit 1
+      # try to create a folder in hdfs
+      hdfs dfs -mkdir -p /test || exit 1
+      hdfs dfs -mkdir /test/$MY_POD_NAME || exit 1
+      hdfs fsck /test/$MY_POD_NAME | grep 'is HEALTHY' || exit 1
+      hdfs dfs -rm -r -R -f /test/$MY_POD_NAME || exit 1
+    volumeMounts:
+        - name: hadoop-config
+          mountPath: /tmp/hadoop-config
+  volumes:
+  - name: hadoop-config
+    configMap:
+          name: release-name-hdfs-hadoop      
+  restartPolicy: Never

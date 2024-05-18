@@ -1,0 +1,370 @@
+---
+# Source: xenondb/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+---
+# Source: xenondb/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+type: Opaque
+data:
+  mysql-password: "UWluZ0AxMjM="
+  mysql-replication-password: "UmVwbF8xMjM="
+---
+# Source: xenondb/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+data:
+  node.cnf: |
+    [mysqld]
+    default_storage_engine=InnoDB
+    max_connections=65535
+  server-id.cnf: |
+    [mysqld]
+    server-id=@@SERVER_ID@@
+  create-peers.sh: |
+    #!/bin/sh
+    set -eu
+    i=0
+    while [ $i -lt 3 ]
+    do
+      if [ $i = 0 ]
+      then
+        echo -n "release-name-xenondb-${i}.release-name-xenondb.default:8801"
+      else
+        echo -n ",release-name-xenondb-${i}.release-name-xenondb.default:8801"
+      fi
+      i=$((i+1))
+    done
+  leader-start.sh: |
+    #!/usr/bin/env bash
+    curl -X PATCH -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" -H "Content-Type: application/json-patch+json" \
+    --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_PORT_443_TCP_PORT/api/v1/namespaces/default/pods/$HOSTNAME \
+    -d '[{"op": "replace", "path": "/metadata/labels/role", "value": "leader"}]'
+  leader-stop.sh: |
+    #!/usr/bin/env bash
+    curl -X PATCH -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" -H "Content-Type: application/json-patch+json" \
+    --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_PORT_443_TCP_PORT/api/v1/namespaces/default/pods/$HOSTNAME \
+    -d '[{"op": "replace", "path": "/metadata/labels/role", "value": "follower"}]'
+---
+# Source: xenondb/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+rules:
+- apiGroups:
+    - ""
+  resources:
+    - pods
+  verbs:
+    - get
+    - patch
+---
+# Source: xenondb/templates/rbac.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+roleRef:
+  kind: Role
+  name: release-name-xenondb
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: release-name-xenondb
+---
+# Source: xenondb/templates/service.yaml
+# Headless service for stable DNS entries of StatefulSet members.
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-xenondb
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  ports:
+  - name: release-name-xenondb
+    port: 3306
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: release-name-xenondb
+    release: "release-name"
+---
+# Source: xenondb/templates/service.yaml
+# Client service for connecting to any MySQL instance for writes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-xenondb-leader
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+  selector:
+    app: release-name-xenondb
+    release: "release-name"
+    role: leader
+---
+# Source: xenondb/templates/service.yaml
+# Client service for connecting to any MySQL instance for reads.
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-xenondb-follower
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  type: ClusterIP
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: mysql
+  selector:
+    app: release-name-xenondb
+    release: "release-name"
+    role: follower
+---
+# Source: xenondb/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-xenondb
+  namespace: default
+  labels:
+    app: release-name-xenondb
+    chart: xenondb-1.0.0
+    release: "release-name"
+    heritage: "Helm"
+
+spec:
+  serviceName: release-name-xenondb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: release-name-xenondb
+      release: release-name
+  template:
+    metadata:
+      labels:
+        app: release-name-xenondb
+        release: release-name
+        role: candidate
+      annotations:
+        checksum/config: 8183bdbfcedb20a4e28100cfdf183a2d94a6b87c05b5842cd703fb5147142186
+    spec:
+      serviceAccountName: release-name-xenondb
+      initContainers:
+      - name: init-mysql
+        image: "busybox:1.32"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          {}
+        command: ['sh','-c']
+        args:
+          - |
+            # Generate mysql server-id from pod ordinal index.
+            ordinal=$(echo $(hostname) | tr -cd "[0-9]")
+            # Copy server-id.conf adding offset to avoid reserved server-id=0 value.
+            cat /mnt/config-map/server-id.cnf | sed s/@@SERVER_ID@@/$((100 + $ordinal))/g > /mnt/conf.d/server-id.cnf
+            # Copy appropriate conf.d files from config-map to config mount.
+            cp -f /mnt/config-map/node.cnf /mnt/conf.d/
+            cp -f /mnt/config-map/*.sh /mnt/scripts/
+            chmod +x /mnt/scripts/*
+            # remove lost+found.
+            rm -rf /mnt/data/lost+found
+        volumeMounts:
+          - name: conf
+            mountPath: /mnt/conf.d
+          - name: scripts
+            mountPath: /mnt/scripts
+          - name: config-map
+            mountPath: /mnt/config-map
+          - name: data
+            mountPath: /mnt/data
+      containers:
+      - name: mysql
+        image: "xenondb/percona:5.7.33"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          {}
+        env:
+        - name: MYSQL_REPL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-xenondb
+              key: mysql-replication-password
+        - name: MYSQL_DATABASE
+          value: "qingcloud"
+        - name: MYSQL_USER
+          value: "qingcloud"
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-xenondb
+              key: mysql-password
+        ports:
+        - name: mysql
+          containerPort: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        - name: logs
+          mountPath: /var/log/mysql
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - mysqladmin ping -uroot
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - mysql -uroot -e "SELECT 1"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 3
+      - name: xenon
+        image: "xenondb/xenon:1.1.5-alpha"
+        imagePullPolicy: "IfNotPresent"
+        lifecycle:
+          postStart:
+            exec:
+              command: ['sh', '-c', 'until (xenoncli xenon ping && xenoncli cluster add "$(/scripts/create-peers.sh)") > /dev/null 2>&1; do sleep 2; done']
+        resources:
+          {}
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        env:
+        - name: MYSQL_REPL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: release-name-xenondb
+              key: mysql-replication-password
+        - name: POD_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: HOST
+          value: $(POD_HOSTNAME).release-name-xenondb.default
+        - name: LEADER_START_CMD
+          value: "/scripts/leader-start.sh"
+        - name: LEADER_STOP_CMD
+          value: "/scripts/leader-stop.sh"
+        - name: Master_SysVars
+          value: "sync_binlog=default;innodb_flush_log_at_trx_commit=default"
+        - name: Slave_SysVars
+          value: "sync_binlog=1000;innodb_flush_log_at_trx_commit=1"
+        ports:
+        - name: xenon
+          containerPort: 8801
+        livenessProbe:
+          exec:
+            command:
+              - pgrep
+              - xenon
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "xenoncli xenon ping"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 3
+      - name: slowlog
+        image: "busybox:1.32"
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          {}
+        command:
+        - "tail"
+        - "-f"
+        - "/logs/mysql-slow.log"
+        volumeMounts:
+        - name: logs
+          mountPath: /logs
+      volumes:
+      - name: conf
+        emptyDir: {}
+      - name: scripts
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: release-name-xenondb
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      annotations:
+    spec:
+      accessModes:
+      - "ReadWriteOnce"
+      resources:
+        requests:
+          storage: "10Gi"

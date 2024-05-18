@@ -1,0 +1,165 @@
+---
+# Source: gitlab-service/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-gitlab-service
+  namespace: default
+  labels:
+    app.kubernetes.io/name: gitlab-service
+    helm.sh/chart: gitlab-service-2.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  
+  ports:
+    - name: server
+      port: 8070
+      targetPort: server
+      nodePort: null
+    - name: actuator
+      port: 8071
+      targetPort: actuator
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: gitlab-service
+    app.kubernetes.io/instance: release-name
+---
+# Source: gitlab-service/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-gitlab-service
+  namespace: default
+  labels:
+    app.kubernetes.io/name: gitlab-service
+    helm.sh/chart: gitlab-service-2.0.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitlab-service
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitlab-service
+        helm.sh/chart: gitlab-service-2.0.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      serviceAccountName: default
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gitlab-service
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 33
+      initContainers:
+        - name: server-volume
+          image:  registry.cn-shanghai.aliyuncs.com/c7n/gitlab-service:2.0.1
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - /bin/sh
+            - -ecx
+            - |
+              cp -rfp /choerodon/* /opt/choerodon
+          securityContext:
+            runAsUser: 33
+          volumeMounts:
+            - name: volume
+              mountPath: /opt/choerodon
+      containers:
+        - name: "gitlab-service"
+          image: registry.cn-shanghai.aliyuncs.com/c7n/javabase:jdk8u282-b08
+          imagePullPolicy: "IfNotPresent"
+          workingDir: /opt/choerodon
+          securityContext:
+            runAsUser: 33
+          args:
+            - "/bin/sh"
+            - "-ecx"
+            - "java $SKYWALKING_OPTS $JAVA_OPTS -jar /opt/choerodon/gitlab-service.jar"
+          env:
+            - name: SERVER_PORT
+              value: "8070"
+            - name: MANAGEMENT_SERVER_PORT
+              value: "8071"
+            - name: CHART_VERSION
+              value: "2.0.1"
+            
+            - name: "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE"
+              value: "http://register-server:8000/eureka/"
+            - name: "GITLAB_PRIVATETOKEN"
+              value: "sw1W4jywyxsvkHYRGBBp"
+            - name: "GITLAB_URL"
+              value: "http://git.example.com"
+            - name: "SPRING_CLOUD_CONFIG_ENABLED"
+              value: "false"
+            - name: "SPRING_CLOUD_CONFIG_URI"
+              value: "http://register-server:8000"
+            - name: "SPRING_REDIS_DATABASE"
+              value: "9"
+            - name: "SPRING_REDIS_HOST"
+              value: "localhost"
+            - name: "SPRING_REDIS_PORT"
+              value: "6379"
+          envFrom:
+          ports:
+            - name: server
+              containerPort: 8070
+              protocol: TCP
+            - name: actuator
+              containerPort: 8071
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: server
+            initialDelaySeconds: 480
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: actuator
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              memory: 2Gi
+          volumeMounts:
+            - name: volume
+              mountPath: /opt/choerodon
+      volumes:
+        - name: volume
+          emptyDir: {}

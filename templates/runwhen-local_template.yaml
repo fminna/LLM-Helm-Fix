@@ -1,0 +1,273 @@
+---
+# Source: runwhen-local/templates/local-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runwhen-local
+  labels:
+    helm.sh/chart: runwhen-local-0.1.13
+    app.kubernetes.io/name: runwhen-local
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.12"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: runwhen-local/templates/local-serviceaccount.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runwhen-local-token
+  annotations:
+    kubernetes.io/service-account.name: runwhen-local
+type: kubernetes.io/service-account-token
+---
+# Source: runwhen-local/templates/local-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-builder
+data:
+  workspaceInfo.yaml: | 
+    workspaceName: workspace-name
+    defaultLocation: none
+    workspaceOwnerEmail: tester@my-company.com
+    defaultLOD: detailed
+    codeCollections:
+      []
+    cloudConfig:
+      kubernetes:
+        kubeconfigFile: /shared/kubeconfig
+        namespaceLODs:
+          kube-node-lease: 0
+          kube-public: 0
+          kube-system: 0
+    custom:
+      aws_access_key_id: AWS_ACCESS_KEY_ID
+      aws_secret_access_key: AWS_SECRET_ACCESS_KEY
+      cloud_provider: none
+      gcp_ops_suite_sa: none
+      gcp_project_id: none
+      kubeconfig_secret_name: k8s:file@secret/kubeconfig:kubeconfig
+      kubernetes_distribution_binary: kubectl
+---
+# Source: runwhen-local/templates/runner-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runner-config
+  labels:
+    app: runner
+data:
+  config.yaml: |
+    apiVersion: config.runwhen.com/v1
+    kind: RunnerConfig
+    global:
+      log:
+        format: console
+        level: info
+      controlAddr: https://runner.beta.runwhen.com
+      metricsAddr: https://runner-cortex-tenant.beta.runwhen.com/push
+      proxy:
+        enabled: false
+        httpProxy: ""
+        httpsProxy: ""
+        noProxy:  ""
+    environment:
+      kubernetes:
+        proxy:
+          enabled: false
+          httpProxy: ""
+          httpsProxy: ""
+          noProxy: ""
+          proxyCA: ""
+        deployment:
+          resources:
+            limits:
+              cpu: 300m
+              memory: 196Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+        pod:
+          resources:
+            limits:
+              cpu: 300m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 128Mi
+---
+# Source: runwhen-local/templates/local-clusterviewer.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: default-runwhen-local-view-crb
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: runwhen-local
+    namespace: default
+---
+# Source: runwhen-local/templates/local-serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: runwhen-local-sa-secret-manage
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "update", "delete", "create"]
+---
+# Source: runwhen-local/templates/local-serviceaccount.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runwhen-local-a-secret-manage-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: runwhen-local-sa-secret-manage
+subjects:
+  - kind: ServiceAccount
+    name: runwhen-local
+    namespace: default
+---
+# Source: runwhen-local/templates/local-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-runwhen-local
+  labels:
+    helm.sh/chart: runwhen-local-0.1.13
+    app.kubernetes.io/name: runwhen-local
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.12"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: mkdocs
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+    - name: django
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+  selector:
+    app.kubernetes.io/name: runwhen-local
+    app.kubernetes.io/instance: release-name
+---
+# Source: runwhen-local/templates/local-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-runwhen-local
+  labels:
+    helm.sh/chart: runwhen-local-0.1.13
+    app.kubernetes.io/name: runwhen-local
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.12"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runwhen-local
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runwhen-local
+        app.kubernetes.io/instance: release-name
+    spec:
+      serviceAccountName: runwhen-local
+      automountServiceAccountToken: true
+      securityContext:
+        null
+      containers:
+        - name: runwhen-local
+          securityContext:
+            null
+          image: "ghcr.io/runwhen-contrib/runwhen-local:latest"
+          imagePullPolicy: Always
+          env: 
+          - name: AUTORUN_WORKSPACE_BUILDER_INTERVAL
+            value: "14400"
+          - name: RW_LOCAL_TERMINAL_DISABLED
+            value: "true"
+          - name: RW_LOCAL_UPLOAD_ENABLED
+            value: "false"
+          - name: RW_LOCAL_UPLOAD_MERGE_MODE
+            value: "keep-uploaded"
+          
+          
+          - name: RW_CREATE_KUBECONFIG_SECRET
+            value: "true"
+          
+          - name: KUBERNETES_CLUSTER_NAME
+            value: default
+          ports:
+            - name: mkdocs
+              containerPort: 8081
+              protocol: TCP
+            - name: django
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: mkdocs
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 20
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 5
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1024Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+          - name: shared-volume
+            mountPath: "/shared"
+          - name: configmap-volume
+            mountPath: "/shared/workspaceInfo.yaml"
+            subPath: "workspaceInfo.yaml"
+      volumes:
+      
+      - name: shared-volume
+        emptyDir: {}
+      - name: configmap-volume
+        configMap:
+          name: workspace-builder
+---
+# Source: runwhen-local/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "release-name-runwhen-local-test-connection"
+  labels:
+    helm.sh/chart: runwhen-local-0.1.13
+    app.kubernetes.io/name: runwhen-local
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.5.12"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['release-name-runwhen-local:8081']
+  restartPolicy: Never

@@ -1,0 +1,151 @@
+---
+# Source: postgresql-backup-restore/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-postgresql-backup-restore
+  labels:
+    helm.sh/chart: postgresql-backup-restore-0.1.2
+    app.kubernetes.io/name: postgresql-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: postgresql-backup-restore/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-postgresql-backup-restore
+  namespace: default
+  labels:
+    helm.sh/chart: postgresql-backup-restore-0.1.2
+    app.kubernetes.io/name: postgresql-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  aws_access_key_id: "IiI="
+  aws_secret_access_key: "IiI="
+  postgresql_backup: "IiI="
+  postgresql_restore: "IiI="
+---
+# Source: postgresql-backup-restore/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "release-name"
+  labels:
+    helm.sh/chart: postgresql-backup-restore-0.1.2
+    app.kubernetes.io/name: postgresql-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 11 * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: "Forbid"
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 43200 # 12 hour
+      template:
+        metadata:
+          annotations:
+            checksum/secret: 1fdb17dc09ecaae8c661ab27125649798133a7f3bada6af1c6244bf70ae08096
+        spec:
+          serviceAccountName: release-name-postgresql-backup-restore
+          restartPolicy: Never
+          containers:
+          - name: postgresql-backup-restore
+            image: "aboahtyrenko/postgresql-backup-restore:"
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-postgresql-backup-restore
+                    key: aws_access_key_id
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-postgresql-backup-restore
+                    key: aws_secret_access_key
+              - name: PG_PASS_BACKUP
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-postgresql-backup-restore
+                    key: postgresql_backup
+                    optional: true
+              - name: PG_PASS_RESTORE
+                valueFrom:
+                  secretKeyRef:
+                    name: release-name-postgresql-backup-restore
+                    key: postgresql_restore
+                    optional: true
+            resources:
+              {}
+            command:
+            - /bin/bash
+            - -c
+            - --
+            args:
+            - /bin/echo 'choose script' && ls -lah /opt/ &&  /bin/sleep 15
+---
+# Source: postgresql-backup-restore/templates/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-notify-install"
+  labels:
+    helm.sh/chart: postgresql-backup-restore-0.1.2
+    app.kubernetes.io/name: postgresql-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install, post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation, hook-succeeded
+spec:
+  activeDeadlineSeconds: 60
+  template:
+    metadata:
+      annotations:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: slack-notification
+        image: curlimages/curl
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: ['curl -X POST --data-urlencode "payload={\"channel\": \"\", \"text\": \" release-name  deployed to default \"}" ']
+---
+# Source: postgresql-backup-restore/templates/job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-notify-rollback"
+  labels:
+    helm.sh/chart: postgresql-backup-restore-0.1.2
+    app.kubernetes.io/name: postgresql-backup-restore
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.1.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-rollback
+    "helm.sh/hook-delete-policy": before-hook-creation, hook-succeeded
+spec:
+  activeDeadlineSeconds: 60
+  template:
+    metadata:
+      annotations:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: slack-notification
+        image: curlimages/curl
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: ['curl -X POST --data-urlencode "payload={\"channel\": \"\", \"text\": \" release-name  rollback default \"}" ']

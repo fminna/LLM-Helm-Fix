@@ -1,0 +1,184 @@
+---
+# Source: gitlab-proxy/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-proxy
+  labels:
+    helm.sh/chart: gitlab-proxy-0.0.8
+    app.kubernetes.io/name: gitlab-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  OUTBOUND_TOKEN: ""
+  INBOUND_TOKEN: ""
+---
+# Source: gitlab-proxy/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-proxy
+  labels:
+    helm.sh/chart: gitlab-proxy-0.0.8
+    app.kubernetes.io/name: gitlab-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  Caddyfile: |
+    (gitlab_proxy) {
+    	reverse_proxy https://gitlab.com {
+    		header_up Authorization "Bearer {$OUTBOUND_TOKEN}"
+    		header_up Host {upstream_hostport}
+    	}
+    }
+
+    (get) {
+    	header_regexp Authorization "Bearer\s{$INBOUND_TOKEN}"
+    	method GET
+    }
+
+    :80 {
+    	@allow_get_auth {
+    		import get
+    		path_regexp "^/oauth/token/info$|^/api/v4/personal_access_tokens$"
+    	}
+
+    	@allow_get_groups {
+    		import get
+    		path_regexp "^/api/v4/groups$|^/api/v4/groups/\w*/projects$"
+    	}
+
+    	@allow_get_projects {
+    		import get
+    		path_regexp "^/api/v4/projects$|^/api/v4/projects/\w*$|^/api/v4/projects/\w*/languages$|^/api/v4/projects/\w*/search$"
+    	}
+
+    	@allow_get_repository {
+    		import get
+    		path_regexp "^/api/v4/projects/\w*/repository/files/*|^/api/v4/projects/\w*/repository/branches/*"
+    	}
+
+    	@allow_get_hooks {
+    		import get
+    		path /api/v4/projects/*/hooks/*
+    	}
+
+    	@allow_post_hooks {
+    		header_regexp Authorization "Bearer\s{$INBOUND_TOKEN}"
+    		method POST
+    		path /api/v4/projects/*/hooks
+    	}
+
+    	@allow_delete_hooks {
+    		header_regexp Authorization "Bearer\s{$INBOUND_TOKEN}"
+    		method DELETE
+    		path /api/v4/projects/*/hooks/*
+    	}
+
+    	handle @allow_get_auth {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_get_groups {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_get_projects {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_get_repository {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_get_hooks {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_post_hooks {
+    		import gitlab_proxy
+    	}
+
+    	handle @allow_delete_hooks {
+    		import gitlab_proxy
+    	}
+
+    	respond 403
+    }
+---
+# Source: gitlab-proxy/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-proxy
+  labels:
+    helm.sh/chart: gitlab-proxy-0.0.8
+    app.kubernetes.io/name: gitlab-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: gitlab-proxy
+      port: 80
+      targetPort: 80
+  selector:
+    app.kubernetes.io/name: gitlab-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: gitlab-proxy/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-proxy
+  labels:
+    helm.sh/chart: gitlab-proxy-0.0.8
+    app.kubernetes.io/name: gitlab-proxy
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    opslevel.com/description: A proxy configured for Gitlab requests from Opslevel so
+      you do not have to give OpsLevel your real Gitlab credentials
+    opslevel.com/framework: helm
+    opslevel.com/language: go
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitlab-proxy
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/managed-by: Helm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitlab-proxy
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+        checksum/config: c512e50afde1198e682a13b40215c4d4e7508afdc1e1427a963eb9f9d76893d5
+        checksum/secret: b960057b5f6e02b156a404d98332712ce6200f77df4fcfda990692968634504b
+    spec:
+      containers:
+        - name: gitlab-proxy
+          image: caddy:2.6
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: gitlab-proxy
+          ports:
+            - name: gitlab-proxy
+              containerPort: 80
+          volumeMounts:
+            - mountPath: /etc/caddy/
+              name: gitlab-proxy
+      volumes:
+        - name: gitlab-proxy
+          configMap:
+            name: gitlab-proxy

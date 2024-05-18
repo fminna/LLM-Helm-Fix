@@ -1,0 +1,332 @@
+---
+# Source: open-pdc/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-open-pdc
+  labels:
+    app.kubernetes.io/name: release-name-open-pdc
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  mariadb-password: "IWNoYW5nZU1lIQ=="
+  mysql-root-password: "IWNoYW5nZU1lIQ=="
+---
+# Source: open-pdc/templates/openweb-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-pdc-configmap
+  #namespace: prod
+  labels:
+    app.kubernetes.io/name: open-pdc-configmap
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  
+  mariadb-host: 'open-pdc-mysql'
+  
+  mariadb-port: "3306"
+  mariadb-name: openweb-pdc
+  mariadb-user: openweb-pdc
+---
+# Source: open-pdc/templates/mysql-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: openweb-pdc-database
+  labels:
+    app.kubernetes.io/name: openweb-pdc-database
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+---
+# Source: open-pdc/templates/openweb-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openweb-pdc-data
+  labels:
+    app.kubernetes.io/name: openweb-pdc-data
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Source: open-pdc/templates/mysql-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-pdc-mysql
+  labels:
+    app.kubernetes.io/name: open-pdc-mysql
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+  selector:
+    app.kubernetes.io/name: open-pdc-mysql
+    app.kubernetes.io/instance: release-name
+---
+# Source: open-pdc/templates/openweb-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-pdc
+  labels:
+    app.kubernetes.io/name: open-pdc
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 80
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: open-pdc-wordpress
+    app.kubernetes.io/instance: release-name
+---
+# Source: open-pdc/templates/mysql-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-pdc-mysql
+  namespace: default
+  labels:
+    app.kubernetes.io/name: open-pdc-mysql
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-pdc-mysql
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: open-pdc-mysql
+        app.kubernetes.io/part-of: open-pdc
+        helm.sh/chart: open-pdc-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      initContainers:
+        - name: "remove-lost-found"
+          image: "busybox:1.32"
+          imagePullPolicy: 
+          resources:
+          command:  ["rm", "-fr", "/var/lib/mysql/lost+found"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      nodeSelector:
+                null
+      containers:
+        - name: open-pdc-mysql
+          image: mysql:5.7
+          imagePullPolicy: 
+          resources:
+                      {}
+          env:
+            - name: MYSQL_ALLOW_EMPTY_PASSWORD
+              value: "false"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-pdc
+                  key: mysql-root-password
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-pdc
+                  key: mariadb-password
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-user
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-name
+          ports:
+            - name: mysql
+              containerPort: 3306
+
+          livenessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+              - sh
+              - -c
+              - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openweb-pdc-database
+---
+# Source: open-pdc/templates/openweb-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-pdc-wordpress
+  labels:
+    app.kubernetes.io/name: open-pdc-wordpress
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-pdc-wordpress
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: open-pdc-wordpress
+        app.kubernetes.io/part-of: open-pdc
+        helm.sh/chart: open-pdc-0.1.0
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      volumes:
+        - name: openweb-pdc-data
+          persistentVolumeClaim:
+            claimName: openweb-pdc-data
+
+      containers:
+        - name: open-pdc-wordpress
+          image: "docker.io/conduction/openwebconcept:4.8"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: openweb-pdc-data
+              mountPath: /bitnami/wordpress
+              subPath: wordpress
+          env:
+            - name: WORDPRESS_SCHEME
+              value: http
+            - name: WORDPRESS_DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-host
+            - name: WORDPRESS_DB_PORT_NUMBER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-port
+            - name: WORDPRESS_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-name
+            - name: WORDPRESS_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: open-pdc-configmap
+                  key: mariadb-user
+            - name: WORDPRESS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-open-pdc
+                  key: mariadb-password
+            - name: WORDPRESS_TABLE_PREFIX
+              value: 'wp_'
+            - name: WORDPRESS_SKIP_INSTALL
+              value: 'yes'
+            - name: WORDPRESS_SITEURL
+              value: http://zuid-drecht.nl
+            - name: WORDPRESS_HOME
+              value: http://zuid-drecht.nl
+          resources:
+              {}
+---
+# Source: open-pdc/templates/ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+  name: open-pdc-prod-ingress
+  labels:
+    app.kubernetes.io/name: open-pdc-ingress
+    app.kubernetes.io/part-of: open-pdc
+    helm.sh/chart: open-pdc-0.1.0
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  rules:
+
+    - host: zuid-drecht.nl
+      http:
+          paths:
+            - path: /(.*)
+            - backend:
+                serviceName: open-pdc
+                servicePort: 80
+    - host: www.zuid-drecht.nl
+      http:
+          paths:
+            - path: /(.*)
+            - backend:
+                serviceName: open-pdc
+                servicePort: 80

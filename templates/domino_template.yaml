@@ -1,0 +1,257 @@
+---
+# Source: domino/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-secrets
+type: Opaque
+data:
+  github_access_token_pieces: ZGVmYXVsdC1zdWJzdGl0dXRlLXRoaXMtZm9yLXlvdXItb3duLXRva2Vu
+  github_access_token_workflows: ZGVmYXVsdC1zdWJzdGl0dXRlLXRoaXMtZm9yLXlvdXItb3duLXRva2Vu
+---
+# Source: domino/templates/domino-database-deployment.yml
+# Domino Postgres Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-postgres-service
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-postgres
+  ports:
+    - protocol: "TCP"
+      port: 5432
+      targetPort: 5432
+---
+# Source: domino/templates/domino-frontend-deployment.yml
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-frontend-service
+spec:
+  selector:
+    app: release-name-frontend
+  ports:
+  - port: 80
+---
+# Source: domino/templates/domino-rest-deployment.yml
+# Domino API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-rest-service
+spec:
+  type: ClusterIP
+  selector:
+    app: release-name-rest
+  ports:
+  - port: 8000
+---
+# Source: domino/templates/domino-database-deployment.yml
+# Domino Database resource
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-postgres
+  template:
+    metadata:
+      labels:
+        app: release-name-postgres
+    spec:
+      containers:
+        - name: release-name-postgres
+          image: postgres:13
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+          volumeMounts:
+            - mountPath: "/var/lib/postgresql/data"
+              name: "pgdata"
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: "1"
+      volumes:
+        - hostPath:
+            path: "/home/docker/pgdata"
+          name: pgdata
+---
+# Source: domino/templates/domino-frontend-deployment.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-frontend
+  labels:
+    app: release-name-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-frontend
+  template:
+    metadata:
+      labels:
+        app: release-name-frontend
+    spec:
+      containers:
+        - name: release-name-frontend
+          image: ghcr.io/tauffer-consulting/domino-frontend
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: DOMINO_DEPLOY_MODE
+              value: 
+            - name: API_URL
+              value: http://localhost/api
+---
+# Source: domino/templates/domino-rest-deployment.yml
+# Domino REST Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-rest
+  labels:
+    app: release-name-rest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-name-rest
+  template:
+    metadata:
+      labels:
+        app: release-name-rest
+    spec:
+      containers:
+        - name: release-name-rest
+          image: ghcr.io/tauffer-consulting/domino-rest
+
+          ports:
+            - containerPort: 8000
+          imagePullPolicy: IfNotPresent
+          env:
+            # TODO use load balancer instead of service ip for airflow webserver ?
+            - name: AIRFLOW_WEBSERVER_HOST
+              value: http://airflow-webserver:8080
+            - name: DOMINO_DEPLOY_MODE
+              value: local-k8s
+            - name: CREATE_DEFAULT_USER
+              value: "true"
+            - name: DOMINO_DB_HOST
+              value: "release-name-postgres-service"
+            - name: DOMINO_DB_NAME
+              value: postgres
+            - name: DOMINO_DB_USER
+              value: postgres
+            - name: DOMINO_DB_PASSWORD
+              value: postgres
+            - name: DOMINO_DB_PORT
+              value: "5432"
+            - name: "DOMINO_DEFAULT_PIECES_REPOSITORY_TOKEN"
+              valueFrom:
+                secretKeyRef:
+                  key:  github_access_token_pieces
+                  name: release-name-secrets
+            - name: "DOMINO_GITHUB_ACCESS_TOKEN_WORKFLOWS"
+              valueFrom:
+                secretKeyRef:
+                  key:  github_access_token_workflows
+                  name: release-name-secrets
+            - name: DOMINO_GITHUB_WORKFLOWS_REPOSITORY
+              value: 
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: "1"
+            requests:
+              memory: 256Mi
+              cpu: "0.2"
+---
+# Source: domino/templates/jobs/domino-migrations.yml
+apiVersion: batch/v1
+kind: Job
+metadata:
+    name: domino-database-migrations-job
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 10
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: database-migrations
+        image: ghcr.io/tauffer-consulting/domino-rest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash"]
+        args: ["run_migrations.sh"]   # will sleep for 20 seconds, run migrations and create first user
+        env:
+          - name: DOMINO_DB_HOST
+            value: release-name-postgres-service
+          - name: DOMINO_DB_NAME
+            value: postgres
+          - name: DOMINO_DB_USER
+            value: postgres
+          - name: DOMINO_DB_PASSWORD
+            value: postgres
+          - name: DOMINO_DB_PORT
+            value: "5432"
+---
+# Source: domino/templates/ingress-api.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: domino-api-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - pathType: ImplementationSpecific
+        path: /api(/|$)(.*)
+        backend:
+          service:
+            name: release-name-rest-service
+            port:
+              number: 8000
+---
+# Source: domino/templates/ingress-frontend.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: domino-frontend-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - pathType: ImplementationSpecific
+        path: /?(.*)
+        backend:
+          service:
+            name: release-name-frontend-service
+            port:
+              number: 80
