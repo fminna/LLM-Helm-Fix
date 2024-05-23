@@ -84,32 +84,37 @@ def check_resource_path(path_list: str, document: dict) -> bool:
 
                 # Ignore default ns
                 if document["metadata"]["namespace"] == "default":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 # If the namespace was added during fixing, ignore it
                 elif document["metadata"]["namespace"] == "test-ns":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 # If the namespace was added during fixing, ignore it
                 elif document["metadata"]["namespace"] == "busybox-namespace":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 elif document["metadata"]["namespace"] == "kube-system":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 elif document["metadata"]["namespace"] == path_list[1]:
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
-                elif document["metadata"]["namespace"] == path_list[1] and \
-                    document["metadata"]["name"] == path_list[-1]:
-                    return True
+                elif document["metadata"]["namespace"] == path_list[1]:
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
             # "namespace" not in document["metadata"]
-            elif path_list[1] == "default":
+            elif path_list[1] == "default" and "name" in document["metadata"]:
                 return document["metadata"]["name"] == path_list[-1]
 
-            elif document["metadata"]["name"] == path_list[1]:
-                return True
+            elif "name" in document["metadata"]:
+                return document["metadata"]["name"] == path_list[1]
 
     return False
 

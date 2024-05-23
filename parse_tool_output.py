@@ -43,7 +43,6 @@ def save_to_csv(chart_name: str, checks_list: list, tool: str=False):
             template = parse_yaml_template(chart_name)
             template_str = "".join(str(doc) for doc in template)
             snippet_length = len(template_str)
-            print(check["check_id"])
 
         new_row = [
             chart_name, \
@@ -194,7 +193,7 @@ def parse_checkov(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - Checkov results file is empty.")
         return
 
     checks_list = []
@@ -278,7 +277,7 @@ def parse_datree(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - Datree results file is empty.")
         return
 
     checks_list = []
@@ -437,7 +436,7 @@ def parse_kics(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - KICS results file is empty.")
         return
 
     checks_list = []
@@ -535,7 +534,7 @@ def get_kubelinter_path(check, template):
     # spec/template/spec/containers/0/
     obj_path = ""
 
-    if "container" in check["Diagnostic"]["Message"]:
+    if check["Diagnostic"]["Message"].startswith("container"):
         # Extract characters between \" and \"
         cont_name = check["Diagnostic"]["Message"].split("\"")[1]
         # Find container path based on container name
@@ -559,7 +558,7 @@ def parse_kubelinter(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - Kubelinter results file is empty.")
         return
 
     checks_list = []
@@ -651,10 +650,12 @@ def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: st
 
 def get_kubeaudit_path(check, template):
     # Resource path (e.g., Pod/default/name)
-    if "ResourceNamespace" in check:
+    if "ResourceNamespace" in check and "ResourceName" in check:
         resource_path = f"{check['ResourceKind']}/{check['ResourceNamespace']}/{check['ResourceName']}"
-    else:
+    elif "ResourceName" in check:
         resource_path = f"{check['ResourceKind']}/default/{check['ResourceName']}"
+    else:
+        resource_path = ""
 
     # spec/template/spec/containers/0/
     obj_path = ""
@@ -705,7 +706,7 @@ def parse_kubeaudit(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - Kubeaudit results file is empty.")
         return
 
     checks_list = []
@@ -782,7 +783,7 @@ def parse_kubescape(chart_name: str):
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print(f"Error: {chart_name} - Terrascan results file is empty.")
+        print(f"Error: {chart_name} - Kubescape results file is empty.")
         return
 
     checks_list = []
@@ -877,9 +878,11 @@ def get_resource_namespace(template: dict, kind: str, name: str) -> str:
     """
 
     for document in template:
-        if document and document["kind"] == kind and document["metadata"]["name"] == name:
-            if "namespace" in document["metadata"]:
-                return document["metadata"]["namespace"]
+        if document and "kind" in document and document["kind"] == kind:
+            if "metadata" in document and "name" in document["metadata"]:
+                if document["metadata"]["name"] == name:
+                    if "namespace" in document["metadata"]:
+                        return document["metadata"]["namespace"]
 
     return "default"
 
@@ -902,32 +905,37 @@ def check_resource_path(path_list: str, document: dict) -> bool:
 
                 # Ignore default ns
                 if document["metadata"]["namespace"] == "default":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 # If the namespace was added during fixing, ignore it
                 elif document["metadata"]["namespace"] == "test-ns":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
                 
                 # If the namespace was added during fixing, ignore it
                 elif document["metadata"]["namespace"] == "busybox-namespace":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 elif document["metadata"]["namespace"] == "kube-system":
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 elif document["metadata"]["namespace"] == path_list[1]:
-                    return document["metadata"]["name"] == path_list[-1]
+                    if "name" in document["metadata"]:
+                        return document["metadata"]["name"] == path_list[-1]
 
                 elif document["metadata"]["namespace"] == path_list[1] and \
-                    document["metadata"]["name"] == path_list[-1]:
-                    return True
+                    "name" in document["metadata"]:
+                    return document["metadata"]["name"] == path_list[-1]
 
             # "namespace" not in document["metadata"]
-            elif path_list[1] == "default":
+            elif path_list[1] == "default" and "name" in document["metadata"]:
                 return document["metadata"]["name"] == path_list[-1]
 
-            elif document["metadata"]["name"] == path_list[1]:
-                return True
+            elif "name" in document["metadata"]:
+                return document["metadata"]["name"] == path_list[1]
 
     return False
 
@@ -975,37 +983,44 @@ def get_terr_container_path(template: dict, resource_path: list) -> tuple:
 
 
 def get_terrascan_path(check, template):
-    for logical_location in check["locations"]:
-        for location in logical_location["logicalLocations"]:
+    paths = {
+        "resource_path": "",
+        "obj_path": ""
+    }
 
-            kind = location["kind"]
-            # convert kind to standard format --- removing kubernetes_
-            kind = kind[11:]
-            # convert each character after '_' to uppercase
-            kind = ''.join([word.capitalize() for word in kind.split('_')])
-            name = location["name"]
-            namespace = get_resource_namespace(template, kind, name)
-            resource_path = f"{kind}/{namespace}/{name}"
-            paths = {
-                    "resource_path": resource_path,
-                    "obj_path": ""
-            }
+    if "locations" in check:
+        for logical_location in check["locations"]:
+            if "logicalLocations" in logical_location:
+                for location in logical_location["logicalLocations"]:
 
-            checks_with_paths = ["AC_K8S_0069", "AC_K8S_0078", "AC_K8S_0085", \
-                                    "AC_K8S_0097", "AC_K8S_0098", "AC_K8S_0099", \
-                                    "AC_K8S_0100", "AC_K8S_0072", "AC_K8S_0070", \
-                                    "AC_K8S_0087", "AC_K8S_0068", "AC_K8S_0080", \
-                                    "AC_K8S_0079"]
-            if check['ruleId'] in checks_with_paths:
-                # Call fix_template for each container in the K8s resource
-                cont_path, containers, init_containers = get_terr_container_path(template, resource_path.split("/"))
-                for idx in range(len(containers)):
-                    paths["obj_path"] = cont_path + str(idx)
+                    kind = location["kind"]
+                    # convert kind to standard format --- removing kubernetes_
+                    kind = kind[11:]
+                    # convert each character after '_' to uppercase
+                    kind = ''.join([word.capitalize() for word in kind.split('_')])
+                    name = location["name"]
+                    namespace = get_resource_namespace(template, kind, name)
+                    resource_path = f"{kind}/{namespace}/{name}"
+                    paths = {
+                            "resource_path": resource_path,
+                            "obj_path": ""
+                    }
 
-                if init_containers:
-                    for idx in range(len(init_containers)):
-                        cont_path = cont_path.replace("containers", "initContainers")
-                        paths["obj_path"] = cont_path + str(idx)
+                    checks_with_paths = ["AC_K8S_0069", "AC_K8S_0078", "AC_K8S_0085", \
+                                            "AC_K8S_0097", "AC_K8S_0098", "AC_K8S_0099", \
+                                            "AC_K8S_0100", "AC_K8S_0072", "AC_K8S_0070", \
+                                            "AC_K8S_0087", "AC_K8S_0068", "AC_K8S_0080", \
+                                            "AC_K8S_0079"]
+                    if check['ruleId'] in checks_with_paths:
+                        # Call fix_template for each container in the K8s resource
+                        cont_path, containers, init_containers = get_terr_container_path(template, resource_path.split("/"))
+                        for idx in range(len(containers)):
+                            paths["obj_path"] = cont_path + str(idx)
+
+                        if init_containers:
+                            for idx in range(len(init_containers)):
+                                cont_path = cont_path.replace("containers", "initContainers")
+                                paths["obj_path"] = cont_path + str(idx)
 
     return paths
 
@@ -1068,14 +1083,16 @@ def parse_output():
     df = pd.read_csv("results/chart_stats.csv")
     templates = df[df["Template"] == "OK"]["Charts"].values
 
-    for chart_name in templates:
-        print(f"Processing {chart_name}...")
+    for idx, chart_name in enumerate(templates):
+        print(f"{idx} - Processing {chart_name}...")
 
         parse_checkov(chart_name)
         parse_datree(chart_name)
         parse_kics(chart_name)
+
         parse_kubelinter(chart_name)
         parse_kubeaudit(chart_name)
+
         parse_kubescape(chart_name)
         parse_terrascan(chart_name)
 
