@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser(description='Script to fix Helm Charts misconfi
 
 # Define a --parse-output argument that must be passed with two string values. For example, --parse-output chart_name tool.
 parser.add_argument('--parse-output', action='store_true', help='Parse the output of a chart analyzer tool.')
-parser.add_argument('--query-llm', nargs=1, type=str, help='Query a LLM for a fix.')
+parser.add_argument('--query-llm', action='store_true', help='Query a LLM for a fix.')
 parser.add_argument('--evaluate-fixes', action='store_true', help='Evaluate the LLM fixes.')
 parser.add_argument('--chart-retrieval', action='store_true', help='Retrieve a Helm Chart.')
 
@@ -45,7 +45,7 @@ def main():
 
     elif args.query_llm:
         print("Querying the LLM for a fix...\n")
-        query_llm(args.query_llm[0])
+        query_llm()
 
     elif args.evaluate_fixes:
         print("Evaluating the LLM fixes...\n")

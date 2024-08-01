@@ -24,121 +24,98 @@ from botocore.exceptions import ClientError
 import yaml
 import os
 import requests
+import pandas as pd
+import time
+import google.api_core.exceptions
 
 
-def query_local_llm(rq2_rows: list):
-    failed_to_answer = "no"
-    answer_time = 0.0
-
-    aux = rq2_rows[0].copy()
-    rq2_rows.append(aux)
-    aux = rq2_rows[1].copy()
-    rq2_rows.append(aux)
-
-    with open("tmp_snippets/chatgpt_ns_snippet.yaml", "r", encoding="utf-8") as file:
-        chatgpt_ns = yaml.load(file, Loader=yaml.FullLoader)
-    rq2_rows[0].append("chatgpt")
-    rq2_rows[0].append(chatgpt_ns)
-
-    # TODO: evaluate LLM failures to answer
-    rq2_rows[0].append(failed_to_answer)
-
-    # Measure LLM answer time
-    rq2_rows[0].append(answer_time)
-
-    with open("tmp_snippets/chatgpt_mem_snippet.yaml", "r", encoding="utf-8") as file:
-        chatgpt_mem = yaml.load(file, Loader=yaml.FullLoader)
-    rq2_rows[1].append("chatgpt")
-    rq2_rows[1].append(chatgpt_mem)
-    rq2_rows[1].append(failed_to_answer)
-    rq2_rows[1].append(answer_time)
-
-    with open("tmp_snippets/gemini_ns_snippet.yaml", "r", encoding="utf-8") as file:
-        gemini_ns = yaml.load(file, Loader=yaml.FullLoader)
-    rq2_rows[2].append("gemini")
-    rq2_rows[2].append(gemini_ns)
-    rq2_rows[2].append(failed_to_answer)
-    rq2_rows[2].append(answer_time)
-
-    with open("tmp_snippets/gemini_mem_snippet.yaml", "r", encoding="utf-8") as file:
-        gemini_mem = yaml.load(file, Loader=yaml.FullLoader)
-    rq2_rows[3].append("gemini")
-    rq2_rows[3].append(gemini_mem)
-    rq2_rows[3].append(failed_to_answer)
-    rq2_rows[3].append(answer_time)
-
-    return rq2_rows
-
-
-############################################
-
-
-def invoke_claude_3_with_text(prompt):
-    """ Invokes Anthropic Claude 3 Sonnet to run an inference using the input
-    provided in the request body.
+def query_chatgpt(idx: int, jdx: int):
+    """Query ChatGPT to generate fixes.
     """
 
-    # Initialize the Amazon Bedrock runtime client
-    client = boto3.client(
-        service_name="bedrock-runtime", region_name="us-west-2"
-    )
+    # df = pd.read_csv("results/chatgpt_queries.csv")
+    df = pd.read_csv("results/llm_short_queries.csv")
 
-    # Invoke Claude 3 with the text prompt
-    model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+    # df_idx = pd.read_csv("results/chatgpt_index.csv")
 
-    try:
-        response = client.invoke_model(
-            modelId=model_id,
-            body=json.dumps(
-                {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1024,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": prompt}],
-                        }
-                    ],
-                }
-            ),
-        )
+    client = OpenAI()
+    rows = []
+    counter = 0
 
-        # Process and print the response
-        result = json.loads(response.get("body").read())
-        input_tokens = result["usage"]["input_tokens"]
-        output_tokens = result["usage"]["output_tokens"]
-        output_list = result.get("content", [])
+    for idx, row in df.iloc[idx:jdx].iterrows():
 
-        # print("Invocation details:")
-        # print(f"- The input length is {input_tokens} tokens.")
-        # print(f"- The output length is {output_tokens} tokens.")
+        chart_name = row["Chart"]
+        alert_id = row["Alert_ID"]
 
-        print(f"Answer: ")
-        for output in output_list:
-            print(output["text"])
+        print(f"{idx} - ChatGPT: Processing {chart_name} - {alert_id} ...")
+        counter += 1
 
-        return result
+        # if idx in df_idx["Index"].values:
+        #     rows.append()
 
-    except ClientError as err:
-        logger.error(
-            "Couldn't invoke Claude 3 Sonnet. Here's why: %s: %s",
-            err.response["Error"]["Code"],
-            err.response["Error"]["Message"],
-        )
-        raise
+        # else:
+        try:
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": row["Query"]},
+                    {"role": "user", "content": row["Original_YAML"]}
+                ]
+            )
+        except Exception as e:
+            print(f"Error parsing YAML: {e}")
+            answer_dict = "Failed to parse YAML."
+
+        input_tokens = completion.usage.prompt_tokens
+        output_tokens = completion.usage.completion_tokens
+
+        answer = completion.choices[0].message.content
+        answer = answer.replace("---", "")
+        answer = answer.replace("```yaml", "")
+        answer = answer.replace("```", "")
+
+        try:
+            answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
+        except Exception as e:
+            print(f"Error parsing YAML: {e}")
+            answer_dict = "Failed to parse YAML."
+
+        new_row = [
+                chart_name,
+                alert_id,
+                row["Tool"],
+                row["Resource"],
+                row["Query"],
+                "ChatGPT-4o-mini-2024-07-18",
+                input_tokens,
+                answer_dict,
+                output_tokens,
+                row["Original_YAML"]
+            ]
+        rows.append(new_row)
+
+        if counter == 10:
+            answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
+            for row in rows:
+                answer_df.loc[len(answer_df)] = row
+            answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
+            rows = []
+            counter = 0
+
+    answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    for row in rows:
+        answer_df.loc[len(answer_df)] = row
+    answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
 
 
-def query_chatgpt(query: str) -> dict:
-    """Query the ChatGPT model to generate fixes.
-    """
-    # client = OpenAI()
-    # TODO
-    pass
-
-
-def query_gemini(query: str) -> dict:
+def query_gemini(idx: int, jdx: int) -> list:
     """ Query the Gemini model to generate fixes.
+
+    API Troubleshooting guide
+    https://ai.google.dev/gemini-api/docs/troubleshooting
     """
+
+    df = pd.read_csv("results/chatgpt_queries.csv")
 
     # Get API Key from the environmental variable
     api_key = os.getenv("GEMINI_API_KEY")
@@ -152,103 +129,340 @@ def query_gemini(query: str) -> dict:
         "max_output_tokens": 8192,
     }
 
-    safety_settings = [
-        {
-            "category": "HARM_CATEGORY_HARASSMENT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_HATE_SPEECH",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-    ]
+    # safety_settings = [
+    #     {
+    #         "category": "HARM_CATEGORY_HARASSMENT",
+    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    #     },
+    #     {
+    #         "category": "HARM_CATEGORY_HATE_SPEECH",
+    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    #     },
+    #     {
+    #         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    #     },
+    #     {
+    #         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    #     },
+    # ]
+
+    safety_settings = []
 
     model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
-                                generation_config=generation_config,
-                                safety_settings=safety_settings)
+                             generation_config=generation_config,
+                             safety_settings=safety_settings)
+    # convo = model.start_chat()
 
-    # Query tokens count
-    response = model.count_tokens(query)
-    print(f"Prompt Token Count: {response.total_tokens}")
+    counter = 0
+    rows = []
 
-    convo = model.start_chat()
-    convo.send_message(query)
+    for idx, row in df.iloc[idx:jdx].iterrows():
+        chart_name = row["Chart"]
+        alert_id = row["Alert_ID"]
+        query = str(row["Query"]) + " " + str(row["Original_YAML"])
 
-    answer = convo.last.text
-    answer = answer.replace("---", "")
+        print(f"{idx} - Gemini: Processing {chart_name} - {alert_id} ...")
+        counter += 1
+        correct = False
 
-    answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
-    return answer_dict
+        try:
+            # convo.send_message(query)
+            response = model.generate_content(
+                contents=query,
+                request_options={"timeout": 1000}
+            )
+            try:
+                answer = response.text
+                correct = True
+            except Exception as e:
+                answer = f"Failed to generate a response. {e}"
+                print(answer)
+
+        except google.api_core.exceptions.InternalServerError as e:
+            answer = "Failed to generate a response. google.api_core.exceptions.InternalServerError"
+            print(answer)
+
+        except google.api_core.exceptions.RetryError as e:
+            answer = "Failed to generate a response. google.api_core.exceptions.RetryError"
+            print(answer)
+
+        except google.api_core.exceptions.ResourceExhausted:
+            time.sleep(60)
+            try:
+                response = model.generate_content(
+                    contents=query,
+                    request_options={"timeout": 1000}
+                )
+                answer = response.text
+                correct = True
+            except google.api_core.exceptions.InternalServerError as e:
+                answer = "Failed to generate a response. google.api_core.exceptions.InternalServerError"
+                print(answer)
+            except ValueError as e:
+                answer = f"Failed to generate a response. {e}"
+                print(answer)
+            except Exception as e:
+                answer = f"Failed to generate a response. {e}"
+                print(answer)
+
+        except google.generativeai.types.generation_types.StopCandidateException as e:
+            answer = "Failed to generate a response. google.generativeai.types.generation_types.StopCandidateException"
+            print(answer)
+
+        except Exception as e:
+            answer = f"Failed to generate a response. {e}"
+            print(answer)
+
+        if correct:
+            answer = answer.replace("---", "")
+            answer = answer.replace("```yaml", "")
+            answer = answer.replace("```", "")
+            try:
+                answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
+            except Exception as e:
+                print(f"Error parsing YAML: {e}")
+                answer_dict = "Failed to parse YAML."
+        else:
+            answer_dict = "Failed to generate a response. Unkown error."
+
+        input_tokens = model.count_tokens(query)
+        input_tokens = input_tokens.total_tokens
+        output_tokens = model.count_tokens(answer).total_tokens
+
+        new_row = [
+            chart_name,
+            alert_id,
+            row["Tool"],
+            query,
+            "Gemini_1.5",
+            input_tokens,
+            answer_dict,
+            output_tokens
+        ]
+        rows.append(new_row)
+
+        if counter == 50:
+            answer_df = pd.read_csv("results/llm_gemini_answers.csv")
+            for row in rows:
+                answer_df.loc[len(answer_df)] = row
+            answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
+            rows = []
+            counter = 0
+            time.sleep(120)
+
+    answer_df = pd.read_csv("results/llm_gemini_answers.csv")
+    for row in rows:
+        answer_df.loc[len(answer_df)] = row
+    answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
 
 
-def query_hugging_face(query: str) -> dict:
-    """ Query the Hugging Face model to generate fixes.
-
-    List of models: https://huggingface.co/docs/transformers/en/model_doc/code_llama
+def query_claude_3(idx: int, jdx: int):
+    """ Invokes Anthropic Claude 3 Sonnet to run an inference using the input
+    provided in the request body.
     """
 
-    # Model Link: https://huggingface.co/CohereForAI/c4ai-command-r-plus
-    model = "CohereForAI/c4ai-command-r-plus"
+    df = pd.read_csv("results/llm_short_queries.csv")
 
-    api_key = os.getenv("HUGGING_FACE_API_KEY")
+    # Initialize the Amazon Bedrock runtime client
+    client = boto3.client(
+        service_name="bedrock-runtime", region_name="us-west-2"
+    )
 
-    API_URL = f"https://api-inference.huggingface.co/models/{model}"
-    headers = {"Authorization": "Bearer " + api_key}
+    # Invoke Claude 3 with the text prompt
+    model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
 
-    # Parameters can be different based on which model is used.
-    # Please refer to this page: https://huggingface.co/docs/api-inference/detailed_parameters
-    # payload = {
-    #     "inputs": query,
-    #     "parameters": {
-    #         "max_new_tokens": 250,
-    #         "max_length": 500,
-    #         "temperature": 1.0
-    #     },
-    # }
+    rows = []
+    counter = 0
 
-    payload = {
-        "inputs": "What is a large language model?"
-    }
+    for idx, row in df.iloc[idx:jdx].iterrows():
+        chart_name = row["Chart"]
+        alert_id = row["Alert_ID"]
+        query_type_error = False
 
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=10)
-        print(response.json())
+        try:
+            query = str(row["Query"]) + " " + str(row["Original_YAML"])
+        except TypeError:
+            query_type_error = True
+
+        print(f"{idx} - Claude: Processing {chart_name} - {alert_id} ...")
+        counter += 1
+
+        if query_type_error:
+            input_tokens = 0
+            answer_dict = "Failed: query type error."
+            output_tokens = 0
+
+        else:
+            try:
+                response = client.invoke_model(
+                    modelId=model_id,
+                    body=json.dumps(
+                        {
+                            "anthropic_version": "bedrock-2023-05-31",
+                            "max_tokens": 4096,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [{"type": "text", "text": query}],
+                                }
+                            ],
+                        }
+                    ),
+                )
+
+                # Process and print the response
+                result = json.loads(response.get("body").read())
+
+                input_tokens = result["usage"]["input_tokens"]
+                output_tokens = result["usage"]["output_tokens"]
+
+                output_list = result.get("content", [])
+                answer = output_list[0]["text"]
+                answer = answer.replace("---", "")
+                answer = answer.replace("```yaml", "")
+                answer = answer.replace("```", "")
+
+                try:
+                    answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
+
+                except Exception as e:
+                    print(f"Error parsing YAML: {e}")
+                    answer_dict = "Failed to parse YAML."
+
+            except ClientError as err:
+                logger.error(
+                    "Couldn't invoke Claude 3 Sonnet. Here's why: %s: %s",
+                    err.response["Error"]["Code"],
+                    err.response["Error"]["Message"],
+                )
+                raise
+
+            except Exception:
+                answer_dict = "Failed to generate a response."
+
+        new_row = [
+                chart_name,
+                alert_id,
+                query,
+                "Claude_3_Sonnet",
+                input_tokens,
+                answer_dict,
+                output_tokens
+            ]
+        rows.append(new_row)
+
+        if counter == 50:
+            answer_df = pd.read_csv("results/llm_claude_answers.csv")
+            for row in rows:
+                answer_df.loc[len(answer_df)] = row
+            answer_df.to_csv("results/llm_claude_answers.csv", index=False)
+            rows = []
+            counter = 0
+
+    answer_df = pd.read_csv("results/llm_claude_answers.csv")
+    for row in rows:
+        answer_df.loc[len(answer_df)] = row
+    answer_df.to_csv("results/llm_claude_answers.csv", index=False)
 
 
-    except requests.exceptions.ReadTimeout:
-        print("LLM Error: The request timed out!!!")
-        return None
+def query_llama_3(idx: int, jdx: int):
+    """ Query the Llama model to generate fixes.
+    """
 
+    # df = pd.read_csv("results/llm_short_queries.csv")
+    df = pd.read_csv("results/chatgpt_queries.csv")
 
-#####################################
+    # Initialize the Amazon Bedrock runtime client
+    client = boto3.client(
+        service_name="bedrock-runtime", region_name="us-west-2"
+    )
 
-# TODO: convert YAML resource snippet to the following query string type.
+    model_id = "meta.llama3-70b-instruct-v1:0"
 
-query = """
-You are a software engineer working on a Kubernetes project. You need to refactor the following ServiceAccount YAML resource because the default namespace should not be used. You must only output YAML code between --- characters, with no additional text or description.
+    counter = 0
+    rows = []
 
---- 
-apiVersion: v1 
-kind: ServiceAccount
-metadata: 
-  name: release-name-mysql 
-  namespace: default 
-  labels: 
-    app.kubernetes.io/name: mysql 
-    helm.sh/chart: mysql-9.7.1 
-    app.kubernetes.io/instance: release-name 
-    app.kubernetes.io/managed-by: Helm annotations: null automountServiceAccountToken: true 
-secrets: 
-  - name: release-name-mysql 
----
-"""
+    for idx, row in df.iloc[idx:jdx].iterrows():
+        chart_name = row["Chart"]
+        alert_id = row["Alert_ID"]
+        query = str(row["Query"]) + " " + str(row["Original_YAML"])
 
-# query_hugging_face(query)
+        print(f"{idx} - LLama: Processing {chart_name} - {alert_id} ...")
+        counter += 1
+
+        # Embed the prompt in Llama 3's instruction format.
+        formatted_prompt = f"""
+        <|begin_of_text|>
+        <|start_header_id|>user<|end_header_id|>
+        {query}
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
+        """
+
+        # Format the request payload using the model's native structure.
+        native_request = {
+            "prompt": formatted_prompt,
+            "max_gen_len": 512,
+            "temperature": 0.5,
+        }
+
+        # Convert the native request to JSON.
+        request = json.dumps(native_request)
+
+        correct = False
+        try:
+            # Invoke the model with the request.
+            response = client.invoke_model(modelId=model_id, body=request)
+            correct = True
+
+        except (ClientError, Exception) as e:
+            print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+            answer_dict = "Failed to generate a response."
+
+        if correct:
+            # Decode the response body.
+            model_response = json.loads(response["body"].read())
+
+            input_tokens = model_response["prompt_token_count"]
+            output_tokens = model_response["generation_token_count"]
+
+            # Extract and print the response text.
+            answer = model_response["generation"]
+            answer = answer.replace("---", "")
+            answer = answer.replace("```yaml", "")
+            answer = answer.replace("```", "")
+
+            try:
+                answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
+            except Exception as e:
+                print(f"Error parsing YAML: {e}")
+                answer_dict = "Failed to parse YAML."
+
+        new_row = [
+                chart_name,
+                alert_id,
+                row["Tool"],
+                row["Resource"],
+                row["Original_YAML"],
+                query,
+                "Llama_3_70b",
+                input_tokens,
+                answer_dict,
+                output_tokens
+            ]
+        rows.append(new_row)
+
+        if counter == 10:
+            answer_df = pd.read_csv("results/llm_llama_answers.csv")
+            for row in rows:
+                answer_df.loc[len(answer_df)] = row
+            answer_df.to_csv("results/llm_llama_answers.csv", index=False)
+            rows = []
+            counter = 0
+
+    answer_df = pd.read_csv("results/llm_llama_answers.csv")
+    for row in rows:
+        answer_df.loc[len(answer_df)] = row
+    answer_df.to_csv("results/llm_llama_answers.csv", index=False)

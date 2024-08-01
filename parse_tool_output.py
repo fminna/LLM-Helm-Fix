@@ -22,73 +22,9 @@ import re
 import ast
 import pandas as pd
 from query_llm import parse_yaml_template, get_resource_snippet
-
-
-def save_to_csv(chart_name: str, checks_list: list, tool: str=False):
-    """ Save the results to a CSV file.
-    # """
-
-    # Open csv file
-    df = pd.read_csv("results/rq1_results.csv")
-    # print(df.head())
-
-    if chart_name in df["Chart"].values and tool in df["Tool"].values:
-        return
-
-    for check in checks_list:
-
-        snippet_length = len(str(check["original_yaml"]))
-
-        if snippet_length < 10:
-            template = parse_yaml_template(chart_name)
-            template_str = "".join(str(doc) for doc in template)
-            snippet_length = len(template_str)
-
-        new_row = [
-            chart_name, \
-            check["tool"], \
-            check["check_id"], \
-            check["std_check_id"], \
-            check["description"], \
-            check["resource"], \
-            check["original_yaml"], \
-            snippet_length
-        ]
-
-        df.loc[len(df)] = new_row
-
-    # Save the CSV file
-    df.to_csv("results/rq1_results.csv", index=False)
-
-    #####################
-
-    added_checks = []
-    df = pd.read_csv("results/rq1_stats.csv")
-    df["Occurrences"] = df["Occurrences"].astype(int)
-
-    for check in checks_list:
-        if check["tool"] in df["Tool"].values and check["check_id"] in df["Alert_ID"].values:
-            df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Occurrences"] += 1
-
-            if check["check_id"] not in added_checks:
-                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "Charts"] += f", {chart_name}"
-                df.loc[(df["Tool"] == check["tool"]) & (df["Alert_ID"] == check["check_id"]), "#_Charts"] += 1
-                added_checks.append(check["check_id"])
-
-        else:
-            new_row = [
-                check["tool"], \
-                check["check_id"], \
-                check["std_check_id"], \
-                check["description"], \
-                chart_name, \
-                1, \
-                1
-            ]
-            added_checks.append(check["check_id"])
-            df.loc[len(df)] = new_row
-
-        df.to_csv("results/rq1_stats.csv", index=False)
+import math
+import ast
+from collections import Counter
 
 
 def get_ckv_container_objects(template: dict, resource_path: str, containers="containers") -> list:
@@ -196,41 +132,47 @@ def parse_checkov(chart_name: str):
         print(f"Error: {chart_name} - Checkov results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     if "results" in results and "failed_checks" in results["results"]:
         for check in results["results"]["failed_checks"]:
             check_id = check['check_id']
             descr = check['check_name']
-            # # print(f"{check_id}: {descr}")
 
             paths = get_ckv_resource_path(check, template)
             resource = [paths["resource_path"], paths["obj_path"]]
             std_check_id = CheckovLookup.get_value(check_id)
             if std_check_id is None:
-                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                 std_check_id = "NOT_MAPPED"
-                # exit(1)
+
+            cis_cluster = CISLookup.get_value(std_check_id)
+            if cis_cluster is None:
+                cis_cluster = "N/A"
 
             yaml_snippet = get_resource_snippet(paths, template)
 
-            aux_dict = {
-                "tool": "checkov",
-                "check_id": check_id,
-                "std_check_id": std_check_id,
-                "description": descr,
-                "resource": resource,
-                "original_yaml": yaml_snippet
-            }
-            checks_list.append(aux_dict)
+            snippet_length = len(str(yaml_snippet))
 
-    # print("\n------\n")
-    # print(checks_list.keys)
+            if snippet_length < 10:
+                template = parse_yaml_template(chart_name)
+                template_str = "".join(str(doc) for doc in template)
+                snippet_length = len(template_str)
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "checkov")
+            new_row = [
+                chart_name, \
+                "checkov", \
+                check_id, \
+                std_check_id, \
+                cis_cluster, \
+                descr, \
+                resource, \
+                yaml_snippet, \
+                snippet_length
+            ]
+            rows.append(new_row)
+
+    return rows
 
 
 def get_datree_path(occurrence):
@@ -280,10 +222,9 @@ def parse_datree(chart_name: str):
         print(f"Error: {chart_name} - Datree results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     if "policyValidationResults" and results["policyValidationResults"] is not None:
         for check in results["policyValidationResults"][0]["ruleResults"]:
 
@@ -296,26 +237,34 @@ def parse_datree(chart_name: str):
                 resource = [paths["resource_path"], paths["obj_path"]]
                 std_check_id = DatreeLookup.get_value(check_id)
                 if std_check_id is None:
-                    # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                     std_check_id = "NOT_MAPPED"
-                    # exit(1)
+
+                cis_cluster = CISLookup.get_value(std_check_id)
+                if cis_cluster is None:
+                    cis_cluster = "N/A"
 
                 yaml_snippet = get_resource_snippet(paths, template)
-                aux_dict = {
-                    "tool": "datree",
-                    "check_id": check_id,
-                    "std_check_id": std_check_id,
-                    "description": descr,
-                    "resource": resource,
-                    "original_yaml": yaml_snippet
-                }
-                checks_list.append(aux_dict)
+                snippet_length = len(str(yaml_snippet))
 
-    # print("\n------\n")
-    # print(checks_list)
+                if snippet_length < 10:
+                    template = parse_yaml_template(chart_name)
+                    template_str = "".join(str(doc) for doc in template)
+                    snippet_length = len(template_str)
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "datree")
+                new_row = [
+                    chart_name, \
+                    "datree", \
+                    check_id, \
+                    std_check_id, \
+                    cis_cluster, \
+                    descr, \
+                    resource, \
+                    yaml_snippet, \
+                    snippet_length
+                ]
+                rows.append(new_row)
+
+    return rows
 
 
 def get_kics_path(file, template, check_id):
@@ -439,12 +388,10 @@ def parse_kics(chart_name: str):
         print(f"Error: {chart_name} - KICS results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     for check in results["queries"]:
-
         for file in check['files']:
 
             check_id = check['query_id']
@@ -453,29 +400,37 @@ def parse_kics(chart_name: str):
 
             std_check_id = KICSLookup.get_value(check_id)
             if std_check_id is None:
-                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                 std_check_id = "NOT_MAPPED"
-                # exit(1)
+
+            cis_cluster = CISLookup.get_value(std_check_id)
+            if cis_cluster is None:
+                cis_cluster = "N/A"
 
             paths = get_kics_path(file, template, std_check_id)
             resource = [paths["resource_path"], paths["obj_path"]]
 
             yaml_snippet = get_resource_snippet(paths, template)
-            aux_dict = {
-                "tool": "kics",
-                "check_id": check_id,
-                "std_check_id": std_check_id,
-                "description": descr,
-                "resource": resource,
-                "original_yaml": yaml_snippet
-            }
-            checks_list.append(aux_dict)
-            
-    # print("\n------\n")
-    # print(checks_list)
+            snippet_length = len(str(yaml_snippet))
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "kics")
+            if snippet_length < 10:
+                template = parse_yaml_template(chart_name)
+                template_str = "".join(str(doc) for doc in template)
+                snippet_length = len(template_str)
+
+            new_row = [
+                chart_name, \
+                "kics", \
+                check_id, \
+                std_check_id, \
+                cis_cluster, \
+                descr, \
+                resource, \
+                yaml_snippet, \
+                snippet_length
+            ]
+            rows.append(new_row)
+
+    return rows
 
 
 def get_kubel_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -561,10 +516,9 @@ def parse_kubelinter(chart_name: str):
         print(f"Error: {chart_name} - Kubelinter results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     if "Reports" in results:
         if results["Reports"] is None or not results["Reports"]:
             pass
@@ -578,29 +532,37 @@ def parse_kubelinter(chart_name: str):
 
                 std_check_id = KubelinterClass.get_value(check_id)
                 if std_check_id is None:
-                    # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                     std_check_id = "NOT_MAPPED"
-                    # exit(1)
+
+                cis_cluster = CISLookup.get_value(std_check_id)
+                if cis_cluster is None:
+                    cis_cluster = "N/A"
 
                 paths = get_kubelinter_path(check, template)
                 resource = [paths["resource_path"], paths["obj_path"]]
 
                 yaml_snippet = get_resource_snippet(paths, template)
-                aux_dict = {
-                    "tool": "kubelinter",
-                    "check_id": check_id,
-                    "std_check_id": std_check_id,
-                    "description": descr,
-                    "resource": resource,
-                    "original_yaml": yaml_snippet
-                }
-                checks_list.append(aux_dict)
+                snippet_length = len(str(yaml_snippet))
 
-            # print("\n------\n")
-            # print(checks_list)
+                if snippet_length < 10:
+                    template = parse_yaml_template(chart_name)
+                    template_str = "".join(str(doc) for doc in template)
+                    snippet_length = len(template_str)
 
-            # Save results to CSV
-            save_to_csv(chart_name, checks_list, "kubelinter")
+                new_row = [
+                    chart_name, \
+                    "kubelinter", \
+                    check_id, \
+                    std_check_id, \
+                    cis_cluster, \
+                    descr, \
+                    resource, \
+                    yaml_snippet, \
+                    snippet_length
+                ]
+                rows.append(new_row)
+
+    return rows
 
 
 def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: str) -> str:
@@ -709,10 +671,9 @@ def parse_kubeaudit(chart_name: str):
         print(f"Error: {chart_name} - Kubeaudit results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     for check in results["checks"]:
         check_id = check['AuditResultName']
         descr = check['msg']
@@ -720,29 +681,37 @@ def parse_kubeaudit(chart_name: str):
 
         std_check_id = KubeauditClass.get_value(check_id)
         if std_check_id is None:
-            # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
             std_check_id = "NOT_MAPPED"
-            # exit(1)
+
+        cis_cluster = CISLookup.get_value(std_check_id)
+        if cis_cluster is None:
+            cis_cluster = "N/A"
 
         paths = get_kubeaudit_path(check, template)
         resource = [paths["resource_path"], paths["obj_path"]]
 
         yaml_snippet = get_resource_snippet(paths, template)
-        aux_dict = {
-            "tool": "kubeaudit",
-            "check_id": check_id,
-            "std_check_id": std_check_id,
-            "description": descr,
-            "resource": resource,
-            "original_yaml": yaml_snippet
-        }
-        checks_list.append(aux_dict)
+        snippet_length = len(str(yaml_snippet))
 
-    # print("\n------\n")
-    # print(checks_list)
+        if snippet_length < 10:
+            template = parse_yaml_template(chart_name)
+            template_str = "".join(str(doc) for doc in template)
+            snippet_length = len(template_str)
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "kubeaudit")
+        new_row = [
+            chart_name, \
+            "kubeaudit", \
+            check_id, \
+            std_check_id, \
+            cis_cluster, \
+            descr, \
+            resource, \
+            yaml_snippet, \
+            snippet_length
+        ]
+        rows.append(new_row)
+
+    return rows
 
 
 def get_kubescape_path(rule, control, paths):
@@ -784,15 +753,14 @@ def parse_kubescape(chart_name: str):
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print(f"Error: {chart_name} - Kubescape results file is empty.")
-        return
+        return []
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     if "results" not in results:
-        return
-
+        return []
+ 
     for result in results["results"]:
         resources_path = result["resourceID"]
         resource_list = []
@@ -833,9 +801,11 @@ def parse_kubescape(chart_name: str):
 
                     std_check_id = KubescapeClass.get_value(check_id)
                     if std_check_id is None:
-                        # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                         std_check_id = "NOT_MAPPED"
-                        # exit(1)
+
+                    cis_cluster = CISLookup.get_value(std_check_id)
+                    if cis_cluster is None:
+                        cis_cluster = "N/A"
 
                     for rule in control["rules"]:
                         paths = {
@@ -848,21 +818,27 @@ def parse_kubescape(chart_name: str):
                         resource = [paths["resource_path"], paths["obj_path"]]
 
                         yaml_snippet = get_resource_snippet(paths, template)
-                        aux_dict = {
-                            "tool": "kubescape",
-                            "check_id": check_id,
-                            "std_check_id": std_check_id,
-                            "description": descr,
-                            "resource": resource,
-                            "original_yaml": yaml_snippet
-                        }
-                        checks_list.append(aux_dict)
+                        snippet_length = len(str(yaml_snippet))
 
-    # print("\n------\n")
-    # print(checks_list)
+                        if snippet_length < 10:
+                            template = parse_yaml_template(chart_name)
+                            template_str = "".join(str(doc) for doc in template)
+                            snippet_length = len(template_str)
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "kubescape")
+                        new_row = [
+                            chart_name, \
+                            "kubescape", \
+                            check_id, \
+                            std_check_id, \
+                            cis_cluster, \
+                            descr, \
+                            resource, \
+                            yaml_snippet, \
+                            snippet_length
+                        ]
+                        rows.append(new_row)
+
+    return rows
 
 
 def get_resource_namespace(template: dict, kind: str, name: str) -> str:
@@ -1039,10 +1015,9 @@ def parse_terrascan(chart_name: str):
         print(f"Error: {chart_name} - Terrascan results file is empty.")
         return
 
-    checks_list = []
+    rows = []
     template = parse_yaml_template(chart_name)
 
-    # Print the results
     for run in results["runs"]:
         for check in run["results"]:
             check_id = check['ruleId']
@@ -1051,50 +1026,495 @@ def parse_terrascan(chart_name: str):
 
             std_check_id = TerrascanClass.get_value(check_id)
             if std_check_id is None:
-                # print(f"ADD CHECK ID TO LOOKUP TABLE: {check_id}")
                 std_check_id = "NOT_MAPPED"
-                # exit(1)
+
+            cis_cluster = CISLookup.get_value(std_check_id)
+            if cis_cluster is None:
+                cis_cluster = "N/A"
 
             paths = get_terrascan_path(check, template)
             resource = [paths["resource_path"], paths["obj_path"]]
 
             yaml_snippet = get_resource_snippet(paths, template)
-            aux_dict = {
-                "tool": "terrascan",
-                "check_id": check_id,
-                "std_check_id": std_check_id,
-                "description": descr,
-                "resource": resource,
-                "original_yaml": yaml_snippet
+            snippet_length = len(str(yaml_snippet))
+
+            if snippet_length < 10:
+                template = parse_yaml_template(chart_name)
+                template_str = "".join(str(doc) for doc in template)
+                snippet_length = len(template_str)
+
+            new_row = [
+                chart_name, \
+                "terrascan", \
+                check_id, \
+                std_check_id, \
+                cis_cluster, \
+                descr, \
+                resource, \
+                yaml_snippet, \
+                snippet_length
+            ]
+            rows.append(new_row)
+
+    return rows
+
+
+def count_alert_occurrences():
+    """ Count the number of occurrences of each alert.
+    """
+
+    # df = pd.read_csv("results/rq1_short_results.csv")
+    # Columns: Chart, Alert_ID, Tool, Standard_ID, CIS_Cluster
+
+    # counter = Counter()
+
+    # for _, row in df.iterrows():
+    #     counter[row["Standard_ID"]] += 1
+
+    # print(counter.most_common(10))
+
+    ###
+
+    # df = pd.read_csv("results/rq1_results.csv")
+    # charts = df["Chart"].unique()
+
+    # rows = []
+
+    # for idx, chart_name in enumerate(charts):
+    #     print(f"{idx}: Processing {chart_name} ...")
+
+    #     aux_df = df[df["Chart"] == chart_name]
+
+    #     checkov = len(aux_df[aux_df["Tool"] == "checkov"])
+    #     datree = len(aux_df[aux_df["Tool"] == "datree"])
+    #     kics = len(aux_df[aux_df["Tool"] == "kics"])
+    #     kubeaudit = len(aux_df[aux_df["Tool"] == "kubeaudit"])
+    #     kubelinter = len(aux_df[aux_df["Tool"] == "kubelinter"])
+    #     kubescape = len(aux_df[aux_df["Tool"] == "kubescape"])
+    #     terrascan = len(aux_df[aux_df["Tool"] == "terrascan"])
+
+    #     row = [
+    #         chart_name,
+    #         checkov,
+    #         datree,
+    #         kics,
+    #         kubeaudit,
+    #         kubelinter,
+    #         kubescape,
+    #         terrascan
+    #     ]
+    #     rows.append(row)
+
+    # df = pd.read_csv("results/alert_stats.csv")
+    # for row in rows:
+    #     df.loc[len(df)] = row
+    # df.to_csv("results/alert_stats.csv", index=False)
+
+    ###
+
+    df = pd.read_csv("results/alert_stats.csv")
+    
+    print(f"Min value: {df['Checkov'].min()}")
+    print(f"Max value: {df['Checkov'].max()}")
+    print(f"Average value: {df['Checkov'].mean()}")
+    print(f"Standard deviation: {df['Checkov'].std()}")
+    print(f"Median value: {df['Checkov'].median()}")
+
+    print(f"Min value: {df['Datree'].min()}")
+    print(f"Max value: {df['Datree'].max()}")
+    print(f"Average value: {df['Datree'].mean()}")
+    print(f"Standard deviation: {df['Datree'].std()}")
+    print(f"Median value: {df['Datree'].median()}")
+
+    print(f"Min value: {df['KICS'].min()}")
+    print(f"Max value: {df['KICS'].max()}")
+    print(f"Average value: {df['KICS'].mean()}")
+    print(f"Standard deviation: {df['KICS'].std()}")
+    print(f"Median value: {df['KICS'].median()}")
+
+    print(f"Min value: {df['Kubeaudit'].min()}")
+    print(f"Max value: {df['Kubeaudit'].max()}")
+    print(f"Average value: {df['Kubeaudit'].mean()}")
+    print(f"Standard deviation: {df['Kubeaudit'].std()}")   
+    print(f"Median value: {df['Kubeaudit'].median()}")
+
+    print(f"Min value: {df['Kubelinter'].min()}")
+    print(f"Max value: {df['Kubelinter'].max()}")
+    print(f"Average value: {df['Kubelinter'].mean()}")
+    print(f"Standard deviation: {df['Kubelinter'].std()}")
+    print(f"Median value: {df['Kubelinter'].median()}")
+
+    print(f"Min value: {df['Kubescape'].min()}")
+    print(f"Max value: {df['Kubescape'].max()}")
+    print(f"Average value: {df['Kubescape'].mean()}")
+    print(f"Standard deviation: {df['Kubescape'].std()}")
+    print(f"Median value: {df['Kubescape'].median()}")
+
+    print(f"Min value: {df['Terrascan'].min()}")
+    print(f"Max value: {df['Terrascan'].max()}")
+    print(f"Average value: {df['Terrascan'].mean()}")
+    print(f"Standard deviation: {df['Terrascan'].std()}")
+    print(f"Median value: {df['Terrascan'].median()}")
+
+
+def generate_template_yaml_stats():
+    df = pd.read_csv("results/templates_stats.csv")
+    correct_templates = df[df["Template"] == "Correct"]["Chart"].values
+    print("Correct templates: ", len(correct_templates))
+
+    rows = []
+    for chart_name in correct_templates:
+
+        template_file = f"templates/{chart_name}_template.yaml"
+        with open(template_file, 'r', encoding="utf-8") as file:
+            lines = file.readlines()
+
+        num_lines = len(lines)
+
+        semicolons = 0
+        for line in lines:
+            semicolons += line.count(":")
+
+        three_dash = 0
+        for line in lines:
+            three_dash += line.count("---")
+
+        row = [chart_name, num_lines, semicolons, three_dash]
+        rows.append(row)
+
+    df = pd.read_csv("results/templates_yaml_stats.csv")
+    for row in rows:
+        df.loc[len(df)] = row
+    df.to_csv("results/templates_yaml_stats.csv", index=False)
+
+
+def generate_semicolon_stats(tool: str):
+    df = pd.read_csv("results/templates_yaml_stats.csv")
+    pivot_df = pd.read_csv("results/rq1_pivot_results.csv")
+
+    # tool_df = pd.read_csv("results/chatgpt_queries.csv")
+    tool_df = pd.read_csv("results/rq1_short_results.csv")
+    tool_df = tool_df[tool_df["Tool"] == tool]
+    policies = tool_df["Alert_ID"].unique()
+
+    semicolon_df = pd.DataFrame()
+
+    for policy in policies[1:]:
+
+        column = []
+
+        start = 0
+        end = 100
+        max_semic = 53691
+
+        while start < max_semic:
+
+            counter = 0
+            charts = df[(df['Semicolon'] >= start) & (df['Semicolon'] < end)]["Chart"].values
+            # print(len(charts))
+
+            for chart in charts:
+
+                # Select the cell with "Chart" equal chart and column equal alert.
+                cell = pivot_df.loc[pivot_df["Chart"] == chart, policy].values
+                if cell.size > 0:
+                    counter += int(cell[0])
+
+            column.append(counter)
+
+            start += 100
+            end += 100
+
+        semicolon_df[policy] = column
+
+    # print(semicolon_df.head(10))
+    semicolon_df.to_csv(f"results/semicolon_{tool}_stats.csv", index=False)
+
+
+def semicolon_charts():
+    df = pd.read_csv("results/templates_yaml_stats.csv")
+    charts = []
+
+    start = 0
+    end = 100
+    max_semic = 53691
+
+    while start < max_semic:
+        aux_charts = df[(df['Semicolon'] >= start) & (df['Semicolon'] < end)]["Chart"].values
+
+        try:
+            chart_name = aux_charts[0]
+            charts.append(chart_name)
+        except IndexError:
+            pass
+
+        start += 100
+        end += 100
+
+    print("")
+    print(len(charts))
+    print("")
+
+    df = pd.read_csv("results/rq1_short_results.csv")
+    rows = []
+
+    for chart_name in charts:
+        aux_df = df[df["Chart"] == chart_name]
+
+        # Iterate aux_df
+        for _, row in aux_df.iterrows():
+
+            resource = ast.literal_eval(row["Resource"])
+            paths = {
+                "resource_path": resource[0],
+                "obj_path": resource[1]
             }
-            checks_list.append(aux_dict)
+            resource_type = paths["resource_path"].split("/")[0]
+            query = "You are a software engineer working on a Kubernetes project. You need to refactor the following " + resource_type + " YAML resource because " + row["Description"].lower() + ". You must only generate YAML code between --- characters, with no additional text or description."
 
-    # print("\n------\n")
-    # print(checks_list)
+            new_row = [
+                chart_name,
+                row["Alert_ID"],
+                row["Tool"],
+                row["Resource"],
+                query,
+                row["Original_YAML"],
+            ]
+            rows.append(new_row)
 
-    # Save results to CSV
-    save_to_csv(chart_name, checks_list, "terrascan")
+    df = pd.read_csv("results/chatgpt_queries.csv")
+    for row in rows:
+        df.loc[len(df)] = row
+    df.to_csv("results/chatgpt_queries.csv", index=False)
+
+    print(len(df))
+
+
+def alert_stats():
+    """ Get the number of alerts for each tool.
+    """
+
+    df = pd.read_csv("results/rq1_results.csv")
+
+    print("Total alerts: " + str(len(df)))
+    # Print the top ten values of the "Alert_ID" column
+    print(df["Alert_ID"].value_counts().head(10))
+
+    df = df[df["Tool"] == "kubeaudit"]
+    df = df.drop_duplicates(subset=["Chart"])
+    alert_files = df["Chart"].values
+    print("RQ1: " + str(len(alert_files)))
+
+    df = pd.read_csv("results/tools_stats.csv")
+    df = df[df["Kubeaudit"] == "OK"]
+    tool_files = df["Chart"].values
+    print("Tool stats: " + str(len(df)))
+
+    missing = []
+    for chart_name in tool_files:
+        if chart_name not in alert_files:
+            missing.append(chart_name)
+
+    print("Missing: " + str(len(missing)))
+    print(missing)
+
+
+def generate_short_query_dataset():
+    """ Generate a short dataset for the LLM queries.
+    """
+
+    df = pd.read_csv("results/rq1_results.csv")
+
+    # Set the column "Chart" and "Alert_ID" as index
+    df = df.set_index(["Chart", "Standard_ID"])
+
+    # Drop duplicates in the index
+    df = df[~df.index.duplicated(keep='first')]
+    # Reset the index
+    df = df.reset_index()
+
+    print(len(df))
+
+    # Sort the dataframe by occurrences in the "Standard_ID" column
+    df = df.sort_values(by=["Standard_ID"], ascending=False)
+    # Print top ten
+    print(df["Standard_ID"].value_counts().head(10))
+
+    # Save the DataFrame to a CSV file
+    # df.to_csv("results/rq1_short_results.csv")
+
+
+def llm_query_stats():
+    """ Get the number of queries for each chart.
+    """
+
+    # df = pd.read_csv("results/rq1_results.csv")
+
+    # rq1_stats_df = pd.read_csv("results/rq1_stats.csv")
+    # # CSV: Tool,Alert_ID,Standard_ID,Description,Charts,#_Charts,Occurrences
+
+    # for _, row in df.iterrows():
+
+    #     if row["Alert_ID"] in rq1_stats_df["Alert_ID"].values:
+
+    #         if row["Chart"] not in rq1_stats_df.loc[rq1_stats_df["Alert_ID"] == row["Alert_ID"], "Charts"].values:
+    #             rq1_stats_df.loc[rq1_stats_df["Alert_ID"] == row["Alert_ID"], "Charts"] += f", {row['Chart']}"
+    #             rq1_stats_df.loc[rq1_stats_df["Alert_ID"] == row["Alert_ID"], "#_Charts"] += 1
+
+    #         rq1_stats_df.loc[rq1_stats_df["Alert_ID"] == row["Alert_ID"], "Occurrences"] += 1
+
+    #     else:
+
+    #         new_row = [
+    #             row["Tool"],
+    #             row["Alert_ID"],
+    #             row["Standard_ID"],
+    #             row["Description"],
+    #             row["Chart"],
+    #             1,
+    #             1
+    #         ]
+    #         rq1_stats_df.loc[len(rq1_stats_df)] = new_row
+
+    # rq1_stats_df.to_csv("results/rq1_stats.csv", index=False)
+
+    # # Print the number of rows in the DataFrame
+    # print(f"Number of rows: {len(df)}")
+    # # Print the min value of the 'Characters' column
+    # print(f"Min value: {df['Characters'].min()}")
+    # # Print the max value of the 'Characters' column
+    # print(f"Max value: {df['Characters'].max()}")
+    # # Print the average value of the 'Characters' column
+    # print(f"Average value: {df['Characters'].mean()}")
+    # # Print the standard deviation of the 'Characters' column
+    # print(f"Standard deviation: {df['Characters'].std()}")
+    # # Print the median value of the 'Characters' column
+    # print(f"Median value: {df['Characters'].median()}")
+
+    ###
+
+    df = pd.read_csv("results/rq1_results.csv")
+    # Get the list of unique values from 'Chart' column
+    templates = df["Chart"].unique()
+
+    llm_query_df = pd.read_csv("results/llm_query_stats.csv")
+
+    # CSV: Chart | Total_queries | Tools_unique | Standard_unique | Max_chars | Min_chars | Avg_chars
+    for idx, chart_name in enumerate(templates):
+        aux_df = df[df["Chart"] == chart_name]
+
+        new_row = [
+            idx,
+            chart_name,
+            len(aux_df),
+            len(aux_df["Alert_ID"].unique()),
+            len(aux_df["Standard_ID"].unique()),
+            aux_df["Characters"].min(),
+            aux_df["Characters"].max(),
+            round(aux_df["Characters"].mean(), 2)
+        ]
+
+        llm_query_df.loc[len(llm_query_df)] = new_row
+
+    llm_query_df.to_csv("results/llm_query_stats.csv", index=False)
+
+    # Print sum of the 'Total_queries' column
+    print(f"Total queries: {llm_query_df['Total_queries'].sum()}")
+    # Print sum of the 'Tools_unique' column
+    print(f"Total tools uniques: {llm_query_df['Tools_unique'].sum()}")
+    # Print sum of the 'Standard_unique' column
+    print(f"Total standard uniques: {llm_query_df['Standard_unique'].sum()}")
+
+    ###
+
+    df = pd.read_csv("results/llm_query_stats.csv")
+
+    print(f"Min value: {df['Min_chars'].min()}")
+    print(f"Max value: {df['Max_chars'].max()}")
+    print(f"Average value: {df['Mean_chars'].mean()}")
+    print(f"Standard deviation: {df['Mean_chars'].std()}")
+    print(f"Median value: {df['Mean_chars'].median()}")
+    print(f"25th percentile: {df['Mean_chars'].quantile(0.25)}")
+    print(f"75th percentile: {df['Mean_chars'].quantile(0.75)}")
 
 
 def parse_output():
     """ Parse the output of a chart analyzer tool.
     """
 
-    df = pd.read_csv("results/chart_stats.csv")
-    templates = df[df["Template"] == "OK"]["Charts"].values
+    # df = pd.read_csv("results/rq1_results.csv")
+    # print(df["Standard_ID"].value_counts().head(10))
+    # print(df["CIS_Cluster"].value_counts().head(10))
 
-    for idx, chart_name in enumerate(templates):
-        print(f"{idx} - Processing {chart_name}...")
+    # Count alert occurrences
+    # count_alert_occurrences()
 
-        parse_checkov(chart_name)
-        parse_datree(chart_name)
-        parse_kics(chart_name)
+    # alert_stats()
 
-        parse_kubelinter(chart_name)
-        parse_kubeaudit(chart_name)
+    # generate_short_query_dataset()
 
-        parse_kubescape(chart_name)
-        parse_terrascan(chart_name)
+    semicolon_charts()
+
+    # llm_query_stats()
+
+    # df = pd.read_csv("results/tools_stats.csv")
+    # templates = df[df["Checkov"] == "OK"]["Chart"].values
+    # print("Number of charts: " + str(len(templates)))
+
+    # rows = []
+    # for idx, chart_name in enumerate(templates):
+    #     print(f"{idx} - Processing {chart_name}...")
+
+    #     # aux_rows = parse_checkov(chart_name)
+    #     # aux_rows = parse_datree(chart_name)
+    #     # aux_rows = parse_kics(chart_name)
+    #     aux_rows = parse_kubeaudit(chart_name)
+    #     # aux_rows = parse_kubelinter(chart_name)
+    #     # aux_rows = parse_kubescape(chart_name)
+    #     # aux_rows = parse_terrascan(chart_name)
+
+    #     rows.extend(aux_rows)
+
+    # df = pd.read_csv("results/rq1_results.csv")
+    # for row in rows:
+    #     df.loc[len(df)] = row
+    # df.to_csv("results/rq1_results.csv", index=False)
+
+
+class CISLookup:
+    """This class is used to lookup the CIS Benchmark cluster ID.
+    """
+
+    _LOOKUP = {
+        "check_10": "Pod Security Policy",
+        "check_11": "Pod Security Policy",
+        "check_12": "Pod Security Policy",
+        "check_21": "Pod Security Policy",
+        "check_22": "Pod Security Policy",
+        "check_23": "Pod Security Policy",
+        "check_24": "Pod Security Policy",
+        "check_26": "General Policies",
+        "check_28": "Pod Security Policy",
+        "check_30": "General Policies",
+        "check_31": "General Policies",
+        "check_33": "Secrets Management",
+        "check_34": "Pod Security Policy",
+        "check_35": "RBAC and Service Accounts",
+        "check_36": "RBAC and Service Accounts",
+        "check_37": "RBAC and Service Accounts",
+        "check_39": "RBAC and Service Accounts",
+        "check_40": "Network Policies and CNI",
+        "check_54": "RBAC and Service Accounts",
+        "check_59": "RBAC and Service Accounts",
+        "check_70": "Network Policies and CNI",
+        "check_77": "RBAC and Service Accounts",
+        "check_78": "RBAC and Service Accounts",
+        "check_80": "RBAC and Service Accounts"
+    }
+
+    @classmethod
+    def get_value(cls, key) -> Callable:
+        return cls._LOOKUP.get(key)
 
 
 class CheckovLookup:
@@ -1126,10 +1546,15 @@ class CheckovLookup:
         "CKV_K8S_22": "check_27", 
         "CKV_K8S_23": "check_28", 
         "CKV_K8S_25": "check_34", 
+        "CKV_K8S_26": "check_29",
         "CKV_K8S_28": "check_34", 
         "CKV_K8S_29": "check_30", 
         "CKV_K8S_31": "check_31", 
+        "CKV_K8S_32": "check_31",
+        "CKV_K8S_33": "check_38",
         "CKV_K8S_35": "check_33", 
+        "CKV_K8S_36": "check_34",
+        "CKV_K8S_24": "check_34",
         "CKV_K8S_37": "check_34", 
         "CKV_K8S_38": "check_35", 
         "CKV_K8S_39": "check_34", 
@@ -1150,6 +1575,11 @@ class CheckovLookup:
         "CKV2_K8S_2": "check_54",
         "CKV_K8S_27": "check_15",
         "CKV2_K8S_1": "check_54",
+        "CKV_K8S_153": "check_73",
+        "CKV_K8S_119": "check_74",
+        "CKV_K8S_116": "check_74",
+        "CKV_K8S_117": "check_75",
+        "CKV_K8S_34": "check_72",
     }
 
     @classmethod
@@ -1210,6 +1640,7 @@ class DatreeLookup:
         "CONTAINERS_INCORRECT_KEY_HOSTPATH": "check_47",
         "CIS_INVALID_ROLE_CLUSTER_ADMIN": "check_65",
         "INGRESS_INCORRECT_HOST_VALUE_PERMISSIVE": "check_66",
+        "WORKLOAD_INVALID_LABELS_VALUE": "check_43",
     }
 
     @classmethod
@@ -1284,6 +1715,41 @@ class KICSLookup:
         "b23e9b98-0cb6-4fc9-b257-1f3270442678": "check_60",
         "c589f42c-7924-4871-aee2-1cede9bc7cbc": "check_54",
         "a6f34658-fdfb-4154-9536-56d516f65828": "check_15",
+        "3ca03a61-3249-4c16-8427-6f8e47dda729": "check_57",
+        "6b896afb-ca07-467a-b256-1a0077a1c08e": "check_39",
+        "94b76ea5-e074-4ca2-8a03-c5a606e30645": "check_51",
+        "d740d048-8ed3-49d3-b77b-6f072f3b669e": "check_76",
+        "dd667399-8d9d-4a8d-bbb4-e49ab53b2f52": "",
+        "9296f1cc-7a40-45de-bd41-f31745488a0e": "",
+        "8320826e-7a9c-4b0b-9535-578333193432": "check_54",
+        "6d173be7-545a-46c6-a81d-2ae52ed1605d": "check_72",
+        "8b862ca9-0fbd-4959-ad72-b6609bdaa22d": "check_72",
+        "1e749bc9-fde8-471c-af0c-8254efd2dee5": "check_77",
+        "38fa11ef-dbcc-4da8-9680-7e1fd855b6fb": "check_78",
+        "a31b7b82-d994-48c4-bd21-3bab6c31827a": "check_76",
+        "a33e9173-b674-4dfb-9d82-cf3754816e4b": "check_12",
+        "87554eef-154d-411d-bdce-9dbd91e56851": "check_22",
+        "80f93444-b240-4ebb-a4c6-5c40b76c04ea": "check_11",
+        "c48e57d3-d642-4e0b-90db-37f807b41b91": "check_21",
+        "7307579a-3abb-46ad-9ce5-2a915634d5c8": "check_34",
+        "de4421f1-4e35-43b4-9783-737dd4e4a47e": "check_47",
+        "91dacd0e-d189-4a9c-8272-5999a3cc32d9": "check_10",
+        "69bbc5e3-0818-4150-89cc-1e989b48f23b": "check_79",
+        "d45330fd-f58d-45fb-a682-6481477a0f84": "check_80",
+        "afa36afb-39fe-4d94-b9b6-afb236f7a03d": "check_81",
+        "a77f4d07-c6e0-4a48-8b35-0eeb51576f4f": "check_82",
+        "73e251f0-363d-4e53-86e2-0a93592437eb": "check_82",
+        "13a49a2e-488e-4309-a7c0-d6b05577a5fb": "check_82",
+        "cbd2db69-0b21-4c14-8a40-7710a50571a9": "check_82",
+        "ec18a0d3-0069-4a58-a7fb-fbfe0b4bbbe0": "check_82",
+        "6a68bebe-c021-492e-8ddb-55b0567fb768": "check_82",
+        "510d5810-9a30-443a-817d-5c1fa527b110": "check_83",
+        "da9f3aa8-fbfb-472f-b5a1-576127944218": "check_82",
+        "768aab52-2504-4a2f-a3e3-329d5a679848": "check_82",
+        "35c0a471-f7c8-4993-aa2c-503a3c712a66": "check_82",
+        "e0099af2-fe17-411f-9991-0de28fe15f3c": "check_82",
+        "14abda69-8e91-4acb-9931-76e2bee90284": "check_82",
+        "2f491173-6375-4a84-b28e-a4e2b9a58a69": "check_82"
     }
 
     @classmethod
@@ -1328,6 +1794,8 @@ class KubelinterClass:
         "non-existent-service-account": "check_58",
         "pdb-max-unavailable": "check_67",
         "ssh-port": "check_68",
+        "no-extensions-v1beta": "check_51",
+        "pdb-min-available": "check_71",
     }
 
     @classmethod
@@ -1373,7 +1841,8 @@ class KubeauditClass:
         "SensitivePathsMounted": "check_47",
         "RunAsUserPSCRoot": "check_13",
         "RunAsUserCSCRoot": "check_13",
-        "PrivilegedTrue": "check_21"
+        "PrivilegedTrue": "check_21",
+        "MissingDefaultDenyIngressAndEgressNetworkPolicy": "check_70",
     }
 
     @classmethod
@@ -1401,14 +1870,17 @@ class KubescapeClass:
         "C-0075": "check_25",
         "C-0004": "check_1",
         "C-0009": "check_4",
+        "C-0012": "check_69",
         "C-0050": "check_4",
         "C-0056": "check_7",
         "C-0018": "check_8",
         "C-0038": "check_10",
         "C-0041": "check_12",
+        "C-0270": "check_5",
         "C-0074": "check_15",
         "C-0057": "check_21",
         "C-0016": "check_22",
+        "C-0260": "check_40",
         "C-0086": "check_22",
         "C-0046": "check_23",
         "C-0061": "check_26",
@@ -1429,7 +1901,8 @@ class KubescapeClass:
         "C-0031": "check_54", 
         "C-0065": "check_54",
         "C-0063": "check_54",
-        "C-0042": "check_68"
+        "C-0042": "check_68",
+        "C-0271": "check_2",
     }
 
     @classmethod

@@ -20,23 +20,9 @@ import os
 import pandas as pd
 import ast
 import math
-from llm_apis import query_local_llm
+from llm_apis import query_gemini, query_claude_3, query_llama_3, query_chatgpt
 from difflib import Differ
-from pprint import pprint
-
-
-def save_to_csv(rq2_rows):
-    """ Save the results to a CSV file.
-    """
-
-    # Open csv file
-    df = pd.read_csv("results/rq2_results.csv")
-    # print(df.head())
-
-    # Add each list in rq2_rows to the df
-    for row in rq2_rows:
-        df.loc[len(df)] = row
-    df.to_csv("results/rq2_results.csv", index=False)
+from tqdm import tqdm
 
 
 def parse_yaml_template(chart_name: str) -> list:
@@ -56,9 +42,11 @@ def parse_yaml_template(chart_name: str) -> list:
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
-    except yaml.scanner.ScannerError:
+    except yaml.scanner.ScannerError as e:
+        print(f"Error parsing the YAML file: {e}")
         return []
-    except yaml.constructor.ConstructorError:
+    except yaml.constructor.ConstructorError as e:
+        print(f"Error parsing the YAML file: {e}")
         return []
 
     # Remove null document (--- null) from template
@@ -130,26 +118,28 @@ def get_resource_snippet(paths: dict, template: dict) -> dict:
         if check_resource_path(paths["resource_path"].split("/"), document):
             resource = document
 
-            # For now, ignore obg_path
-            # Otherwise, add a new column "Original_snippet" to the df, 
-            # with the snippet of the original yaml.
+            if paths["obj_path"]:
+                for key in paths["obj_path"].split("/"):
 
-            # if paths["obj_path"]:
-            #     for key in paths["obj_path"].split("/"):
+                    if not key:
+                        break
 
-            #         if not key:
-            #             break
+                    if key == "env":
+                        break
 
-            #         if key == "env":
-            #             break
+                    if key == "containers" and key not in resource:
+                        if "template" in resource:
+                            resource = resource["template"]
+                        if "spec" in resource:
+                            resource = resource["spec"]
 
-            #         if key == "containers" and key not in resource:
-            #             resource = resource["template"]["spec"]
+                    if key.isdigit():
+                        key = int(key)
 
-            #         if key.isdigit():
-            #             key = int(key)
-
-            #         resource = resource[key]
+                    try:
+                        resource = resource[key]
+                    except (TypeError, IndexError, KeyError):
+                        return resource
 
     return resource
 
@@ -175,9 +165,31 @@ def save_yaml_snippet(snippet: str, snippet_type: str):
         yaml.dump(snippet, file, sort_keys=False)
 
 
-def build_query(rq1_df: pd.DataFrame):
+def build_query():
 
-    rq2_rows = []
+    df = pd.read_csv("results/llm_chatgpt_short_answers.csv")
+    queries = pd.read_csv("results/llm_short_queries.csv")
+
+    indexes = []
+
+    # Iterate df rows
+    for idx, row in tqdm(queries.iterrows()):
+
+        for _, answer in df.iterrows():
+            if row["Chart"] == answer["Chart"] and row["Alert_ID"] == answer["Alert_ID"]:
+                indexes.append(idx)
+
+    print(len(indexes))
+    print(indexes)
+
+    # Save the indexes to a CSV file
+    pd.DataFrame(indexes).to_csv("results/chatgpt_index.csv", index=False)
+
+    exit(0)
+
+
+    rq1_df = pd.read_csv("results/rq1_short_results.csv")
+    df = pd.read_csv("results/llm_queries.csv")
 
     # Iterate over each df row
     for _, row in rq1_df.iterrows():
@@ -191,27 +203,22 @@ def build_query(rq1_df: pd.DataFrame):
         resource_type = paths["resource_path"].split("/")[0]
 
         # Build the query
-        query = "You are a software engineer working on a Kubernetes project. You need to refactor the following " + resource_type + " YAML resource because " + row["Description"].lower() + ". Output only the refactored YAML. "
+        query = "You are a software engineer working on a Kubernetes project. You need to refactor the following " + resource_type + " YAML resource because " + row["Description"].lower() + ". You must only generate YAML code between --- characters, with no additional text or description."
 
         aux = [
             row["Chart"],
-            row["Tool"],
             row["Alert_ID"],
-            row["Resource"],
-            row["Original_YAML"],
-            query
+            query,
+            row["Original_YAML"]
         ]
 
-        rq2_rows.append(aux)
-
-    return rq2_rows
+        df.loc[len(df)] = aux
+    df.to_csv("results/llm_queries.csv", index=False)
 
 
 def validate_syntax():
     """Validate the syntax of the YAML snippet.
     """
-
-    return 0
 
     # Run kubeconfom on the snippet to validate the syntax
     os.system("kubeconform -summary -output json tmp_snippets/original_snippet.yaml > tmp_snippets/syntax.json")
@@ -275,7 +282,8 @@ def evaluate_llm_answers(rq2_rows):
         save_yaml_snippet(row[4], "original")
         save_yaml_snippet(row[7], "refactored")
 
-        syntax_error = validate_syntax()
+        # syntax_error = validate_syntax()
+        syntax_error = 0
         row.append(syntax_error)
 
         with open("tmp_snippets/original_snippet.yaml", "r", encoding="utf-8") as file:
@@ -292,24 +300,81 @@ def evaluate_llm_answers(rq2_rows):
     return rq2_rows
 
 
-def query_llm(chart_name: str):
+def query_stats():
+    """Compute some stats about the queries.
+    """
 
-    # Parse rq1_results csv file
-    rq1_df = pd.read_csv("results/rq1_results.csv")
+    df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    # print(len(df)) 7.837
+
+    print(f"Min value: {df['Input_Tokens'].min()}")
+    print(f"Max value: {df['Input_Tokens'].max()}")
+    print(f"Average value: {df['Input_Tokens'].mean()}")
+    print(f"Standard deviation: {df['Input_Tokens'].std()}")
+    print(f"Median value: {df['Input_Tokens'].median()}")
+    print(f"25th percentile: {df['Input_Tokens'].quantile(0.25)}")
+    print(f"75th percentile: {df['Input_Tokens'].quantile(0.75)}")
+
+    print("")
+
+    print(f"Min value: {df['Output_Tokens'].min()}")
+    print(f"Max value: {df['Output_Tokens'].max()}")
+    print(f"Average value: {df['Output_Tokens'].mean()}")
+    print(f"Standard deviation: {df['Output_Tokens'].std()}")
+    print(f"Median value: {df['Output_Tokens'].median()}")
+    print(f"25th percentile: {df['Output_Tokens'].quantile(0.25)}")
+    print(f"75th percentile: {df['Output_Tokens'].quantile(0.75)}")
+
+
+def query_llm():
+    """Query LLM to generate fixes.
+    """
+
+    # build_query()
+
+    # query_stats()
+
+    ###############
+
+    # Total: 297,424 queries
+    # Total (without Kubeaudit & Terrascan): 229,183 queries
 
     ###
-    rq1_df = rq1_df[:2]
+
+    # queries = pd.read_csv("results/llm_short_queries.csv")
+    # print(queries.iloc[103400])
+
+    # claude = pd.read_csv("results/llm_claude_answers.csv")
+    # print(claude.iloc[103399])
+
+    # idx = 110000
+    # jdx = 120000
+
+    # query_claude_3(idx, jdx)
+
     ###
 
-    # Build the query (list of rows --- lists)
-    rq2_rows = build_query(rq1_df)
+    # queries = pd.read_csv("results/chatgpt_queries.csv")
+    # print(queries.iloc[39051])
 
-    # Query LLM models
-    rq2_rows = query_local_llm(rq2_rows)
+    # llama = pd.read_csv("results/llm_llama_answers.csv")
+    # print(llama.iloc[39051])
 
-    # Evaluate LLM answers
-    # Add Changed, Added, Removed columns to the df
-    rq2_rows = evaluate_llm_answers(rq2_rows)
+    # idx = 0
+    # jdx = 7837
 
-    # Save the results to a CSV file
-    save_to_csv(rq2_rows)
+    # query_llama_3(idx, jdx)
+
+    ###
+
+    # idx = 500
+    # jdx = 1000
+
+    # query_gemini(idx, jdx)
+
+    ###
+
+    idx = 29
+    jdx = 43
+
+    query_chatgpt(idx, jdx)
