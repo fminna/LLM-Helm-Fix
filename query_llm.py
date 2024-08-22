@@ -167,27 +167,6 @@ def save_yaml_snippet(snippet: str, snippet_type: str):
 
 def build_query():
 
-    df = pd.read_csv("results/llm_chatgpt_short_answers.csv")
-    queries = pd.read_csv("results/llm_short_queries.csv")
-
-    indexes = []
-
-    # Iterate df rows
-    for idx, row in tqdm(queries.iterrows()):
-
-        for _, answer in df.iterrows():
-            if row["Chart"] == answer["Chart"] and row["Alert_ID"] == answer["Alert_ID"]:
-                indexes.append(idx)
-
-    print(len(indexes))
-    print(indexes)
-
-    # Save the indexes to a CSV file
-    pd.DataFrame(indexes).to_csv("results/chatgpt_index.csv", index=False)
-
-    exit(0)
-
-
     rq1_df = pd.read_csv("results/rq1_short_results.csv")
     df = pd.read_csv("results/llm_queries.csv")
 
@@ -208,12 +187,16 @@ def build_query():
         aux = [
             row["Chart"],
             row["Alert_ID"],
+            row["Tool"],
+            row["Resource"],
             query,
             row["Original_YAML"]
         ]
 
         df.loc[len(df)] = aux
     df.to_csv("results/llm_queries.csv", index=False)
+
+    print(len(df))
 
 
 def validate_syntax():
@@ -342,13 +325,13 @@ def query_llm():
     ###
 
     # queries = pd.read_csv("results/llm_short_queries.csv")
-    # print(queries.iloc[103400])
+    # print(queries.iloc[229182])
 
     # claude = pd.read_csv("results/llm_claude_answers.csv")
-    # print(claude.iloc[103399])
+    # print(claude.iloc[229183])
 
-    # idx = 110000
-    # jdx = 120000
+    # idx = 210000
+    # jdx = 229183
 
     # query_claude_3(idx, jdx)
 
@@ -367,14 +350,20 @@ def query_llm():
 
     ###
 
-    # idx = 500
-    # jdx = 1000
+    # idx = 1000
+    # jdx = 7837
 
     # query_gemini(idx, jdx)
 
     ###
 
-    idx = 29
-    jdx = 43
+    # queries = pd.read_csv("results/llm_short_queries.csv")
+    # print(queries.iloc[30000])
 
-    query_chatgpt(idx, jdx)
+    # chatgpt = pd.read_csv("results/llm_chatgpt_answers.csv")
+    # print(chatgpt.iloc[30000])
+
+    # idx = 130000
+    # jdx = 140000
+
+    # query_chatgpt(idx, jdx)

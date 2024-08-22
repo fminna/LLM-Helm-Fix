@@ -461,13 +461,13 @@ def get_kubel_container_path(template: dict, resource_path: str, cont_name: str)
                 cont_path += "jobTemplate/spec/template/spec/"
 
             for idx, container in enumerate(document["containers"]):
-                if container["name"] == cont_name:
+                if "name" in container and container["name"] == cont_name:
                     aux_path = "containers/" + str(idx)
                     break
 
             if not aux_path and "initContainers" in document:
                 for idx, container in enumerate(document["initContainers"]):
-                    if container["name"] == cont_name:
+                    if "name" in container and container["name"] == cont_name:
                         aux_path = "initContainers/" + str(idx)
                         break
 

@@ -20,10 +20,23 @@ import pandas as pd
 import yaml
 import os
 import json
+import ast
+
+global to_check
+to_check = []
+
+def check_paths(paths, resource):
+    """ Check if the paths match the resource. """
+
+    aux_resource = [paths["resource_path"], paths["obj_path"]]
+    resource = ast.literal_eval(resource)
+
+    if aux_resource == resource:
+        return True
 
 
-def parse_checkov(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_checkov(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -33,16 +46,16 @@ def parse_checkov(alert_id, resource):
 
     failed = "Fixed"
 
-    file_path = "tmp_snippets/refactored.yaml"
+    file_path = f"snippets/{llm}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
     except yaml.scanner.ScannerError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
     except yaml.constructor.ConstructorError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
 
     if "results" in results and "failed_checks" in results["results"]:
         for check in results["results"]["failed_checks"]:
@@ -50,16 +63,15 @@ def parse_checkov(alert_id, resource):
 
             if check_id == alert_id:
                 paths = get_ckv_resource_path(check, template)
-                aux_resource = [paths["resource_path"], paths["obj_path"]]
-                if aux_resource == resource:
-                    failed = "Failed"
-                    break
+                if check_paths(paths, resource):
+                    to_check.append(idx)
+                    return "Not_Fixed"
 
     return failed
 
 
-def parse_datree(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_datree(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -77,36 +89,34 @@ def parse_datree(alert_id, resource):
 
                 if check_id == alert_id:
                     paths = get_datree_path(occurrence)
-                    aux_resource = [paths["resource_path"], paths["obj_path"]]
-
-                    if aux_resource == resource:
-                        failed = "Failed"
-                        break
+                    if check_paths(paths, resource):
+                        to_check.append(idx)
+                        return "Not_Fixed"
 
     return failed
 
 
-def parse_kics(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_kics(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
-    except json.decoder.JSONDecodeError:
+    except (json.decoder.JSONDecodeError, FileNotFoundError):
         print("Error: Datree results file is empty.")
         return
 
     failed = "Fixed"
 
-    file_path = "tmp_snippets/refactored.yaml"
+    file_path = f"snippets/{llm}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
     except yaml.scanner.ScannerError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
     except yaml.constructor.ConstructorError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
 
     for check in results["queries"]:
         for file in check['files']:
@@ -118,17 +128,15 @@ def parse_kics(alert_id, resource):
                     std_check_id = "NOT_MAPPED"
 
                 paths = get_kics_path(file, template, std_check_id)
-                aux_resource = [paths["resource_path"], paths["obj_path"]]
-
-                if aux_resource == resource:
-                    failed = "Failed"
-                    break
+                if check_paths(paths, resource):
+                    to_check.append(idx)
+                    return "Not_Fixed"
 
     return failed
 
 
-def parse_kubeaudit(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_kubeaudit(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -138,33 +146,32 @@ def parse_kubeaudit(alert_id, resource):
 
     failed = "Fixed"
 
-    file_path = "tmp_snippets/refactored.yaml"
+    file_path = f"snippets/{llm}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
     except yaml.scanner.ScannerError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
     except yaml.constructor.ConstructorError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
 
-    for check in results["checks"]:
-        check_id = check['AuditResultName']
+    if "checks" in results:
+        for check in results["checks"]:
+            check_id = check['AuditResultName']
 
-        if check_id == alert_id:
-            paths = get_kubeaudit_path(check, template)
-            aux_resource = [paths["resource_path"], paths["obj_path"]]
-
-            if aux_resource == resource:
-                failed = "Failed"
-                break
+            if check_id == alert_id:
+                paths = get_kubeaudit_path(check, template)
+                if check_paths(paths, resource):
+                    to_check.append(idx)
+                    return "Not_Fixed"
 
     return failed
 
 
-def parse_kubelinter(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_kubelinter(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -174,16 +181,16 @@ def parse_kubelinter(alert_id, resource):
 
     failed = "Fixed"
 
-    file_path = "tmp_snippets/refactored.yaml"
+    file_path = f"snippets/{llm}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
     except yaml.scanner.ScannerError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
     except yaml.constructor.ConstructorError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
 
     if "Reports" in results and results["Reports"]:
 
@@ -192,17 +199,15 @@ def parse_kubelinter(alert_id, resource):
 
             if check_id == alert_id:
                 paths = get_kubelinter_path(check, template)
-                aux_resource = [paths["resource_path"], paths["obj_path"]]
-
-                if aux_resource == resource:
-                    failed = "Failed"
-                    break
+                if check_paths(paths, resource):
+                    to_check.append(idx)
+                    return "Not_Fixed"
 
     return failed
 
 
-def parse_kubescape(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_kubescape(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -243,9 +248,9 @@ def parse_kubescape(alert_id, resource):
 
             # Fix for all resources
             for resource_path in resource_list:
-                # Extract only failed checks "status": { "status": "failed" }
+                # Extract only failed checks "status": { "status": "Not_Fixed" }
                 for control in result["controls"]:
-                    if control["status"]["status"] == "failed":
+                    if control["status"]["status"] == "Not_Fixed":
 
                         check_id = control['controlID']
                         if check_id == alert_id:
@@ -256,16 +261,15 @@ def parse_kubescape(alert_id, resource):
                                 }
                                 if "paths" in rule:
                                     paths = get_kubescape_path(rule, control, paths)
-                                    aux_resource = [paths["resource_path"], paths["obj_path"]]
-                                    if aux_resource == resource:
-                                        failed = "Failed"
-                                        break
+                                    if check_paths(paths, resource):
+                                        to_check.append(idx)
+                                        return "Not_Fixed"
 
     return failed
 
 
-def parse_terrascan(alert_id, resource):
-    json_path = "tmp_snippets/results.json"
+def parse_terrascan(idx, alert_id, resource, llm):
+    json_path = f"snippets/{llm}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
@@ -275,141 +279,212 @@ def parse_terrascan(alert_id, resource):
 
     failed = "Fixed"
 
-    file_path = "tmp_snippets/refactored.yaml"
+    file_path = f"snippets/{llm}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
     except yaml.scanner.ScannerError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
     except yaml.constructor.ConstructorError as e:
         print(f"Error parsing the YAML file: {e}")
-        return "Failed"
+        return "Not_Fixed"
 
     for run in results["runs"]:
         for check in run["results"]:
-            paths = get_terrascan_path(check, template)
-            aux_resource = [paths["resource_path"], paths["obj_path"]]
-            if aux_resource == resource:
-                failed = "Failed"
-                break
+            if check["ruleId"] == alert_id:
+                paths = get_terrascan_path(check, template)
+                if check_paths(paths, resource):
+                    to_check.append(idx)
+                    return "Not_Fixed"
 
     return failed
 
 
-def evaluate_fixes():
+def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
     """ Evaluate the fixes generated by LLM.
     """
 
-    # df = pd.read_csv("results/llm_llama_answers.csv")
-    # df = pd.read_csv("results/llm_claude_answers.csv")
+    df = ""
 
-    # df = pd.read_csv("results/llm_gemini_answers.csv")
-    df = pd.read_csv("results/llm_gemini_answers.csv")
-    # Columns: 'Chart', 'Alert_ID', 'Query', 'LLM', 'Input_Tokens', 'Refactored_YAML', 'Output_Tokens'
+    if llm_name == "llama":
+        df = pd.read_csv("results/llm_llama_answers.csv")
+        llm = "Llama_3_70b"
+    elif llm_name == "claude":
+        df = pd.read_csv("results/llm_claude_answers.csv")
+        # df = pd.read_csv("results/llm_claude_answers2.csv")
+        llm = "Claude_3_Sonnet"
+    elif llm_name == "gemini":
+        df = pd.read_csv("results/llm_gemini_answers.csv")
+        llm = "Gemini_1.5"
+    elif llm_name == "chatgpt":
+        df = pd.read_csv("results/llm_chatgpt_answers.csv")
+        llm = "ChatGPT-4o-mini-2024-07-18"
 
-    # Copy the Tool and Resource columns in the answer dataframes, for the three LLMs.
-    # aux_df = pd.read_csv("results/llm_new_queries.csv")
-    # df["Tool"] = aux_df["Tool"].to_numpy()
-    # df["Resource"] = aux_df["Resource"].to_numpy()
-    # df["Original_YAML"] = aux_df["Original_YAML"].to_numpy()
-    # df.to_csv("results/llm_llama_answers.csv", index=False)
-    # exit(0)
-
-    # LLM = "Llama_3_70b"
-    # LLM = "Claude_3_Sonnet"
-    LLM = "Gemini_1.5"
-    # LLM = "ChatGPT-4o-mini-2024-07-18"
+    file_name = "results/llm_llama_fix.csv"
+    if llm_name == "claude":
+        file_name = "results/llm_claude_fix.csv"
+    elif llm_name == "gemini":
+        file_name = "results/llm_gemini_fix.csv"
+    elif llm_name == "chatgpt":
+        file_name = "results/llm_chatgpt_fix.csv"
 
     rows = []
-    # Iterate df by rows
-    for idx, row in df.iterrows():
+    counter = 0
+
+    for idx, row in df.iloc[idx:jdx].iterrows():
+
         chart_name = row["Chart"]
         alert_id = row["Alert_ID"]
 
+        refactored_path = f"snippets/{llm}/refactored{idx}.yaml"
+        original_path = f"snippets/{llm}/original{idx}.yaml"
+        result_path = f"snippets/{llm}/results{idx}.json"
+
         print(f"{idx} - Processing fix {chart_name} - {alert_id} ...")
+        counter += 1
+
         fixed = "Fixed"
 
         if row["Refactored_YAML"] == "Failed to generate a response.":
-            fixed = "Failed"
+            fixed = "Not_Fixed"
 
         if fixed == "Fixed":
             # Save the YAML files
-            refactored_yaml = yaml.safe_load(row["Refactored_YAML"])
-            with open("tmp_snippets/refactored.yaml", "w", encoding="utf-8") as file:
+            try:
+                refactored_yaml = yaml.load(row["Refactored_YAML"], Loader=yaml.FullLoader)
+            except (yaml.scanner.ScannerError, yaml.parser.ParserError, AttributeError):
+                row = [
+                    row["Chart"],
+                    row["Alert_ID"],
+                    tool,
+                    resource,
+                    llm,
+                    "Not_Fixed",
+                    0,
+                    0,
+                    0
+                ]
+                rows.append(row)
+                continue
+
+            with open(refactored_path, "w", encoding="utf-8") as file:
                 yaml.dump(refactored_yaml, file)
 
-            original_yaml = yaml.safe_load(row["Original_YAML"])
-            with open("tmp_snippets/original.yaml", "w", encoding="utf-8") as file:
-                yaml.dump(original_yaml, file)
+            try:
+                original_yaml = yaml.load(row["Original_YAML"], Loader=yaml.FullLoader)
+            except (yaml.scanner.ScannerError, yaml.parser.ParserError, AttributeError):
+                row = [
+                    row["Chart"],
+                    row["Alert_ID"],
+                    row["Tool"],
+                    row["Resource"],
+                    llm,
+                    "Not_Fixed",
+                    0,
+                    0,
+                    0
+                ]
+                rows.append(row)
+                continue
+
+            with open(original_path, "w", encoding="utf-8") as file:
+                yaml.dump(original_yaml, file, default_flow_style=False)
 
             # Run tool on the refactored YAML
             tool = row["Tool"]
             resource = row["Resource"]
 
             if tool == "checkov":
-                command = "checkov -f tmp_snippets/refactored.yaml --quiet --compact --framework kubernetes -o json > tmp_snippets/results.json"
+                command = f"checkov -f {refactored_path} --quiet --compact --framework kubernetes -o json > {result_path}"
                 os.system(command)
-                parse_checkov(row["Alert_ID"], resource)
+                parse_checkov(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "datree":
-                command = "helm datree test tmp_snippets/refactored.yaml --only-k8s-files --quiet --output json > tmp_snippets/results.json"
+                command = f"helm datree test {refactored_path} --only-k8s-files --quiet --output json > {result_path}"
                 os.system(command)
-                fixed = parse_datree(row["Alert_ID"], resource)
+                fixed = parse_datree(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "kics":
-                command = "kics scan -p tmp_snippets/refactored.yaml --exclude-severities info --disable-secrets --exclude-queries bb241e61-77c3-4b97-9575-c0f8a1e008d0 --exclude-queries 7c81d34c-8e5a-402b-9798-9f442630e678 -o . > /dev/null 2>&1"
+                command = f"kics scan -p {refactored_path} --exclude-severities info --disable-secrets --exclude-queries bb241e61-77c3-4b97-9575-c0f8a1e008d0 --exclude-queries 7c81d34c-8e5a-402b-9798-9f442630e678 -o . > /dev/null 2>&1"
                 os.system(command)
-                os.system("mv results.json tmp_snippets/results.json")
-                fixed = parse_kics(row["Alert_ID"], resource)
+                os.system(f"mv results.json {result_path}")
+                fixed = parse_kics(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "kubeaudit":
-                command = "kubeaudit all -f tmp_snippets/refactored.yaml --minseverity 'error' --format json > tmp_snippets/results.json"
+                command = f"kubeaudit all -f {refactored_path} --minseverity 'error' --format json > {result_path}"
                 os.system(command)
-                fixed = parse_kubeaudit(row["Alert_ID"], resource)
+                fixed = parse_kubeaudit(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "kubelinter":
-                command = "kube-linter lint tmp_snippets/refactored.yaml --format=json > tmp_snippets/results.json"
+                command = f"kube-linter lint {refactored_path} --format=json > {result_path}"
                 os.system(command)
-                fixed = parse_kubelinter(row["Alert_ID"], resource)
+                fixed = parse_kubelinter(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "kubescape":
-                command = "kubescape scan tmp_snippets/refactored.yaml --exceptions kubescape_exceptions.json --format json --output tmp_snippets/results.json > /dev/null 2>&1"
+                command = f"kubescape scan {refactored_path} --exceptions kubescape_exceptions.json --format json --output {result_path} > /dev/null 2>&1"
                 os.system(command)
-                fixed = parse_kubescape(row["Alert_ID"], resource)
+                fixed = parse_kubescape(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "terrascan":
-                command = "terrascan scan -i k8s -f tmp_snippets/refactored.yaml --skip-rules AC_K8S_0080 --skip-rules AC_K8S_0069 --skip-rules AC_K8S_0021 --skip-rules AC_K8S_0002 --skip-rules AC_K8S_0068 -o sarif > tmp_snippets/results.json"
+                command = f"terrascan scan -i k8s -f {refactored_path} --skip-rules AC_K8S_0080 --skip-rules AC_K8S_0069 --skip-rules AC_K8S_0021 --skip-rules AC_K8S_0002 --skip-rules AC_K8S_0068 -o sarif > {result_path}"
                 os.system(command)
-                fixed = parse_terrascan(row["Alert_ID"], resource)
+                fixed = parse_terrascan(idx, row["Alert_ID"], resource, llm_name)
 
         # Compute Added, Changed, Removed lines in the refactored YAML
         added = 0
         changed = 0
         removed = 0
 
-        if len(original_yaml) > len(refactored_yaml):
-            removed = len(original_yaml) - len(refactored_yaml)
+        try:
+            with open(refactored_path, "r", encoding="utf-8") as file:
+                len_refactored = len(file.readlines())
+        except FileNotFoundError:
+            len_refactored = 0
+            original_yaml = ""
+            refactored_yaml = ""
 
-        elif len(original_yaml) < len(refactored_yaml):
-            added = len(refactored_yaml) - len(original_yaml)
+        try:
+            with open(original_path, "r", encoding="utf-8") as file:
+                len_original = len(file.readlines())
+        except FileNotFoundError:
+            len_original = 0
+            original_yaml = ""
+            refactored_yaml = ""
 
-        # Iterate the original_yaml dict keys
-        for key in original_yaml:
-            if key in refactored_yaml:
+        if len_original > len_refactored:
+            removed = len_original - len_refactored
 
-                print(original_yaml[key])
-                exit(0)
+        elif len_refactored > len_original:
+            added = len_refactored - len_original
 
-                if original_yaml[key] != refactored_yaml[key]:
-                    changed += 1
+        if isinstance(original_yaml, dict):
+            for key in original_yaml:
+                try:
+                    if key in refactored_yaml:
+
+                        if isinstance(original_yaml[key], dict):
+                            for sub_key in original_yaml[key]:
+                                if sub_key in refactored_yaml[key]:
+                                    if original_yaml[key][sub_key] != refactored_yaml[key][sub_key]:
+                                        changed += 1
+
+                        elif original_yaml[key] != refactored_yaml[key]:
+                            changed += 1
+
+                except TypeError:
+                    continue
+
+        # os.system(f"rm {refactored_path}")
+        # os.system(f"rm {original_path}")
+        os.system(f"rm {result_path}")
 
         row = [
             row["Chart"],
             row["Alert_ID"],
-            tool,
-            resource,
-            LLM,
+            row["Tool"],
+            row["Resource"],
+            llm,
             fixed,
             added,
             changed,
@@ -417,14 +492,107 @@ def evaluate_fixes():
         ]
         rows.append(row)
 
-        exit(0)
 
-        # Remove files
-        os.system("rm tmp_snippets/refactored.yaml")
-        os.system("rm tmp_snippets/original.yaml")
-        os.system("rm tmp_snippets/results.json")
+    #     if counter == 50:
+    #         df = pd.read_csv(file_name)
+    #         for row in rows:
+    #             df.loc[len(df)] = row
+    #         df.to_csv(file_name, index=False)
+    #         rows = []
+    #         counter = 0
+    #         df = None
 
-    df = pd.read_csv("results/llm_chatgpt_fix.csv")
-    for row in rows:
-        df.loc[len(df)] = row
-    df.to_csv("results/llm_chatgpt_fix.csv", index=False)
+    # df = pd.read_csv(file_name)
+    # for row in rows:
+    #     df.loc[len(df)] = row
+    # df.to_csv(file_name, index=False)
+
+
+def print_stats(llm_name):
+    """ Print the statistics of the fixes."""
+
+    df = ""
+
+    if llm_name == "llama":
+        df = pd.read_csv("results/llm_llama_fix.csv")
+        llm = "Llama_3_70b"
+    elif llm_name == "claude":
+        df = pd.read_csv("results/llm_claude_fix.csv")
+        # df = pd.read_csv("results/llm_claude_fix2.csv")
+        llm = "Claude_3_Sonnet"
+    elif llm_name == "gemini":
+        df = pd.read_csv("results/llm_gemini_fix.csv")
+        llm = "Gemini_1.5"
+    elif llm_name == "chatgpt":
+        df = pd.read_csv("results/llm_chatgpt_fix.csv")
+        llm = "ChatGPT-4o-mini-2024-07-18"
+
+    # Print total number of rows
+    print(f"Total number of rows: {len(df)}")
+
+    # Print how many rows have the "Fixed" column value as "Not_Fixed"
+    print(f"Total number of rows with 'Fixed': {len(df[df['Fixed'] == 'Fixed'])}")
+    print(f"Total number of rows with 'Not_Fixed': {len(df[df['Fixed'] == 'Not_Fixed'])}")
+
+    print()
+
+    print(f"Min of the 'Added' column: {df['Added'].min()}")
+    print(f"Max of the 'Added' column: {df['Added'].max()}")
+    print(f"Mean of the 'Added' column: {df['Added'].mean()}")
+    print(f"Median of the 'Added' column: {df['Added'].median()}")
+    print(f"SD of the 'Added' column: {df['Added'].std()}")
+    print(f"1st quartile of the 'Added' column: {df['Added'].quantile(0.25)}")
+    print(f"3rd quartile of the 'Added' column: {df['Added'].quantile(0.75)}")
+
+    print()
+
+    print(f"Min of the 'Changed' column: {df['Changed'].min()}")
+    print(f"Max of the 'Changed' column: {df['Changed'].max()}")
+    print(f"Mean of the 'Changed' column: {df['Changed'].mean()}")
+    print(f"Median of the 'Changed' column: {df['Changed'].median()}")
+    print(f"SD of the 'Changed' column: {df['Changed'].std()}")
+    print(f"1st quartile of the 'Changed' column: {df['Changed'].quantile(0.25)}")
+    print(f"3rd quartile of the 'Changed' column: {df['Changed'].quantile(0.75)}")
+
+    print()
+
+    print(f"Min of the 'Removed' column: {df['Removed'].min()}")
+    print(f"Max of the 'Removed' column: {df['Removed'].max()}")
+    print(f"Mean of the 'Removed' column: {df['Removed'].mean()}")
+    print(f"Median of the 'Removed' column: {df['Removed'].median()}")
+    print(f"SD of the 'Removed' column: {df['Removed'].std()}")
+    print(f"1st quartile of the 'Removed' column: {df['Removed'].quantile(0.25)}")
+    print(f"3rd quartile of the 'Removed' column: {df['Removed'].quantile(0.75)}")
+
+
+def evaluate_fixes():
+    """ Evaluate the fixes generated by LLM.
+    """
+
+    llm = "llama"
+    # print_stats(llm)
+    # exit(0)
+
+    idx = 0
+    jdx = 100
+    # jdx = 7838
+
+    # llm = "claude"
+
+    # idx = 90000
+    # jdx = 100000
+
+    # # jdx = 160000
+
+    evaluate_llm_fixes(llm, idx, jdx)
+
+    ###
+
+    df = pd.read_csv("results/llm_llama_fix.csv")
+
+    for idx in to_check:
+
+        # Change the "Fixed" column value of row idx to "Not_Fixed"
+        df.at[idx, "Fixed"] = "Not_Fixed"
+
+    df.to_csv("results/llm_llama_fix.csv", index=False)

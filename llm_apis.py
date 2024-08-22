@@ -36,8 +36,6 @@ def query_chatgpt(idx: int, jdx: int):
     # df = pd.read_csv("results/chatgpt_queries.csv")
     df = pd.read_csv("results/llm_short_queries.csv")
 
-    # df_idx = pd.read_csv("results/chatgpt_index.csv")
-
     client = OpenAI()
     rows = []
     counter = 0
@@ -50,10 +48,6 @@ def query_chatgpt(idx: int, jdx: int):
         print(f"{idx} - ChatGPT: Processing {chart_name} - {alert_id} ...")
         counter += 1
 
-        # if idx in df_idx["Index"].values:
-        #     rows.append()
-
-        # else:
         try:
             completion = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -94,7 +88,7 @@ def query_chatgpt(idx: int, jdx: int):
             ]
         rows.append(new_row)
 
-        if counter == 10:
+        if counter == 20:
             answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
             for row in rows:
                 answer_df.loc[len(answer_df)] = row
@@ -349,22 +343,24 @@ def query_claude_3(idx: int, jdx: int):
                 "Claude_3_Sonnet",
                 input_tokens,
                 answer_dict,
-                output_tokens
+                output_tokens,
+                row["Tool"],
+                row["Resource"]
             ]
         rows.append(new_row)
 
         if counter == 50:
-            answer_df = pd.read_csv("results/llm_claude_answers.csv")
+            answer_df = pd.read_csv("results/llm_claude_answers2.csv")
             for row in rows:
                 answer_df.loc[len(answer_df)] = row
-            answer_df.to_csv("results/llm_claude_answers.csv", index=False)
+            answer_df.to_csv("results/llm_claude_answers2.csv", index=False)
             rows = []
             counter = 0
 
-    answer_df = pd.read_csv("results/llm_claude_answers.csv")
+    answer_df = pd.read_csv("results/llm_claude_answers2.csv")
     for row in rows:
         answer_df.loc[len(answer_df)] = row
-    answer_df.to_csv("results/llm_claude_answers.csv", index=False)
+    answer_df.to_csv("results/llm_claude_answers2.csv", index=False)
 
 
 def query_llama_3(idx: int, jdx: int):
