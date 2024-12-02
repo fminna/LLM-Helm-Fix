@@ -23,7 +23,6 @@ import json
 from botocore.exceptions import ClientError
 import yaml
 import os
-import requests
 import pandas as pd
 import time
 import google.api_core.exceptions
@@ -33,7 +32,6 @@ def query_chatgpt(idx: int, jdx: int):
     """Query ChatGPT to generate fixes.
     """
 
-    # df = pd.read_csv("results/chatgpt_queries.csv")
     df = pd.read_csv("results/llm_short_queries.csv")
 
     client = OpenAI()
@@ -88,18 +86,18 @@ def query_chatgpt(idx: int, jdx: int):
             ]
         rows.append(new_row)
 
-        if counter == 20:
-            answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
-            for row in rows:
-                answer_df.loc[len(answer_df)] = row
-            answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
-            rows = []
-            counter = 0
+    #     if counter == 20:
+    #         answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    #         for row in rows:
+    #             answer_df.loc[len(answer_df)] = row
+    #         answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
+    #         rows = []
+    #         counter = 0
 
-    answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
-    for row in rows:
-        answer_df.loc[len(answer_df)] = row
-    answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
+    # answer_df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    # for row in rows:
+    #     answer_df.loc[len(answer_df)] = row
+    # answer_df.to_csv("results/llm_chatgpt_answers.csv", index=False)
 
 
 def query_gemini(idx: int, jdx: int) -> list:
@@ -109,7 +107,17 @@ def query_gemini(idx: int, jdx: int) -> list:
     https://ai.google.dev/gemini-api/docs/troubleshooting
     """
 
-    df = pd.read_csv("results/chatgpt_queries.csv")
+    # df = pd.read_csv("results/semicolon_queries.csv")
+
+    ##################
+    original_df = pd.read_csv("results/llm_gemini_answers.csv")
+    # Select only the rows with "Failed to generate a response"
+    df = original_df[original_df["Refactored_YAML"] == "Failed to parse YAML."]
+    print(len(df))
+
+    idx = 0
+    jdx = len(df)
+    ###################
 
     # Get API Key from the environmental variable
     api_key = os.getenv("GEMINI_API_KEY")
@@ -123,34 +131,37 @@ def query_gemini(idx: int, jdx: int) -> list:
         "max_output_tokens": 8192,
     }
 
-    # safety_settings = [
-    #     {
-    #         "category": "HARM_CATEGORY_HARASSMENT",
-    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-    #     },
-    #     {
-    #         "category": "HARM_CATEGORY_HATE_SPEECH",
-    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-    #     },
-    #     {
-    #         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-    #     },
-    #     {
-    #         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-    #         "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-    #     },
-    # ]
-
-    safety_settings = []
+    safety_settings = [
+        {
+            "category": "HARM_CATEGORY_DANGEROUS",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE",
+        },
+    ]
 
     model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
                              generation_config=generation_config,
                              safety_settings=safety_settings)
-    # convo = model.start_chat()
 
     counter = 0
     rows = []
+
+    counter = 0
 
     for idx, row in df.iloc[idx:jdx].iterrows():
         chart_name = row["Chart"]
@@ -221,35 +232,48 @@ def query_gemini(idx: int, jdx: int) -> list:
         else:
             answer_dict = "Failed to generate a response. Unkown error."
 
-        input_tokens = model.count_tokens(query)
-        input_tokens = input_tokens.total_tokens
-        output_tokens = model.count_tokens(answer).total_tokens
+        ###############
+        if answer_dict != "Failed to parse YAML." and answer_dict != "Failed to generate a response. Unkown error.":
 
-        new_row = [
-            chart_name,
-            alert_id,
-            row["Tool"],
-            query,
-            "Gemini_1.5",
-            input_tokens,
-            answer_dict,
-            output_tokens
-        ]
-        rows.append(new_row)
+            input_tokens = model.count_tokens(query)
+            input_tokens = input_tokens.total_tokens
+            output_tokens = model.count_tokens(answer).total_tokens
 
-        if counter == 50:
-            answer_df = pd.read_csv("results/llm_gemini_answers.csv")
-            for row in rows:
-                answer_df.loc[len(answer_df)] = row
-            answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
-            rows = []
-            counter = 0
-            time.sleep(120)
+            # new_row = [
+            #     chart_name,
+            #     alert_id,
+            #     row["Tool"],
+            #     row["Resource"],
+            #     row["Original_YAML"],
+            #     query,
+            #     "Gemini_1.5",
+            #     input_tokens,
+            #     answer_dict,
+            #     output_tokens
+            # ]
+            # rows.append(new_row)
 
-    answer_df = pd.read_csv("results/llm_gemini_answers.csv")
-    for row in rows:
-        answer_df.loc[len(answer_df)] = row
-    answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
+            original_df.at[idx, "Refactored_YAML"] = answer_dict
+            original_df.at[idx, "Output_Tokens"] = output_tokens
+
+            counter += 1
+
+    #     if counter == 10:
+    #         answer_df = pd.read_csv("results/llm_gemini_answers.csv")
+    #         for row in rows:
+    #             answer_df.loc[len(answer_df)] = row
+    #         answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
+    #         rows = []
+    #         counter = 0
+    #         time.sleep(120)
+
+    # answer_df = pd.read_csv("results/llm_gemini_answers.csv")
+    # for row in rows:
+    #     answer_df.loc[len(answer_df)] = row
+    # answer_df.to_csv("results/llm_gemini_answers.csv", index=False)
+
+    print(counter)
+    original_df.to_csv("results/llm_gemini_answers.csv", index=False)
 
 
 def query_claude_3(idx: int, jdx: int):
@@ -273,68 +297,58 @@ def query_claude_3(idx: int, jdx: int):
     for idx, row in df.iloc[idx:jdx].iterrows():
         chart_name = row["Chart"]
         alert_id = row["Alert_ID"]
-        query_type_error = False
 
-        try:
-            query = str(row["Query"]) + " " + str(row["Original_YAML"])
-        except TypeError:
-            query_type_error = True
+        query = str(row["Query"]) + " " + str(row["Original_YAML"])
 
         print(f"{idx} - Claude: Processing {chart_name} - {alert_id} ...")
         counter += 1
 
-        if query_type_error:
-            input_tokens = 0
-            answer_dict = "Failed: query type error."
-            output_tokens = 0
+        try:
+            response = client.invoke_model(
+                modelId=model_id,
+                body=json.dumps(
+                    {
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 4096,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [{"type": "text", "text": query}],
+                            }
+                        ],
+                    }
+                ),
+            )
 
-        else:
+            # Process and print the response
+            result = json.loads(response.get("body").read())
+
+            input_tokens = result["usage"]["input_tokens"]
+            output_tokens = result["usage"]["output_tokens"]
+
+            output_list = result.get("content", [])
+            answer = output_list[0]["text"]
+            answer = answer.replace("---", "")
+            answer = answer.replace("```yaml", "")
+            answer = answer.replace("```", "")
+
             try:
-                response = client.invoke_model(
-                    modelId=model_id,
-                    body=json.dumps(
-                        {
-                            "anthropic_version": "bedrock-2023-05-31",
-                            "max_tokens": 4096,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": [{"type": "text", "text": query}],
-                                }
-                            ],
-                        }
-                    ),
-                )
+                answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
 
-                # Process and print the response
-                result = json.loads(response.get("body").read())
+            except Exception as e:
+                print(f"Error parsing YAML: {e}")
+                answer_dict = "Failed to parse YAML."
 
-                input_tokens = result["usage"]["input_tokens"]
-                output_tokens = result["usage"]["output_tokens"]
+        except ClientError as err:
+            logger.error(
+                "Couldn't invoke Claude 3 Sonnet. Here's why: %s: %s",
+                err.response["Error"]["Code"],
+                err.response["Error"]["Message"],
+            )
+            raise
 
-                output_list = result.get("content", [])
-                answer = output_list[0]["text"]
-                answer = answer.replace("---", "")
-                answer = answer.replace("```yaml", "")
-                answer = answer.replace("```", "")
-
-                try:
-                    answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
-
-                except Exception as e:
-                    print(f"Error parsing YAML: {e}")
-                    answer_dict = "Failed to parse YAML."
-
-            except ClientError as err:
-                logger.error(
-                    "Couldn't invoke Claude 3 Sonnet. Here's why: %s: %s",
-                    err.response["Error"]["Code"],
-                    err.response["Error"]["Message"],
-                )
-                raise
-
-            except Exception:
-                answer_dict = "Failed to generate a response."
+        except Exception:
+            answer_dict = "Failed to generate a response."
 
         new_row = [
                 chart_name,
@@ -345,30 +359,40 @@ def query_claude_3(idx: int, jdx: int):
                 answer_dict,
                 output_tokens,
                 row["Tool"],
-                row["Resource"]
+                row["Resource"],
+                row["Original_YAML"]
             ]
         rows.append(new_row)
 
-        if counter == 50:
-            answer_df = pd.read_csv("results/llm_claude_answers2.csv")
-            for row in rows:
-                answer_df.loc[len(answer_df)] = row
-            answer_df.to_csv("results/llm_claude_answers2.csv", index=False)
-            rows = []
-            counter = 0
+    #     if counter == 50:
+    #         answer_df = pd.read_csv("results/llm_claude_answers.csv", sep=",")
+    #         for row in rows:
+    #             answer_df.loc[len(answer_df)] = row
+    #         answer_df.to_csv("results/llm_claude_answers.csv", index=False)
+    #         rows = []
+    #         counter = 0
 
-    answer_df = pd.read_csv("results/llm_claude_answers2.csv")
-    for row in rows:
-        answer_df.loc[len(answer_df)] = row
-    answer_df.to_csv("results/llm_claude_answers2.csv", index=False)
+    # answer_df = pd.read_csv("results/llm_claude_answers.csv", sep=",")
+    # for row in rows:
+    #     answer_df.loc[len(answer_df)] = row
+    # answer_df.to_csv("results/llm_claude_answers.csv", index=False)
 
 
 def query_llama_3(idx: int, jdx: int):
     """ Query the Llama model to generate fixes.
     """
 
-    # df = pd.read_csv("results/llm_short_queries.csv")
-    df = pd.read_csv("results/chatgpt_queries.csv")
+    # df = pd.read_csv("results/semicolon_queries.csv")
+
+    ###################
+    df = pd.read_csv("results/llm_llama_answers.csv")
+    # Select only the rows with "Failed to generate a response"
+    df = df[df["Refactored_YAML"] == "Failed to generate a response."]
+    print(len(df))
+
+    idx = 0
+    jdx = len(df)
+    ###################
 
     # Initialize the Amazon Bedrock runtime client
     client = boto3.client(
@@ -416,6 +440,7 @@ def query_llama_3(idx: int, jdx: int):
         except (ClientError, Exception) as e:
             print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
             answer_dict = "Failed to generate a response."
+            correct = False
 
         if correct:
             # Decode the response body.
@@ -431,10 +456,16 @@ def query_llama_3(idx: int, jdx: int):
             answer = answer.replace("```", "")
 
             try:
+                print(answer)
                 answer_dict = yaml.load(answer, Loader=yaml.FullLoader)
+
             except Exception as e:
                 print(f"Error parsing YAML: {e}")
                 answer_dict = "Failed to parse YAML."
+        
+        else:
+            input_tokens = 0
+            output_tokens = 0
 
         new_row = [
                 chart_name,
@@ -450,15 +481,15 @@ def query_llama_3(idx: int, jdx: int):
             ]
         rows.append(new_row)
 
-        if counter == 10:
-            answer_df = pd.read_csv("results/llm_llama_answers.csv")
-            for row in rows:
-                answer_df.loc[len(answer_df)] = row
-            answer_df.to_csv("results/llm_llama_answers.csv", index=False)
-            rows = []
-            counter = 0
+    #     if counter == 10:
+    #         answer_df = pd.read_csv("results/llm_llama_answers.csv")
+    #         for row in rows:
+    #             answer_df.loc[len(answer_df)] = row
+    #         answer_df.to_csv("results/llm_llama_answers.csv", index=False)
+    #         rows = []
+    #         counter = 0
 
-    answer_df = pd.read_csv("results/llm_llama_answers.csv")
-    for row in rows:
-        answer_df.loc[len(answer_df)] = row
-    answer_df.to_csv("results/llm_llama_answers.csv", index=False)
+    # answer_df = pd.read_csv("results/llm_llama_answers.csv")
+    # for row in rows:
+    #     answer_df.loc[len(answer_df)] = row
+    # answer_df.to_csv("results/llm_llama_answers.csv", index=False)

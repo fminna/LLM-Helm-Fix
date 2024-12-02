@@ -21,6 +21,7 @@ import yaml
 import os
 import json
 import ast
+import re
 
 global to_check
 to_check = []
@@ -35,18 +36,18 @@ def check_paths(paths, resource):
         return True
 
 
-def parse_checkov(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_checkov(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print("Error: Checkov results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
-    file_path = f"snippets/{llm}/refactored{idx}.yaml"
+    file_path = f"snippets/{llm_name}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
@@ -70,14 +71,14 @@ def parse_checkov(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_datree(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_datree(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print("Error: Datree results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
@@ -96,18 +97,18 @@ def parse_datree(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_kics(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_kics(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except (json.decoder.JSONDecodeError, FileNotFoundError):
         print("Error: Datree results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
-    file_path = f"snippets/{llm}/refactored{idx}.yaml"
+    file_path = f"snippets/{llm_name}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
@@ -135,18 +136,33 @@ def parse_kics(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_kubeaudit(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_kubeaudit(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
+    # Convert result to a valid JSON
+    with open(json_path, 'r', encoding="utf-8") as file:
+        data = file.read()
+        # If data does not begin with '{"checks": [', then it is not a valid JSON
+        if not data.startswith('{"checks": ['):
+            # Add '{"checks": [' at the beginning of data
+            data = '{"checks": [' + data
+            # Substitue all '}' with '},' except the last one
+            data = data.replace('}', '},', data.count('}') - 1)
+            # Add ']}' at the end of data
+            data = data + ']}'
+            # Save data to a new JSON file
+            with open(json_path, 'w', encoding="utf-8") as file:
+                file.write(data)
+
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
-        print("Error: Datree results file is empty.")
-        return
+        print("Error: Kubeaudit results file is empty.")
+        return "Not_Fixed"
 
     failed = "Fixed"
 
-    file_path = f"snippets/{llm}/refactored{idx}.yaml"
+    file_path = f"snippets/{llm_name}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
@@ -170,18 +186,18 @@ def parse_kubeaudit(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_kubelinter(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_kubelinter(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print("Error: Datree results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
-    file_path = f"snippets/{llm}/refactored{idx}.yaml"
+    file_path = f"snippets/{llm_name}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
@@ -206,14 +222,14 @@ def parse_kubelinter(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_kubescape(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_kubescape(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print("Error: Datree results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
@@ -268,18 +284,18 @@ def parse_kubescape(idx, alert_id, resource, llm):
     return failed
 
 
-def parse_terrascan(idx, alert_id, resource, llm):
-    json_path = f"snippets/{llm}/results{idx}.json"
+def parse_terrascan(idx, alert_id, resource, llm_name):
+    json_path = f"snippets/{llm_name}/results{idx}.json"
     try:
         with open(json_path, 'r', encoding="utf-8") as file:
             results = json.load(file)
     except json.decoder.JSONDecodeError:
         print("Error: Datree results file is empty.")
-        return
+        return "Not_Fixed"
 
     failed = "Fixed"
 
-    file_path = f"snippets/{llm}/refactored{idx}.yaml"
+    file_path = f"snippets/{llm_name}/refactored{idx}.yaml"
     try:
         with open(file_path, "r", encoding="utf-8") as file:
             template = list(yaml.load_all(file, Loader=yaml.FullLoader))
@@ -312,7 +328,6 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
         llm = "Llama_3_70b"
     elif llm_name == "claude":
         df = pd.read_csv("results/llm_claude_answers.csv")
-        # df = pd.read_csv("results/llm_claude_answers2.csv")
         llm = "Claude_3_Sonnet"
     elif llm_name == "gemini":
         df = pd.read_csv("results/llm_gemini_answers.csv")
@@ -330,35 +345,32 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
         file_name = "results/llm_chatgpt_fix.csv"
 
     rows = []
-    counter = 0
 
     for idx, row in df.iloc[idx:jdx].iterrows():
 
         chart_name = row["Chart"]
         alert_id = row["Alert_ID"]
 
-        refactored_path = f"snippets/{llm}/refactored{idx}.yaml"
-        original_path = f"snippets/{llm}/original{idx}.yaml"
-        result_path = f"snippets/{llm}/results{idx}.json"
+        refactored_path = f"snippets/{llm_name}/refactored{idx}.yaml"
+        original_path = f"snippets/{llm_name}/original{idx}.yaml"
+        result_path = f"snippets/{llm_name}/results{idx}.json"
 
         print(f"{idx} - Processing fix {chart_name} - {alert_id} ...")
-        counter += 1
 
         fixed = "Fixed"
 
-        if row["Refactored_YAML"] == "Failed to generate a response.":
+        if str(row["Refactored_YAML"]).startswith("Failed"):
             fixed = "Not_Fixed"
 
         if fixed == "Fixed":
-            # Save the YAML files
             try:
                 refactored_yaml = yaml.load(row["Refactored_YAML"], Loader=yaml.FullLoader)
             except (yaml.scanner.ScannerError, yaml.parser.ParserError, AttributeError):
                 row = [
                     row["Chart"],
                     row["Alert_ID"],
-                    tool,
-                    resource,
+                    row["Tool"],
+                    row["Resource"],
                     llm,
                     "Not_Fixed",
                     0,
@@ -391,7 +403,6 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
             with open(original_path, "w", encoding="utf-8") as file:
                 yaml.dump(original_yaml, file, default_flow_style=False)
 
-            # Run tool on the refactored YAML
             tool = row["Tool"]
             resource = row["Resource"]
 
@@ -422,7 +433,7 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
                 fixed = parse_kubelinter(idx, row["Alert_ID"], resource, llm_name)
 
             elif tool == "kubescape":
-                command = f"kubescape scan {refactored_path} --exceptions kubescape_exceptions.json --format json --output {result_path} > /dev/null 2>&1"
+                command = f"kubescape scan {refactored_path} --format json --output {result_path} > /dev/null 2>&1"
                 os.system(command)
                 fixed = parse_kubescape(idx, row["Alert_ID"], resource, llm_name)
 
@@ -436,48 +447,49 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
         changed = 0
         removed = 0
 
-        try:
-            with open(refactored_path, "r", encoding="utf-8") as file:
-                len_refactored = len(file.readlines())
-        except FileNotFoundError:
-            len_refactored = 0
-            original_yaml = ""
-            refactored_yaml = ""
+        if fixed == "Fixed":
+            try:
+                with open(refactored_path, "r", encoding="utf-8") as file:
+                    len_refactored = len(file.readlines())
+            except FileNotFoundError:
+                len_refactored = 0
+                original_yaml = ""
+                refactored_yaml = ""
 
-        try:
-            with open(original_path, "r", encoding="utf-8") as file:
-                len_original = len(file.readlines())
-        except FileNotFoundError:
-            len_original = 0
-            original_yaml = ""
-            refactored_yaml = ""
+            try:
+                with open(original_path, "r", encoding="utf-8") as file:
+                    len_original = len(file.readlines())
+            except FileNotFoundError:
+                len_original = 0
+                original_yaml = ""
+                refactored_yaml = ""
 
-        if len_original > len_refactored:
-            removed = len_original - len_refactored
+            if len_original > len_refactored:
+                removed = len_original - len_refactored
 
-        elif len_refactored > len_original:
-            added = len_refactored - len_original
+            elif len_refactored > len_original:
+                added = len_refactored - len_original
 
-        if isinstance(original_yaml, dict):
-            for key in original_yaml:
-                try:
-                    if key in refactored_yaml:
+            if isinstance(original_yaml, dict):
+                for key in original_yaml:
+                    try:
+                        if key in refactored_yaml:
 
-                        if isinstance(original_yaml[key], dict):
-                            for sub_key in original_yaml[key]:
-                                if sub_key in refactored_yaml[key]:
-                                    if original_yaml[key][sub_key] != refactored_yaml[key][sub_key]:
-                                        changed += 1
+                            if isinstance(original_yaml[key], dict):
+                                for sub_key in original_yaml[key]:
+                                    if sub_key in refactored_yaml[key]:
+                                        if original_yaml[key][sub_key] != refactored_yaml[key][sub_key]:
+                                            changed += 1
 
-                        elif original_yaml[key] != refactored_yaml[key]:
-                            changed += 1
+                            elif original_yaml[key] != refactored_yaml[key]:
+                                changed += 1
 
-                except TypeError:
-                    continue
+                    except TypeError:
+                        continue
 
-        # os.system(f"rm {refactored_path}")
-        # os.system(f"rm {original_path}")
-        os.system(f"rm {result_path}")
+        os.system(f"rm {refactored_path} > /dev/null 2>&1")
+        os.system(f"rm {original_path} > /dev/null 2>&1")
+        # os.system(f"rm {result_path} > /dev/null 2>&1")
 
         row = [
             row["Chart"],
@@ -492,20 +504,12 @@ def evaluate_llm_fixes(llm_name: str, idx: int, jdx: int):
         ]
         rows.append(row)
 
+    return
 
-    #     if counter == 50:
-    #         df = pd.read_csv(file_name)
-    #         for row in rows:
-    #             df.loc[len(df)] = row
-    #         df.to_csv(file_name, index=False)
-    #         rows = []
-    #         counter = 0
-    #         df = None
-
-    # df = pd.read_csv(file_name)
-    # for row in rows:
-    #     df.loc[len(df)] = row
-    # df.to_csv(file_name, index=False)
+    df = pd.read_csv(file_name)
+    for row in rows:
+        df.loc[len(df)] = row
+    df.to_csv(file_name, index=False)
 
 
 def print_stats(llm_name):
@@ -518,7 +522,6 @@ def print_stats(llm_name):
         llm = "Llama_3_70b"
     elif llm_name == "claude":
         df = pd.read_csv("results/llm_claude_fix.csv")
-        # df = pd.read_csv("results/llm_claude_fix2.csv")
         llm = "Claude_3_Sonnet"
     elif llm_name == "gemini":
         df = pd.read_csv("results/llm_gemini_fix.csv")
@@ -569,30 +572,39 @@ def evaluate_fixes():
     """ Evaluate the fixes generated by LLM.
     """
 
-    llm = "llama"
-    # print_stats(llm)
+    # print_stats("llama")
     # exit(0)
 
-    idx = 0
-    jdx = 100
-    # jdx = 7838
+    ###########
+
+    # llm = "llama"
+    # idx = 0
+    # jdx = 7206
+    # evaluate_llm_fixes(llm, idx, jdx)
+
+    ###########
+
+    # llm = "gemini"
+    # idx = 0
+    # jdx = 7206
+    # evaluate_llm_fixes(llm, idx, jdx)
+
+    ###########
 
     # llm = "claude"
 
-    # idx = 90000
-    # jdx = 100000
+    # idx = 160000
+    # jdx = 165000
 
-    # # jdx = 160000
+    # # idx = 160000
+    # # jdx = 170000
+    # # jdx = 229183
+    # evaluate_llm_fixes(llm, idx, jdx)
 
+    ###########
+
+    llm = "chatgpt"
+    idx = 50000
+    jdx = 70000
+    # jdx = 229183
     evaluate_llm_fixes(llm, idx, jdx)
-
-    ###
-
-    df = pd.read_csv("results/llm_llama_fix.csv")
-
-    for idx in to_check:
-
-        # Change the "Fixed" column value of row idx to "Not_Fixed"
-        df.at[idx, "Fixed"] = "Not_Fixed"
-
-    df.to_csv("results/llm_llama_fix.csv", index=False)

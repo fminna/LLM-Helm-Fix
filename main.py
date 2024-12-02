@@ -17,6 +17,7 @@
 
 import argparse
 import sys
+from manual_analysis import manual_analysis
 from parse_tool_output import parse_output
 from query_llm import query_llm
 from evaluate_fixes import evaluate_fixes
@@ -30,6 +31,7 @@ parser.add_argument('--parse-output', action='store_true', help='Parse the outpu
 parser.add_argument('--query-llm', action='store_true', help='Query a LLM for a fix.')
 parser.add_argument('--evaluate-fixes', action='store_true', help='Evaluate the LLM fixes.')
 parser.add_argument('--chart-retrieval', action='store_true', help='Retrieve a Helm Chart.')
+parser.add_argument('--manual-analysis', action='store_true', help='Manual analysis of the Helm Chart.')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -54,6 +56,10 @@ def main():
     elif args.chart_retrieval:
         print("Retrieving all Helm Charts from Artifact Hub...\n")
         scan_artifact_hub()
+
+    elif args.manual_analysis:
+        print("Manual analysis of the Helm Chart...\n")
+        manual_analysis()
 
     else:
         print("No arguments passed. Exiting...")
