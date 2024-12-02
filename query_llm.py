@@ -283,12 +283,97 @@ def evaluate_llm_answers(rq2_rows):
     return rq2_rows
 
 
+def failed_queries():
+    df = pd.read_csv("results/llm_llama_answers.csv")
+    # df = pd.read_csv("results/llm_gemini_answers.csv")
+    # df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    # df = pd.read_csv("results/llm_claude_answers.csv")
+
+    rows = []
+
+    aux_df = df[df["Refactored_YAML"] == "Failed to parse YAML."]
+    print(len(aux_df))
+
+    for _, row in aux_df.iterrows():
+        aux_row = [
+            row["Chart"],
+            row["Alert_ID"],
+            row["Tool"],
+            row["LLM"],
+            row["Input_Tokens"],
+            row["Original_YAML"],
+            row["Refactored_YAML"]
+        ]
+        rows.append(aux_row)
+
+    aux_df = df[df["Refactored_YAML"] == "Failed to generate a response."]
+    print(len(aux_df))
+
+    for _, row in aux_df.iterrows():
+        aux_row = [
+            row["Chart"],
+            row["Alert_ID"],
+            row["Tool"],
+            row["LLM"],
+            row["Input_Tokens"],
+            row["Original_YAML"],
+            row["Refactored_YAML"]
+        ]
+        rows.append(aux_row)
+
+    failed_df = pd.read_csv("results/failed_queries.csv")
+    for row in rows:
+        failed_df.loc[len(failed_df)] = row
+    failed_df.to_csv("results/failed_queries.csv", index=False)
+
+
+def stats_failed():
+    df = pd.read_csv("results/failed_queries.csv")
+    print(f"Total failed queries: {len(df)}")
+
+    # Count semicolons and lines for each Snippet and add columns
+
+
+
+
+
+
+
+    # Top ten charts, alerts, and tools
+
+    # 1.1 In total
+
+    # 1.2 In common between LLMs (count one occurrence per LLM)
+
+
+
+
+
 def query_stats():
     """Compute some stats about the queries.
     """
 
-    df = pd.read_csv("results/llm_chatgpt_answers.csv")
-    # print(len(df)) 7.837
+    # df = pd.read_csv("results/llm_llama_answers.csv")
+    df = pd.read_csv("results/llm_gemini_answers.csv")
+    # df = pd.read_csv("results/llm_chatgpt_answers.csv")
+    # df = pd.read_csv("results/llm_claude_answers.csv")
+
+    print(f"Total queries: {len(df)}")
+
+    # Print the number of rows with column 'Refactored_YAML' equal to "Failed to parse YAML."
+    yaml_error = len(df[df["Refactored_YAML"] == "Failed to parse YAML."])
+    # Print the number of rows with column 'Refactored_YAML' equal to "Failed to generate a response."
+    # response_error = len(df[df["Refactored_YAML"] == "Failed to generate a response."])
+    # Only for Gemini
+    response_error = len(df[df["Refactored_YAML"] == "Failed to generate a response. Unkown error."])
+
+    failed = yaml_error + response_error
+    print(f"Successful queries: {len(df) - failed}")
+    print(f"Failed to parse YAML: {yaml_error}")
+    print(f"Failed to generate a response: {response_error}")
+    print(f"Total Failed queries: {failed}")
+
+    print("")
 
     print(f"Min value: {df['Input_Tokens'].min()}")
     print(f"Max value: {df['Input_Tokens'].max()}")
@@ -317,6 +402,10 @@ def query_llm():
 
     # query_stats()
 
+    # failed_queries()
+
+    # stats_failed()
+
     ###############
 
     # Total: 297,424 queries
@@ -324,46 +413,30 @@ def query_llm():
 
     ###
 
-    # queries = pd.read_csv("results/llm_short_queries.csv")
-    # print(queries.iloc[229182])
-
-    # claude = pd.read_csv("results/llm_claude_answers.csv")
-    # print(claude.iloc[229183])
-
-    # idx = 210000
-    # jdx = 229183
+    # idx = 217
+    # jdx = 218
 
     # query_claude_3(idx, jdx)
 
     ###
 
-    # queries = pd.read_csv("results/chatgpt_queries.csv")
-    # print(queries.iloc[39051])
+    # idx = 228821
+    # jdx = 229183
 
-    # llama = pd.read_csv("results/llm_llama_answers.csv")
-    # print(llama.iloc[39051])
+    # query_chatgpt(idx, jdx)
 
-    # idx = 0
-    # jdx = 7837
+    #########################
+
+    # idx = 3239
+    # jdx = 3240
 
     # query_llama_3(idx, jdx)
 
     ###
 
-    # idx = 1000
-    # jdx = 7837
+    # idx = 66
+    # jdx = 67
 
     # query_gemini(idx, jdx)
 
     ###
-
-    # queries = pd.read_csv("results/llm_short_queries.csv")
-    # print(queries.iloc[30000])
-
-    # chatgpt = pd.read_csv("results/llm_chatgpt_answers.csv")
-    # print(chatgpt.iloc[30000])
-
-    # idx = 130000
-    # jdx = 140000
-
-    # query_chatgpt(idx, jdx)

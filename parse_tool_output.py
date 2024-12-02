@@ -592,10 +592,11 @@ def get_kubeaud_container_path(template: dict, resource_path: str, cont_name: st
                 document = document["jobTemplate"]["spec"]["template"]["spec"]
                 cont_path += "jobTemplate/spec/template/spec/"
 
-            for idx, container in enumerate(document["containers"]):
-                if container["name"] == cont_name:
-                    aux_path = "containers/" + str(idx)
-                    break
+            if "containers" in document:
+                for idx, container in enumerate(document["containers"]):
+                    if "name" in container and container["name"] == cont_name:
+                        aux_path = "containers/" + str(idx)
+                        break
 
             if not aux_path and "initContainers" in document:
                 for idx, container in enumerate(document["initContainers"]):
@@ -877,7 +878,8 @@ def check_resource_path(path_list: str, document: dict) -> bool:
     if path_list and document:
         if document["kind"].casefold() == path_list[0].casefold():
 
-            if "namespace" in document["metadata"]:
+            if "metadata" in document and \
+                "namespace" in document["metadata"]:
 
                 # Ignore default ns
                 if document["metadata"]["namespace"] == "default":
@@ -907,10 +909,10 @@ def check_resource_path(path_list: str, document: dict) -> bool:
                     return document["metadata"]["name"] == path_list[-1]
 
             # "namespace" not in document["metadata"]
-            elif path_list[1] == "default" and "name" in document["metadata"]:
+            elif "metadata" in document and path_list[1] == "default" and "name" in document["metadata"]:
                 return document["metadata"]["name"] == path_list[-1]
 
-            elif "name" in document["metadata"]:
+            elif "metadata"in document and "name" in document["metadata"]:
                 return document["metadata"]["name"] == path_list[1]
 
     return False
@@ -1192,7 +1194,6 @@ def generate_semicolon_stats(tool: str):
     df = pd.read_csv("results/templates_yaml_stats.csv")
     pivot_df = pd.read_csv("results/rq1_pivot_results.csv")
 
-    # tool_df = pd.read_csv("results/chatgpt_queries.csv")
     tool_df = pd.read_csv("results/rq1_short_results.csv")
     tool_df = tool_df[tool_df["Tool"] == tool]
     policies = tool_df["Alert_ID"].unique()
@@ -1205,7 +1206,7 @@ def generate_semicolon_stats(tool: str):
 
         start = 0
         end = 100
-        max_semic = 53691
+        max_semic = 100611
 
         while start < max_semic:
 
@@ -1237,10 +1238,11 @@ def semicolon_charts():
 
     start = 0
     end = 100
-    max_semic = 53691
+    max_semic = 100611
 
     while start < max_semic:
         aux_charts = df[(df['Semicolon'] >= start) & (df['Semicolon'] < end)]["Chart"].values
+        # print(len(aux_charts))
 
         try:
             chart_name = aux_charts[0]
@@ -1282,10 +1284,10 @@ def semicolon_charts():
             ]
             rows.append(new_row)
 
-    df = pd.read_csv("results/chatgpt_queries.csv")
+    df = pd.read_csv("results/semicolon_queries.csv")
     for row in rows:
         df.loc[len(df)] = row
-    df.to_csv("results/chatgpt_queries.csv", index=False)
+    df.to_csv("results/semicolon_queries.csv", index=False)
 
     print(len(df))
 
@@ -1442,6 +1444,8 @@ def parse_output():
     """ Parse the output of a chart analyzer tool.
     """
 
+    pass
+
     # df = pd.read_csv("results/rq1_results.csv")
     # print(df["Standard_ID"].value_counts().head(10))
     # print(df["CIS_Cluster"].value_counts().head(10))
@@ -1453,7 +1457,7 @@ def parse_output():
 
     # generate_short_query_dataset()
 
-    semicolon_charts()
+    # semicolon_charts()
 
     # llm_query_stats()
 
